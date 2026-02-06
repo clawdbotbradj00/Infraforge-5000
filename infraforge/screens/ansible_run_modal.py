@@ -130,6 +130,7 @@ class AnsibleRunModal(ModalScreen):
         self._host_cursor: int = 0                    # keyboard cursor index
         self._host_info: dict[str, HostInfo] = {}     # IP -> enrichment data
         self._enriching: bool = False
+        self._subnet_cursor: int = -1                  # -1 = on the manual input
         # Phase 2 — credentials
         self._credential_mgr = CredentialManager()
         self._credential_profiles: list[CredentialProfile] = []
@@ -181,11 +182,57 @@ class AnsibleRunModal(ModalScreen):
             self.app.pop_screen()
 
     def on_key(self, event) -> None:
-        """Handle arrow keys and Enter/Space for host toggle list in Phase 1."""
+        """Handle arrow keys for subnet selection (Phase 0) and host toggles (Phase 1)."""
+        # Phase 0: subnet list navigation
+        if self._phase == 0 and self._subnets:
+            focused = self.focused
+            # If the Input is focused and cursor is on manual entry, let it handle keys
+            if isinstance(focused, Input) and self._subnet_cursor == -1:
+                return
+            # If the Input is focused but cursor is on a subnet line, intercept arrows
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                if self._subnet_cursor > 0:
+                    self._subnet_cursor -= 1
+                    self._refresh_subnet_lines()
+                    self._scroll_to_subnet_cursor()
+                    # Unfocus input when moving up into subnet list
+                    try:
+                        self.query_one("#run-ip-input", Input).blur()
+                    except Exception:
+                        pass
+            elif event.key == "down":
+                event.prevent_default()
+                event.stop()
+                if self._subnet_cursor < len(self._subnets) - 1:
+                    self._subnet_cursor += 1
+                    self._refresh_subnet_lines()
+                    self._scroll_to_subnet_cursor()
+                    try:
+                        self.query_one("#run-ip-input", Input).blur()
+                    except Exception:
+                        pass
+                elif self._subnet_cursor == len(self._subnets) - 1:
+                    # Move to manual input
+                    self._subnet_cursor = -1
+                    self._refresh_subnet_lines()
+                    try:
+                        self.query_one("#run-ip-input", Input).focus()
+                    except Exception:
+                        pass
+            elif event.key == "enter" and self._subnet_cursor >= 0:
+                event.prevent_default()
+                event.stop()
+                s = self._subnets[self._subnet_cursor]
+                cidr = f"{s.get('subnet', '')}/{s.get('mask', '24')}"
+                self._start_scan(cidr)
+            return
+
+        # Phase 1: host toggle navigation
         if self._phase != 1 or self._is_scanning or not self._alive_ips:
             return
 
-        # Don't intercept keys when a Button or Input is focused
         focused = self.focused
         if isinstance(focused, (Button, Input)):
             return
@@ -210,14 +257,25 @@ class AnsibleRunModal(ModalScreen):
             self._toggle_host(self._host_cursor)
 
     def on_click(self, event) -> None:
-        """Handle mouse clicks on host lines."""
+        """Handle mouse clicks on host lines and subnet lines."""
         widget = event.widget
-        if widget and hasattr(widget, "id") and widget.id and widget.id.startswith("host-line-"):
+        if not widget or not hasattr(widget, "id") or not widget.id:
+            return
+        if widget.id.startswith("host-line-"):
             try:
                 idx = int(widget.id.split("-")[-1])
                 if 0 <= idx < len(self._alive_ips):
                     self._host_cursor = idx
                     self._toggle_host(idx)
+            except (ValueError, IndexError):
+                pass
+        elif widget.id.startswith("subnet-line-"):
+            try:
+                idx = int(widget.id.split("-")[-1])
+                if 0 <= idx < len(self._subnets):
+                    s = self._subnets[idx]
+                    cidr = f"{s.get('subnet', '')}/{s.get('mask', '24')}"
+                    self._start_scan(cidr)
             except (ValueError, IndexError):
                 pass
 
@@ -254,22 +312,6 @@ class AnsibleRunModal(ModalScreen):
                 self._start_execution()
             elif self._phase == 3 and not self._is_running:
                 self.app.pop_screen()
-
-        # --- IPAM ---
-        elif btn_id == "run-ipam-btn":
-            self._load_ipam_subnets()
-
-        elif btn_id.startswith("run-subnet-"):
-            try:
-                idx = int(btn_id.split("-")[-1])
-                if 0 <= idx < len(self._subnets):
-                    s = self._subnets[idx]
-                    cidr = f"{s.get('subnet', '')}/{s.get('mask', '24')}"
-                    ip_input = self.query_one("#run-ip-input", Input)
-                    ip_input.value = cidr
-                    self._start_scan()
-            except (ValueError, IndexError, Exception):
-                pass
 
         # --- Credential buttons ---
         elif btn_id == "run-cred-new-btn":
@@ -332,7 +374,7 @@ class AnsibleRunModal(ModalScreen):
         # Clean up any widgets from other phases
         self._remove_cred_widgets()
         self._remove_host_toggles()
-        self._remove_subnet_buttons()
+        self._remove_subnet_lines()
 
         content = self.query_one("#run-phase-content", Static)
 
@@ -340,21 +382,21 @@ class AnsibleRunModal(ModalScreen):
         has_ipam = ipam_cfg and getattr(ipam_cfg, "url", "")
 
         lines = [
-            "[bold]Define target hosts for this playbook.[/bold]",
-            "",
-            "Enter IP ranges below and press Enter to scan.",
-            "[dim]Examples: 10.0.1.0/24, 10.0.5.1-10.0.5.100, 192.168.1.50[/dim]",
+            "[bold]Select a target range and press Enter to scan.[/bold]",
             "",
         ]
 
         if has_ipam and not self._ipam_loaded and not self._subnets:
             lines.append("[dim]Loading IPAM subnets...[/dim]")
         elif self._subnets:
-            lines.append("[bold]Quick select a subnet:[/bold]")
+            lines.append(
+                "[dim]arrow keys to select, Enter to scan[/dim]"
+            )
+            lines.append("")
 
         content.update("\n".join(lines))
 
-        # Remove old input / IPAM button / subnet buttons for clean remount
+        # Remove old input for clean remount
         scroll = self.query_one("#run-content", VerticalScroll)
         prev_value = ""
         for w in self.query("#run-ip-input"):
@@ -362,36 +404,32 @@ class AnsibleRunModal(ModalScreen):
             w.remove()
         for w in self.query("#run-ipam-btn"):
             w.remove()
-        self._remove_subnet_buttons()
 
-        # Mount subnet suggestion buttons (if loaded)
+        # Mount subnet suggestion lines (simple Static widgets)
         if self._subnets:
+            if self._subnet_cursor == -1:
+                self._subnet_cursor = 0  # auto-select first subnet
             for idx, s in enumerate(self._subnets):
-                addr = s.get("subnet", "?")
-                mask = s.get("mask", "?")
-                desc = s.get("description", "")
-                usage = s.get("usage", {})
-                used = usage.get("used", "?")
-                maxh = usage.get("maxhosts", "?")
-                label = f"{addr}/{mask}"
-                if desc:
-                    label += f"  {desc}"
-                label += f"  ({used}/{maxh})"
-                btn = Button(
+                label = self._format_subnet_line(idx, s)
+                line = Static(
                     label,
-                    variant="default",
-                    id=f"run-subnet-{idx}",
-                    classes="subnet-btn",
+                    markup=True,
+                    id=f"subnet-line-{idx}",
+                    classes="subnet-line",
                 )
-                scroll.mount(btn)
+                scroll.mount(line)
 
+        # Manual input line at the bottom
         ip_input = Input(
-            placeholder="e.g. 10.0.1.0/24, 10.0.5.1-100",
+            placeholder="Or type a range: 10.0.1.0/24, 10.0.5.1-100",
             id="run-ip-input",
             value=prev_value,
         )
         scroll.mount(ip_input)
-        ip_input.focus()
+
+        # Focus the input only if cursor is on manual entry
+        if self._subnet_cursor == -1 or not self._subnets:
+            ip_input.focus()
 
         action_btn = self.query_one("#run-action-btn", Button)
         action_btn.label = "Scan Hosts"
@@ -402,7 +440,10 @@ class AnsibleRunModal(ModalScreen):
         cancel_btn.label = "Cancel"
 
         status = self.query_one("#run-status", Static)
-        status.update("[dim]Select a subnet or type IPs, then press Enter[/dim]")
+        if self._subnets:
+            status.update("[dim]Select a subnet or type a range, then press Enter[/dim]")
+        else:
+            status.update("[dim]Enter target IPs and press Enter[/dim]")
 
         # Auto-load IPAM subnets in background if not loaded yet
         if has_ipam and not self._ipam_loaded:
@@ -419,7 +460,7 @@ class AnsibleRunModal(ModalScreen):
             w.remove()
         for w in self.query("#run-ipam-btn"):
             w.remove()
-        self._remove_subnet_buttons()
+        self._remove_subnet_lines()
         self._remove_cred_widgets()
         self._remove_host_toggles()
 
@@ -683,9 +724,12 @@ class AnsibleRunModal(ModalScreen):
     # Phase 0 -> 1: Start scan
     # ------------------------------------------------------------------
 
-    def _start_scan(self) -> None:
-        ip_input = self.query_one("#run-ip-input", Input)
-        text = ip_input.value.strip()
+    def _start_scan(self, target_override: str | None = None) -> None:
+        if target_override:
+            text = target_override.strip()
+        else:
+            ip_input = self.query_one("#run-ip-input", Input)
+            text = ip_input.value.strip()
         if not text:
             self.query_one("#run-status", Static).update(
                 "[bold red]Enter at least one IP address or range[/bold red]"
@@ -960,10 +1004,53 @@ class AnsibleRunModal(ModalScreen):
         for w in self.query(".host-line"):
             w.remove()
 
-    def _remove_subnet_buttons(self) -> None:
-        """Remove all subnet suggestion buttons from the DOM."""
-        for w in self.query(".subnet-btn"):
+    def _remove_subnet_lines(self) -> None:
+        """Remove all subnet suggestion lines from the DOM."""
+        for w in self.query(".subnet-line"):
             w.remove()
+
+    def _format_subnet_line(self, idx: int, s: dict) -> str:
+        """Build markup for a single subnet suggestion line."""
+        is_cursor = idx == self._subnet_cursor
+        cursor = ">" if is_cursor else " "
+        addr = s.get("subnet", "?")
+        mask = s.get("mask", "?")
+        cidr = f"{addr}/{mask}"
+        desc = s.get("description", "")
+        usage = s.get("usage", {})
+        used = usage.get("used", "?")
+        maxh = usage.get("maxhosts", "?")
+
+        cidr_padded = cidr.ljust(20)
+        usage_text = f"({used}/{maxh})"
+
+        if is_cursor:
+            line = f" {cursor}  [bold cyan]{cidr_padded}[/bold cyan]"
+        else:
+            line = f" {cursor}  {cidr_padded}"
+
+        if desc:
+            line += f"  [dim]{desc}[/dim]"
+        line += f"  [dim]{usage_text}[/dim]"
+        return line
+
+    def _refresh_subnet_lines(self) -> None:
+        """Refresh all subnet line labels (for cursor movement)."""
+        for idx, s in enumerate(self._subnets):
+            try:
+                line = self.query_one(f"#subnet-line-{idx}", Static)
+                line.update(self._format_subnet_line(idx, s))
+            except Exception:
+                pass
+
+    def _scroll_to_subnet_cursor(self) -> None:
+        """Scroll the subnet list so the cursor line is visible."""
+        if self._subnet_cursor >= 0:
+            try:
+                line = self.query_one(f"#subnet-line-{self._subnet_cursor}", Static)
+                line.scroll_visible()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Host enrichment (DNS, IPAM, nmap)
