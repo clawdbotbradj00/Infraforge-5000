@@ -282,8 +282,58 @@ DataTable > .datatable--hover {
     padding: 1 2;
 }
 
-#template-tabs {
+#template-controls {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#template-sort-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+}
+
+#template-count-label {
+    width: 1fr;
+    padding: 1 1;
+    color: $text-muted;
+    text-align: right;
+}
+
+#template-main-content {
+    layout: horizontal;
     height: 1fr;
+    margin: 1 0 0 0;
+}
+
+#template-tree {
+    width: 2fr;
+    margin: 0 1 0 0;
+    border: round $primary-background;
+}
+
+#template-detail-panel {
+    width: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#template-detail-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
+}
+
+#template-status-bar {
+    height: 1;
+    margin: 1 0 0 0;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
 }
 
 /* ── DNS Management Screen ── */

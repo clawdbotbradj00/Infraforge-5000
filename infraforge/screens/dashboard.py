@@ -19,12 +19,12 @@ class DashboardScreen(Screen):
     """Main dashboard screen."""
 
     BINDINGS = [
-        Binding("v", "view_vms", "VMs", show=True),
-        Binding("t", "view_templates", "Templates", show=True),
-        Binding("n", "view_nodes", "Nodes", show=True),
-        Binding("x", "manage_dns", "DNS", show=True),
-        Binding("i", "manage_ipam", "IPAM", show=True),
-        Binding("c", "create_vm", "New VM", show=True),
+        Binding("1", "view_vms", "1:VMs", show=True),
+        Binding("2", "view_templates", "2:Templates", show=True),
+        Binding("3", "view_nodes", "3:Nodes", show=True),
+        Binding("4", "manage_dns", "4:DNS", show=True),
+        Binding("5", "manage_ipam", "5:IPAM", show=True),
+        Binding("6", "create_vm", "6:New VM", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
@@ -60,12 +60,12 @@ class DashboardScreen(Screen):
 
             yield Static("Navigation", classes="section-title")
             yield ListView(
-                ListItem(Label("  [V]  Virtual Machines  —  View and manage all VMs and containers"), id="nav-vms"),
-                ListItem(Label("  [T]  Templates         —  Browse VM and container templates"), id="nav-templates"),
-                ListItem(Label("  [N]  Node Info         —  Cluster node details and resources"), id="nav-nodes"),
-                ListItem(Label("  [X]  DNS Management    —  View and manage DNS records"), id="nav-dns"),
-                ListItem(Label("  [I]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
-                ListItem(Label("  [C]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
+                ListItem(Label("  [1]  Virtual Machines  —  View and manage all VMs and containers"), id="nav-vms"),
+                ListItem(Label("  [2]  Templates         —  Browse VM and container templates"), id="nav-templates"),
+                ListItem(Label("  [3]  Node Info         —  Cluster node details and resources"), id="nav-nodes"),
+                ListItem(Label("  [4]  DNS Management    —  View and manage DNS records"), id="nav-dns"),
+                ListItem(Label("  [5]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
+                ListItem(Label("  [6]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
                 id="nav-menu",
             )
         yield Footer()

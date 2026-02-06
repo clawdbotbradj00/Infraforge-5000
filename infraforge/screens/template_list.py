@@ -1,9 +1,15 @@
 """Template list screen for InfraForge."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, DataTable, TabbedContent, TabPane
+from textual.widgets import Header, Footer, Static, Tree
+from textual.widgets._tree import TreeNode
 from textual.containers import Container, Horizontal
 from textual import work
 
@@ -12,40 +18,34 @@ from rich.text import Text
 from infraforge.models import Template, TemplateType
 
 
-# Sort definitions per tab
-VM_SORT_FIELDS = ["vmid", "name", "node", "size"]
-VM_SORT_LABELS = ["VMID", "Name", "Node", "Disk"]
+SORT_FIELDS = ["name", "node", "storage", "size"]
+SORT_LABELS = ["Name", "Node", "Storage", "Size"]
 
-CT_SORT_FIELDS = ["name", "storage", "node", "size"]
-CT_SORT_LABELS = ["Name", "Storage", "Node", "Size"]
+TYPE_COLORS = {
+    TemplateType.VM: "cyan",
+    TemplateType.CONTAINER: "magenta",
+    TemplateType.ISO: "yellow",
+}
 
-ISO_SORT_FIELDS = ["name", "storage", "node", "size"]
-ISO_SORT_LABELS = ["Name", "Storage", "Node", "Size"]
-
-# Group definitions per tab
-VM_GROUP_MODES = ["none", "node"]
-VM_GROUP_LABELS = ["No Grouping", "By Node"]
-
-CT_GROUP_MODES = ["none", "node", "storage"]
-CT_GROUP_LABELS = ["No Grouping", "By Node", "By Storage"]
-
-ISO_GROUP_MODES = ["none", "node", "storage"]
-ISO_GROUP_LABELS = ["No Grouping", "By Node", "By Storage"]
+TEMPLATE_HINTS = {
+    TemplateType.VM: "QEMU virtual machine marked as a template for cloning.",
+    TemplateType.CONTAINER: "LXC container template downloaded via pveam.",
+    TemplateType.ISO: "ISO image stored on the cluster for VM installation.",
+}
 
 
-def _field_index(fields: list[str], name: str, default: int = 0) -> int:
-    try:
-        return fields.index(name)
-    except ValueError:
-        return default
+@dataclass
+class TemplateNodeData:
+    """Data attached to each node in the template tree."""
+    kind: Literal["category", "template", "placeholder"]
+    record: Template | None = None
+    category: str = ""  # "vm", "ct", "iso"
 
 
 def _sort_templates(templates: list[Template], field: str, reverse: bool) -> list[Template]:
     """Sort templates by the given field."""
     def key_fn(t: Template):
-        if field == "vmid":
-            return t.vmid or 0
-        elif field == "name":
+        if field == "name":
             return t.name.lower()
         elif field == "node":
             return t.node.lower()
@@ -57,22 +57,62 @@ def _sort_templates(templates: list[Template], field: str, reverse: bool) -> lis
     return sorted(templates, key=key_fn, reverse=reverse)
 
 
-def _group_key(t: Template, mode: str) -> str:
-    if mode == "node":
-        return t.node or "(unknown)"
-    elif mode == "storage":
-        return t.storage or "(unknown)"
-    return ""
+def _make_vm_label(t: Template) -> Text:
+    """Build aligned label for a VM template leaf."""
+    vmid_col = str(t.vmid or "—").ljust(8)
+    name_col = t.name.ljust(28)
+    node_col = t.node.ljust(14)
+    size_col = t.size_display
+    label = Text()
+    label.append(vmid_col, style="bold")
+    label.append(name_col, style="bold bright_white")
+    label.append(node_col, style="cyan")
+    label.append(size_col, style="green" if t.size > 0 else "dim")
+    return label
+
+
+def _make_ct_label(t: Template) -> Text:
+    """Build aligned label for a container template leaf."""
+    name_col = t.name.ljust(36)
+    storage_col = t.storage.ljust(14)
+    node_col = t.node.ljust(14)
+    size_col = t.size_display
+    label = Text()
+    label.append(name_col, style="bold bright_magenta")
+    label.append(storage_col, style="yellow")
+    label.append(node_col, style="cyan")
+    label.append(size_col, style="green" if t.size > 0 else "dim")
+    return label
+
+
+def _make_iso_label(t: Template) -> Text:
+    """Build aligned label for an ISO image leaf."""
+    name = t.name
+    if name.endswith(".iso"):
+        name_style = "bold bright_yellow"
+    elif name.endswith(".img"):
+        name_style = "bold bright_blue"
+    else:
+        name_style = "bold"
+    name_col = name.ljust(36)
+    storage_col = t.storage.ljust(14)
+    node_col = t.node.ljust(14)
+    size_col = t.size_display
+    label = Text()
+    label.append(name_col, style=name_style)
+    label.append(storage_col, style="yellow")
+    label.append(node_col, style="cyan")
+    label.append(size_col, style="green" if t.size > 0 else "dim")
+    return label
 
 
 class TemplateListScreen(Screen):
-    """Screen for browsing templates."""
+    """Screen for browsing templates in a tree layout."""
 
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("backspace", "go_back", "Back", show=False),
         Binding("s", "cycle_sort", "Sort", show=True),
-        Binding("g", "cycle_group", "Group", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
 
@@ -82,102 +122,58 @@ class TemplateListScreen(Screen):
         self._ct_templates: list[Template] = []
         self._iso_images: list[Template] = []
         self._data_loaded = False
-        # Per-tab sort state
-        self._sort_indices = {"vm": 0, "ct": 0, "iso": 0}
-        self._sort_reverse = {"vm": False, "ct": False, "iso": False}
-        # Per-tab group state
-        self._group_indices = {"vm": 0, "ct": 0, "iso": 0}
+        self._sort_index: int = 0
+        self._sort_reverse: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="template-container"):
+            yield Static("Templates & Images", classes="section-title")
             yield Static("", id="template-banner", markup=True)
-            with Horizontal(id="vm-controls"):
+            with Horizontal(id="template-controls"):
                 yield Static("", id="template-sort-label")
-                yield Static("", id="template-group-label")
-            with TabbedContent(id="template-tabs"):
-                with TabPane("VM Templates", id="tab-vm"):
-                    yield DataTable(id="vm-template-table")
-                with TabPane("Container Templates", id="tab-ct"):
-                    yield DataTable(id="ct-template-table")
-                with TabPane("ISO Images", id="tab-iso"):
-                    yield DataTable(id="iso-table")
+                yield Static("", id="template-count-label")
+            with Horizontal(id="template-main-content"):
+                yield Tree("Templates", id="template-tree")
+                with Container(id="template-detail-panel"):
+                    yield Static("[bold]Details[/bold]", id="template-detail-title", markup=True)
+                    yield Static(
+                        "[dim]Select a template to view details.[/dim]",
+                        id="template-detail-content",
+                        markup=True,
+                    )
+            yield Static("", id="template-status-bar", markup=True)
         yield Footer()
 
-    def _active_tab(self) -> str:
-        tc = self.query_one("#template-tabs", TabbedContent)
-        active = tc.active
-        if active == "tab-ct":
-            return "ct"
-        elif active == "tab-iso":
-            return "iso"
-        return "vm"
-
     def on_mount(self):
-        vm_table = self.query_one("#vm-template-table", DataTable)
-        vm_table.cursor_type = "row"
-        vm_table.zebra_stripes = True
-        vm_table.add_columns("VMID", "Name", "Node", "Disk")
-
-        ct_table = self.query_one("#ct-template-table", DataTable)
-        ct_table.cursor_type = "row"
-        ct_table.zebra_stripes = True
-        ct_table.add_columns("Name", "Storage", "Node", "Size")
-
-        iso_table = self.query_one("#iso-table", DataTable)
-        iso_table.cursor_type = "row"
-        iso_table.zebra_stripes = True
-        iso_table.add_columns("Name", "Storage", "Node", "Size")
-
-        # Restore saved preferences
-        tl_prefs = self.app.preferences.template_list
-        for tab_key, sort_fields, group_modes in [
-            ("vm", VM_SORT_FIELDS, VM_GROUP_MODES),
-            ("ct", CT_SORT_FIELDS, CT_GROUP_MODES),
-            ("iso", ISO_SORT_FIELDS, ISO_GROUP_MODES),
-        ]:
-            tab_prefs = getattr(tl_prefs, tab_key)
-            self._sort_indices[tab_key] = _field_index(sort_fields, tab_prefs.sort_field)
-            self._sort_reverse[tab_key] = tab_prefs.sort_reverse
-            self._group_indices[tab_key] = _field_index(group_modes, tab_prefs.group_mode)
-
-        self.query_one("#template-banner", Static).update(
-            "  [bold yellow]Loading templates...[/bold yellow]"
-        )
+        prefs = self.app.preferences.template_list
+        # Use VM tab prefs for global sort (simplify from per-tab)
+        sf = prefs.vm.sort_field
+        try:
+            self._sort_index = SORT_FIELDS.index(sf)
+        except ValueError:
+            self._sort_index = 0
+        self._sort_reverse = prefs.vm.sort_reverse
         self._update_controls()
+        self.query_one("#template-banner", Static).update(
+            "[bold yellow]Loading templates...[/bold yellow]"
+        )
         self.load_templates()
 
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        self._update_controls()
-
     def _update_controls(self):
-        tab = self._active_tab()
-        if tab == "vm":
-            sort_labels = VM_SORT_LABELS
-            group_labels = VM_GROUP_LABELS
-        elif tab == "ct":
-            sort_labels = CT_SORT_LABELS
-            group_labels = CT_GROUP_LABELS
-        else:
-            sort_labels = ISO_SORT_LABELS
-            group_labels = ISO_GROUP_LABELS
-
-        s_idx = self._sort_indices[tab]
-        s_rev = self._sort_reverse[tab]
-        arrow = "▼" if s_rev else "▲"
-        g_idx = self._group_indices[tab]
-
+        arrow = "▼" if self._sort_reverse else "▲"
         self.query_one("#template-sort-label", Static).update(
-            f"[bold]Sort:[/bold] [cyan]{sort_labels[s_idx]}[/cyan] {arrow}"
+            f"[bold]Sort:[/bold] [cyan]{SORT_LABELS[self._sort_index]}[/cyan] {arrow}"
         )
-        self.query_one("#template-group-label", Static).update(
-            f"[bold]Group:[/bold] [magenta]{group_labels[g_idx]}[/magenta]"
+        total = len(self._vm_templates) + len(self._ct_templates) + len(self._iso_images)
+        self.query_one("#template-count-label", Static).update(
+            f"[dim]{total} items[/dim]"
         )
 
     @work(thread=True)
     def load_templates(self):
         try:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fut_vm = pool.submit(self.app.proxmox.get_vm_templates)
@@ -194,14 +190,63 @@ class TemplateListScreen(Screen):
             self._iso_images = iso_images
             self._data_loaded = True
 
-            self.app.call_from_thread(self._populate_all_tables)
+            self.app.call_from_thread(self._build_tree)
         except Exception as e:
             self.app.call_from_thread(self._show_error, str(e))
 
-    def _populate_all_tables(self):
-        self._populate_vm_table()
-        self._populate_ct_table()
-        self._populate_iso_table()
+    def _build_tree(self):
+        """Build the template tree with category parent nodes."""
+        tree = self.query_one("#template-tree", Tree)
+
+        # Remember expansion state
+        expanded: set[str] = set()
+        for node in tree.root.children:
+            if node.data and node.data.kind == "category" and node.is_expanded:
+                expanded.add(node.data.category)
+
+        tree.clear()
+
+        field = SORT_FIELDS[self._sort_index]
+        reverse = self._sort_reverse
+
+        categories = [
+            ("vm", f"VM Templates  [{len(self._vm_templates)}]",
+             _sort_templates(self._vm_templates, field, reverse), _make_vm_label),
+            ("ct", f"CT Templates  [{len(self._ct_templates)}]",
+             _sort_templates(self._ct_templates, field, reverse), _make_ct_label),
+            ("iso", f"ISO Images  [{len(self._iso_images)}]",
+             _sort_templates(self._iso_images, field, reverse), _make_iso_label),
+        ]
+
+        first = True
+        for cat_key, cat_label, templates, label_fn in categories:
+            if not first:
+                tree.root.add_leaf(Text(""), data=TemplateNodeData(kind="placeholder"))
+            first = False
+
+            cat_data = TemplateNodeData(kind="category", category=cat_key)
+            color = TYPE_COLORS.get(
+                {"vm": TemplateType.VM, "ct": TemplateType.CONTAINER, "iso": TemplateType.ISO}[cat_key],
+                "white",
+            )
+            cat_text = Text()
+            cat_text.append(cat_label, style=f"bold {color}")
+            cat_node = tree.root.add(cat_text, data=cat_data)
+
+            if templates:
+                for t in templates:
+                    tpl_data = TemplateNodeData(kind="template", record=t, category=cat_key)
+                    cat_node.add_leaf(label_fn(t), data=tpl_data)
+            else:
+                cat_node.add_leaf(
+                    Text("(none)", style="dim italic"),
+                    data=TemplateNodeData(kind="placeholder"),
+                )
+
+            # Re-expand or auto-expand on first load
+            if cat_key in expanded or not expanded:
+                cat_node.expand()
+
         self._update_banner()
         self._update_controls()
 
@@ -209,135 +254,118 @@ class TemplateListScreen(Screen):
         vm_count = len(self._vm_templates)
         ct_count = len(self._ct_templates)
         iso_count = len(self._iso_images)
-
         self.query_one("#template-banner", Static).update(
-            f"  [bold]Templates & Images[/bold]  [dim]|[/dim]  "
             f"[bold cyan]{vm_count}[/bold cyan] VM templates  [dim]|[/dim]  "
             f"[bold magenta]{ct_count}[/bold magenta] CT templates  [dim]|[/dim]  "
             f"[bold yellow]{iso_count}[/bold yellow] ISOs"
         )
 
-    # ------------------------------------------------------------------
-    # Table population helpers
-    # ------------------------------------------------------------------
-
-    def _add_group_header(self, table: DataTable, label: str, count: int, ncols: int):
-        header = Text(f" {label} ({count}) ", style="bold bright_white on dark_blue")
-        empties = [Text("")] * (ncols - 1)
-        table.add_row(header, *empties, key=f"group_{label}_{id(table)}")
-
-    def _populate_vm_table(self):
-        table = self.query_one("#vm-template-table", DataTable)
-        table.clear()
-        field = VM_SORT_FIELDS[self._sort_indices["vm"]]
-        reverse = self._sort_reverse["vm"]
-        group_mode = VM_GROUP_MODES[self._group_indices["vm"]]
-        templates = _sort_templates(self._vm_templates, field, reverse)
-
-        if not templates:
-            table.add_row("—", "No VM templates found", "", "", key="empty_vm")
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        node = event.node
+        if node.data is None or not hasattr(node.data, "kind"):
+            self._clear_detail_panel()
             return
 
-        if group_mode != "none":
-            grouped: dict[str, list[Template]] = {}
-            for t in templates:
-                k = _group_key(t, group_mode)
-                grouped.setdefault(k, []).append(t)
-            for gname, group in sorted(grouped.items()):
-                self._add_group_header(table, gname, len(group), 4)
-                for t in group:
-                    self._add_vm_row(table, t)
+        if node.data.kind == "category":
+            self._show_category_detail(node.data.category)
+        elif node.data.kind == "template" and node.data.record:
+            self._show_template_detail(node.data.record)
         else:
-            for t in templates:
-                self._add_vm_row(table, t)
+            self._clear_detail_panel()
 
-    def _add_vm_row(self, table: DataTable, t: Template):
-        table.add_row(
-            Text(str(t.vmid or "—"), style="bold"),
-            Text(t.name, style="bold bright_white"),
-            Text(t.node, style="cyan"),
-            Text(t.size_display, style="green" if t.size > 0 else "dim"),
-            key=f"vmt_{t.vmid}_{t.node}",
-        )
+    def _show_category_detail(self, category: str) -> None:
+        detail = self.query_one("#template-detail-content", Static)
+        title = self.query_one("#template-detail-title", Static)
 
-    def _populate_ct_table(self):
-        table = self.query_one("#ct-template-table", DataTable)
-        table.clear()
-        field = CT_SORT_FIELDS[self._sort_indices["ct"]]
-        reverse = self._sort_reverse["ct"]
-        group_mode = CT_GROUP_MODES[self._group_indices["ct"]]
-        templates = _sort_templates(self._ct_templates, field, reverse)
-
-        if not templates:
-            table.add_row("No downloaded container templates", "", "", "", key="empty_ct")
-            return
-
-        if group_mode != "none":
-            grouped: dict[str, list[Template]] = {}
-            for t in templates:
-                k = _group_key(t, group_mode)
-                grouped.setdefault(k, []).append(t)
-            for gname, group in sorted(grouped.items()):
-                self._add_group_header(table, gname, len(group), 4)
-                for i, t in enumerate(group):
-                    self._add_ct_row(table, t, i)
+        if category == "vm":
+            title.update("[bold]VM Templates[/bold]")
+            templates = self._vm_templates
+            ttype = TemplateType.VM
+        elif category == "ct":
+            title.update("[bold]CT Templates[/bold]")
+            templates = self._ct_templates
+            ttype = TemplateType.CONTAINER
         else:
-            for i, t in enumerate(templates):
-                self._add_ct_row(table, t, i)
+            title.update("[bold]ISO Images[/bold]")
+            templates = self._iso_images
+            ttype = TemplateType.ISO
 
-    def _add_ct_row(self, table: DataTable, t: Template, idx: int):
-        table.add_row(
-            Text(t.name, style="bold bright_magenta"),
-            Text(t.storage, style="yellow"),
-            Text(t.node, style="cyan"),
-            Text(t.size_display, style="green" if t.size > 0 else "dim"),
-            key=f"ct_{idx}_{t.node}_{t.storage}",
-        )
+        nodes = sorted(set(t.node for t in templates))
+        storages = sorted(set(t.storage for t in templates if t.storage))
 
-    def _populate_iso_table(self):
-        table = self.query_one("#iso-table", DataTable)
-        table.clear()
-        field = ISO_SORT_FIELDS[self._sort_indices["iso"]]
-        reverse = self._sort_reverse["iso"]
-        group_mode = ISO_GROUP_MODES[self._group_indices["iso"]]
-        templates = _sort_templates(self._iso_images, field, reverse)
+        lines = [
+            f"[bold]Count:[/bold]     [cyan]{len(templates)}[/cyan]",
+        ]
+        if nodes:
+            lines.append(f"[bold]Nodes:[/bold]     {', '.join(nodes)}")
+        if storages:
+            lines.append(f"[bold]Storage:[/bold]   {', '.join(storages)}")
 
-        if not templates:
-            table.add_row("No ISO images found", "", "", "", key="empty_iso")
-            return
+        hint = TEMPLATE_HINTS.get(ttype, "")
+        if hint:
+            lines.append("")
+            lines.append(f"[dim italic]{hint}[/dim italic]")
 
-        if group_mode != "none":
-            grouped: dict[str, list[Template]] = {}
-            for t in templates:
-                k = _group_key(t, group_mode)
-                grouped.setdefault(k, []).append(t)
-            for gname, group in sorted(grouped.items()):
-                self._add_group_header(table, gname, len(group), 4)
-                for i, t in enumerate(group):
-                    self._add_iso_row(table, t, i)
-        else:
-            for i, t in enumerate(templates):
-                self._add_iso_row(table, t, i)
+        detail.update("\n".join(lines))
 
-    def _add_iso_row(self, table: DataTable, t: Template, idx: int):
-        name = t.name
-        if name.endswith(".iso"):
-            name_style = "bold bright_yellow"
-        elif name.endswith(".img"):
-            name_style = "bold bright_blue"
-        else:
-            name_style = "bold"
-        table.add_row(
-            Text(name, style=name_style),
-            Text(t.storage, style="yellow"),
-            Text(t.node, style="cyan"),
-            Text(t.size_display, style="green" if t.size > 0 else "dim"),
-            key=f"iso_{idx}_{t.node}_{t.storage}",
+    def _show_template_detail(self, t: Template) -> None:
+        detail = self.query_one("#template-detail-content", Static)
+        title = self.query_one("#template-detail-title", Static)
+
+        color = TYPE_COLORS.get(t.template_type, "white")
+        title.update(f"[bold]{t.type_label}[/bold]")
+
+        lines = []
+
+        if t.template_type == TemplateType.VM:
+            if t.vmid:
+                lines.append(f"[bold]VMID:[/bold]        {t.vmid}")
+            lines.append(f"[bold]Name:[/bold]        {t.name}")
+            lines.append(f"[bold]Node:[/bold]        [{color}]{t.node}[/{color}]")
+            lines.append(f"[bold]Disk Size:[/bold]   {t.size_display}")
+            if t.description and t.description != t.name:
+                lines.append(f"[bold]Description:[/bold] {t.description}")
+
+        elif t.template_type == TemplateType.CONTAINER:
+            lines.append(f"[bold]Name:[/bold]        {t.name}")
+            if t.volid:
+                lines.append(f"[bold]Volume ID:[/bold]  {t.volid}")
+            lines.append(f"[bold]Storage:[/bold]     [{color}]{t.storage}[/{color}]")
+            lines.append(f"[bold]Node:[/bold]        {t.node}")
+            lines.append(f"[bold]Size:[/bold]        {t.size_display}")
+            if t.package:
+                lines.append(f"[bold]Package:[/bold]     {t.package}")
+            if t.os:
+                lines.append(f"[bold]OS:[/bold]          {t.os}")
+            if t.version:
+                lines.append(f"[bold]Version:[/bold]     {t.version}")
+            if t.headline:
+                lines.append(f"[bold]Summary:[/bold]     {t.headline}")
+
+        elif t.template_type == TemplateType.ISO:
+            lines.append(f"[bold]Name:[/bold]        {t.name}")
+            if t.volid:
+                lines.append(f"[bold]Volume ID:[/bold]  {t.volid}")
+            lines.append(f"[bold]Storage:[/bold]     [{color}]{t.storage}[/{color}]")
+            lines.append(f"[bold]Node:[/bold]        {t.node}")
+            lines.append(f"[bold]Size:[/bold]        {t.size_display}")
+
+        hint = TEMPLATE_HINTS.get(t.template_type, "")
+        if hint:
+            lines.append("")
+            lines.append(f"[dim italic]{hint}[/dim italic]")
+
+        detail.update("\n".join(lines))
+
+    def _clear_detail_panel(self) -> None:
+        self.query_one("#template-detail-title", Static).update("[bold]Details[/bold]")
+        self.query_one("#template-detail-content", Static).update(
+            "[dim]Select a template to view details.[/dim]"
         )
 
     def _show_error(self, error: str):
         self.query_one("#template-banner", Static).update(
-            f"  [bold red]Error loading templates: {error}[/bold red]"
+            f"[bold red]Error loading templates: {error}[/bold red]"
         )
 
     # ------------------------------------------------------------------
@@ -345,97 +373,28 @@ class TemplateListScreen(Screen):
     # ------------------------------------------------------------------
 
     def _save_preferences(self) -> None:
-        tl_prefs = self.app.preferences.template_list
-        for tab_key, sort_fields, group_modes in [
-            ("vm", VM_SORT_FIELDS, VM_GROUP_MODES),
-            ("ct", CT_SORT_FIELDS, CT_GROUP_MODES),
-            ("iso", ISO_SORT_FIELDS, ISO_GROUP_MODES),
-        ]:
-            tab_prefs = getattr(tl_prefs, tab_key)
-            tab_prefs.sort_field = sort_fields[self._sort_indices[tab_key]]
-            tab_prefs.sort_reverse = self._sort_reverse[tab_key]
-            tab_prefs.group_mode = group_modes[self._group_indices[tab_key]]
+        prefs = self.app.preferences.template_list
+        prefs.vm.sort_field = SORT_FIELDS[self._sort_index]
+        prefs.vm.sort_reverse = self._sort_reverse
         self.app.preferences.save()
 
     def action_cycle_sort(self):
-        tab = self._active_tab()
-        if tab == "vm":
-            fields = VM_SORT_FIELDS
-        elif tab == "ct":
-            fields = CT_SORT_FIELDS
-        else:
-            fields = ISO_SORT_FIELDS
-
-        old_idx = self._sort_indices[tab]
-        new_idx = (old_idx + 1) % len(fields)
+        old_idx = self._sort_index
+        new_idx = (old_idx + 1) % len(SORT_FIELDS)
         if new_idx == old_idx:
-            self._sort_reverse[tab] = not self._sort_reverse[tab]
+            self._sort_reverse = not self._sort_reverse
         else:
-            self._sort_reverse[tab] = False
-        self._sort_indices[tab] = new_idx
-        self._repopulate_active()
+            self._sort_reverse = False
+        self._sort_index = new_idx
+        if self._data_loaded:
+            self._build_tree()
         self._save_preferences()
-
-    def action_cycle_group(self):
-        tab = self._active_tab()
-        if tab == "vm":
-            modes = VM_GROUP_MODES
-        elif tab == "ct":
-            modes = CT_GROUP_MODES
-        else:
-            modes = ISO_GROUP_MODES
-
-        self._group_indices[tab] = (self._group_indices[tab] + 1) % len(modes)
-        self._repopulate_active()
-        self._save_preferences()
-
-    def _repopulate_active(self):
-        tab = self._active_tab()
-        if tab == "vm":
-            self._populate_vm_table()
-        elif tab == "ct":
-            self._populate_ct_table()
-        else:
-            self._populate_iso_table()
-        self._update_controls()
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected):
-        row_key = str(event.row_key.value) if event.row_key else ""
-
-        if row_key.startswith("empty_") or row_key.startswith("group_"):
-            return
-
-        template = None
-
-        if row_key.startswith("vmt_"):
-            parts = row_key.split("_", 2)
-            if len(parts) >= 3:
-                vmid = int(parts[1])
-                template = next((t for t in self._vm_templates if t.vmid == vmid), None)
-
-        elif row_key.startswith("ct_"):
-            parts = row_key.split("_", 2)
-            if len(parts) >= 3:
-                idx = int(parts[1])
-                if 0 <= idx < len(self._ct_templates):
-                    template = self._ct_templates[idx]
-
-        elif row_key.startswith("iso_"):
-            parts = row_key.split("_", 2)
-            if len(parts) >= 3:
-                idx = int(parts[1])
-                if 0 <= idx < len(self._iso_images):
-                    template = self._iso_images[idx]
-
-        if template:
-            from infraforge.screens.template_detail import TemplateDetailScreen
-            self.app.push_screen(TemplateDetailScreen(template))
 
     def action_go_back(self):
         self.app.pop_screen()
 
     def action_refresh(self):
         self.query_one("#template-banner", Static).update(
-            "  [bold yellow]Refreshing...[/bold yellow]"
+            "[bold yellow]Refreshing...[/bold yellow]"
         )
         self.load_templates()
