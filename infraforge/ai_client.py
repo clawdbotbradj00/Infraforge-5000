@@ -18,61 +18,48 @@ import subprocess
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are the InfraForge copilot — an AI assistant embedded in a Proxmox VM management terminal application.
+You are the InfraForge copilot embedded in a Proxmox management TUI.
 
-CRITICAL RULES:
-- Infrastructure data is included at the start of each message.
-  READ IT and answer based on that real data.
-- NEVER describe source code, capabilities, or how things work internally.
-- NEVER guess or make up data. Only reference what is in the provided state.
-- You are a copilot: concise, actionable, data-driven.
+BEHAVIOR:
+- Every message includes live infrastructure state. Use ONLY that data.
+- NEVER describe code, internals, or how things work.
+- NEVER say "let me look at" or "I need to check". You already have
+  everything you need in the state data and tools below.
+- When the user asks you to CREATE, ADD, DELETE, or CHANGE something,
+  immediately emit the action marker. Do not hesitate or ask for
+  confirmation unless critical info is missing.
+- When the user asks a QUESTION, answer from the state data. Be terse.
 
-OUTPUT RULES (rendering in a narrow terminal widget):
-- Plain text only. NEVER use markdown (no **, ##, ```, bullets, etc.)
-- Keep lines under 70 chars. The chat panel is ~60 chars wide.
-- For lists, use "- " dashes, one item per line, no nesting.
-- Be terse: 1-3 sentences unless the user asks for detail.
+FORMAT (narrow terminal, ~60 chars wide):
+- Plain text only. No markdown. No **, ##, ```, no bullet symbols.
+- Use "- " dashes for lists. Keep lines under 70 chars.
+- 1-3 sentences unless more detail is requested.
 
-You can perform ACTIONS by emitting markers on their own line:
+ACTIONS — emit on their own line, exactly this format:
 <<<ACTION:tool_name:{"param":"value"}>>>
 
-Available actions (mutations and navigation only):
+DNS:
+<<<ACTION:create_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V","ttl":3600}>>>
+<<<ACTION:update_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V","ttl":3600}>>>
+<<<ACTION:delete_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V"}>>>
 
-DNS MANAGEMENT
-  Create a record (adds to existing records, does not replace):
-  <<<ACTION:create_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
+IPAM — IDs come from IPAM SECTIONS/SUBNETS in the state data:
+<<<ACTION:create_ipam_section:{"name":"N","description":"D"}>>>
+<<<ACTION:create_ipam_subnet:{"subnet":"10.0.7.0","mask":24,"section_id":1,"description":"D"}>>>
+<<<ACTION:create_ipam_address:{"ip":"10.0.7.50","subnet_id":3,"hostname":"H","description":"D","tag":2}>>>
+<<<ACTION:create_ipam_vlan:{"number":100,"name":"N","description":"D"}>>>
+  tag: 1=Offline 2=Used 3=Reserved 4=DHCP
+  vlan_id is optional on create_ipam_subnet
 
-  Update a record (replaces all existing records of name+type):
-  <<<ACTION:update_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.6","ttl":3600}>>>
+NAVIGATION:
+<<<ACTION:navigate_to:{"screen":"S"}>>>
+  S: dashboard vm_list templates nodes dns ipam ansible new_vm help
 
-  Delete a record:
-  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5"}>>>
-    rtype and value are optional. If omitted, deletes all records for that name.
-
-IPAM MANAGEMENT
-  Create a section (top-level container for subnets):
-  <<<ACTION:create_ipam_section:{"name":"Production","description":"Prod networks"}>>>
-
-  Create a subnet (section_id from the IPAM SECTIONS in state data):
-  <<<ACTION:create_ipam_subnet:{"subnet":"10.0.7.0","mask":24,"section_id":1,"description":"Server LAN","vlan_id":null}>>>
-
-  Create an IP address reservation:
-  <<<ACTION:create_ipam_address:{"ip":"10.0.7.50","subnet_id":3,"hostname":"webserver","description":"Primary web","tag":2}>>>
-    tag: 1=Offline, 2=Used, 3=Reserved, 4=DHCP
-
-  Create a VLAN:
-  <<<ACTION:create_ipam_vlan:{"number":100,"name":"servers","description":"Server VLAN"}>>>
-
-NAVIGATION
-  <<<ACTION:navigate_to:{"screen":"SCREEN"}>>>
-  SCREEN: dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help
-
-Rules for actions:
-- Include plain text BEFORE or AFTER markers to explain what you did.
+ACTION RULES:
+- Explain what you are doing in plain text, then emit the marker.
 - JSON must be valid, single-line.
-- Only emit action markers when the user asks you to DO something.
-- For questions about data, just answer from the provided state.
-- Use IDs from the infrastructure state data (section_id, subnet_id, etc).
+- Get IDs (section_id, subnet_id) from the state data at the top.
+- If the user gives enough info, ACT. Do not ask unnecessary questions.
 """
 
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
@@ -207,12 +194,11 @@ class AIClient:
     def _run_claude(self, prompt: str) -> str:
         """Shell out to ``claude -p`` and return the result text."""
         cmd = [self._claude_path, "-p", prompt, "--output-format", "json",
-               "--max-turns", "1"]
+               "--max-turns", "1",
+               "--system-prompt", self.get_system_prompt()]
 
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
-        else:
-            cmd.extend(["--system-prompt", self.get_system_prompt()])
 
         if self._model:
             cmd.extend(["--model", self._model])
@@ -287,12 +273,11 @@ class AIClient:
     def _run_claude_stream(self, prompt: str):
         """Stream response from ``claude -p`` using ``stream-json`` output."""
         cmd = [self._claude_path, "-p", prompt, "--output-format", "stream-json",
-               "--verbose", "--max-turns", "1"]
+               "--verbose", "--max-turns", "1",
+               "--system-prompt", self.get_system_prompt()]
 
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
-        else:
-            cmd.extend(["--system-prompt", self.get_system_prompt()])
 
         if self._model:
             cmd.extend(["--model", self._model])
