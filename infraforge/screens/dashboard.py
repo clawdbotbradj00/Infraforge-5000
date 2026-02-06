@@ -60,6 +60,16 @@ class DashboardScreen(Screen):
     def on_mount(self):
         self.load_data()
         self._check_for_update()
+        self.set_interval(30, self._auto_refresh)
+
+    def on_screen_resume(self):
+        """Refresh data when returning to the dashboard from another screen."""
+        self.load_data()
+
+    def _auto_refresh(self):
+        """Periodic refresh — only fires when dashboard is the active screen."""
+        if self.is_current:
+            self.load_data()
 
     @work(thread=True)
     def load_data(self):
