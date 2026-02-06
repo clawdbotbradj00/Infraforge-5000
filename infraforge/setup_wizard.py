@@ -154,44 +154,45 @@ def _configure_ai(console: Console, prev: dict | None = None) -> dict:
     console.print("\n  [dim]Fetching available models from Anthropic...[/dim]")
     models = _fetch_anthropic_models(api_key)
 
-    if models:
+    if not models:
+        # Fallback: known models (OAT tokens can't list models)
+        models = [
+            {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6"},
+            {"id": "claude-sonnet-4-5-20250929", "display_name": "Claude Sonnet 4.5"},
+            {"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5"},
+        ]
+        console.print(f"  [dim]Using known model list[/dim]\n")
+    else:
         console.print(f"  [green]✓[/green] Found {len(models)} models\n")
 
-        # Show numbered list
-        prev_model = prev.get("model", "")
-        default_idx = 1
-        for i, m in enumerate(models, 1):
-            marker = ""
-            if m["id"] == prev_model:
-                marker = " [bold yellow](current)[/bold yellow]"
-                default_idx = i
-            tier_color = "bold magenta" if "opus" in m["id"].lower() else \
-                         "cyan" if "sonnet" in m["id"].lower() else \
-                         "green" if "haiku" in m["id"].lower() else "dim"
-            console.print(f"  [{tier_color}]{i:>3})[/{tier_color}]  {m['display_name']}  [dim]({m['id']})[/dim]{marker}")
+    # Show numbered list
+    prev_model = prev.get("model", "")
+    default_idx = 1
+    for i, m in enumerate(models, 1):
+        marker = ""
+        if m["id"] == prev_model:
+            marker = " [bold yellow](current)[/bold yellow]"
+            default_idx = i
+        tier_color = "bold magenta" if "opus" in m["id"].lower() else \
+                     "cyan" if "sonnet" in m["id"].lower() else \
+                     "green" if "haiku" in m["id"].lower() else "dim"
+        console.print(f"  [{tier_color}]{i:>3})[/{tier_color}]  {m['display_name']}  [dim]({m['id']})[/dim]{marker}")
 
-        console.print()
-        choice = Prompt.ask(
-            "  Select model number",
-            default=str(default_idx),
-        )
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(models):
-                model = models[idx]["id"]
-            else:
-                console.print("  [yellow]Invalid selection, using default.[/yellow]")
-                model = models[0]["id"]
-        except ValueError:
-            console.print("  [yellow]Invalid input, using default.[/yellow]")
+    console.print()
+    choice = Prompt.ask(
+        "  Select model number",
+        default=str(default_idx),
+    )
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(models):
+            model = models[idx]["id"]
+        else:
+            console.print("  [yellow]Invalid selection, using default.[/yellow]")
             model = models[0]["id"]
-    else:
-        console.print("  [yellow]Could not fetch models (check your API key / network).[/yellow]")
-        console.print("  [dim]Falling back to manual entry.[/dim]\n")
-        model = Prompt.ask(
-            "  Model ID",
-            default=prev.get("model", "claude-sonnet-4-5-20250929"),
-        )
+    except ValueError:
+        console.print("  [yellow]Invalid input, using default.[/yellow]")
+        model = models[0]["id"]
 
     console.print(f"\n  [green]✓[/green] AI configured: [bold]{provider}[/bold] / [bold]{model}[/bold]")
     return {
