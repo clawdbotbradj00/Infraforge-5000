@@ -1,73 +1,16 @@
 """Multi-zone DNS management screen for InfraForge.
 
-Supports full CRUD operations on DNS records across multiple zones,
-with zone switching, sort/filter, and modal input screens for
-adding/editing records and zones.
-
-CSS additions needed in styles/app.tcss:
-------------------------------------------------------------------------
-#dns-zone-bar {
-    layout: horizontal;
-    height: 3;
-    margin: 0 0 0 0;
-    border: round $primary-background;
-    padding: 0 1;
-}
-
-.dns-zone-btn {
-    width: auto;
-    padding: 1 2;
-    color: $text-muted;
-    text-style: italic;
-}
-
-.dns-zone-btn.-active {
-    color: $accent;
-    text-style: bold;
-    background: $primary-background;
-}
-
-#dns-status-bar {
-    height: 1;
-    margin: 1 0 0 0;
-    background: $primary-background;
-    color: $text-muted;
-    padding: 0 1;
-}
-
-/* Modal input screens */
-.modal-container {
-    align: center middle;
-}
-
-.modal-box {
-    width: 60;
-    height: auto;
-    border: round $accent;
-    background: $surface;
-    padding: 1 2;
-}
-
-.modal-title {
-    text-style: bold;
-    color: $accent;
-    text-align: center;
-    width: 100%;
-    margin: 0 0 1 0;
-}
-
-.modal-buttons {
-    layout: horizontal;
-    height: 3;
-    margin: 1 0 0 0;
-    content-align: center middle;
-}
-------------------------------------------------------------------------
+Provides a hierarchical Tree view of DNS zones and records with a detail
+panel.  Zones are expandable nodes that lazy-load their records (via AXFR)
+on first expand.  Sorting and filtering apply to records within expanded
+zones.  Full CRUD for records (add/edit/delete) and zone management
+(add/remove) are available.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -76,12 +19,13 @@ from textual.widgets import (
     Header,
     Footer,
     Static,
-    DataTable,
     Input,
     Button,
     Select,
     Label,
+    Tree,
 )
+from textual.widgets._tree import TreeNode
 from textual.containers import Container, Horizontal, Vertical
 from textual import work, on
 
@@ -121,6 +65,20 @@ RECORD_TYPES_FOR_INPUT = [
     ("SRV", "SRV"),
     ("NS", "NS"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Tree data model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DNSNodeData:
+    """Data attached to each node in the DNS tree."""
+    kind: Literal["zone", "record", "placeholder"]
+    record: object = None       # DNSRecord for record nodes, None for zones
+    zone_name: str = ""
+    soa: dict = field(default_factory=dict)
+    records_loaded: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +135,7 @@ class ZoneInputScreen(ModalScreen[Optional[str]]):
 # ---------------------------------------------------------------------------
 
 class RecordInputScreen(ModalScreen[Optional[dict]]):
-    """Modal screen for adding or editing a DNS record.
-
-    On dismiss, returns a dict with keys: name, rtype, value, ttl
-    or None if cancelled.
-    """
+    """Modal screen for adding or editing a DNS record."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=True),
@@ -358,13 +312,17 @@ class DNSScreen(Screen):
         super().__init__()
         self._zones: list[str] = []
         self._active_zone_index: int = 0
-        self._records: list = []  # list[DNSRecord]
-        self._soa: dict = {}
-        self._sort_index: int = 0
-        self._sort_reverse: bool = False
-        self._filter_index: int = 0
         self._dns_healthy: bool = False
         self._loading: bool = False
+
+        # Per-zone caches
+        self._records_cache: dict[str, list] = {}
+        self._soa_cache: dict[str, dict] = {}
+
+        # Sort / filter state for records
+        self._record_sort_index: int = 0
+        self._record_sort_reverse: bool = False
+        self._record_filter_index: int = 0
 
     # ------------------------------------------------------------------
     # Compose
@@ -389,24 +347,34 @@ class DNSScreen(Screen):
                 yield Static("Sort: Name", id="dns-sort-label")
                 yield Static("", id="dns-count-label")
 
-            # Records table
-            yield DataTable(id="dns-table", cursor_type="row")
+            # Tree + detail panel
+            with Horizontal(id="dns-main-content"):
+                yield Tree("DNS", id="dns-tree")
+                with Container(id="dns-detail-panel"):
+                    yield Static(
+                        "[bold]Details[/bold]",
+                        id="dns-detail-title", markup=True,
+                    )
+                    yield Static(
+                        "[dim]Select an item to view details.[/dim]",
+                        id="dns-detail-content", markup=True,
+                    )
 
             # Status bar
             yield Static("", id="dns-status-bar", markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#dns-table", DataTable)
-        table.add_columns("Name", "Type", "Value", "TTL")
-        table.zebra_stripes = True
+        tree = self.query_one("#dns-tree", Tree)
+        tree.show_root = False
+        tree.guide_depth = 3
 
-        # Initialise zone list from config
         self._init_zones()
         self._render_zone_bar()
 
         if self._zones:
-            self.load_zone_data()
+            self._build_zone_tree()
+            self._expand_active_zone()
         else:
             dns_cfg = self.app.config.dns
             if dns_cfg.provider == "bind9" and dns_cfg.server:
@@ -419,10 +387,6 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def _init_zones(self) -> None:
-        """Populate the zone list from config.
-
-        Uses ``self.app.config.dns.zones`` (list).
-        """
         dns_cfg = self.app.config.dns
         zones: list[str] = getattr(dns_cfg, "zones", None) or []
         self._zones = list(zones)
@@ -430,7 +394,6 @@ class DNSScreen(Screen):
             self._active_zone_index = 0
 
     def _persist_zones(self) -> None:
-        """Write the current zone list back to config."""
         dns_cfg = self.app.config.dns
         dns_cfg.zones = list(self._zones)
 
@@ -441,7 +404,6 @@ class DNSScreen(Screen):
         return self._zones[self._active_zone_index]
 
     def _render_zone_bar(self) -> None:
-        """Rebuild the zone selector bar widgets."""
         bar = self.query_one("#dns-zone-bar", Horizontal)
         bar.remove_children()
 
@@ -466,27 +428,87 @@ class DNSScreen(Screen):
             bar.mount(btn)
 
     # ------------------------------------------------------------------
-    # Data loading
+    # Tree: build from zone list
     # ------------------------------------------------------------------
 
+    def _build_zone_tree(self) -> None:
+        """Build the zone tree. Each zone is an expandable node."""
+        tree = self.query_one("#dns-tree", Tree)
+
+        # Preserve expansion state
+        expanded_zones: set[str] = set()
+        for node in self._iter_zone_nodes(tree.root):
+            if node.data and node.data.kind == "zone" and node.is_expanded:
+                expanded_zones.add(node.data.zone_name)
+
+        tree.clear()
+
+        for zone_name in self._zones:
+            soa = self._soa_cache.get(zone_name, {})
+            record_count = len(self._records_cache.get(zone_name, []))
+            label = _make_zone_label(zone_name, soa, record_count)
+
+            node_data = DNSNodeData(
+                kind="zone",
+                zone_name=zone_name,
+                soa=soa,
+                records_loaded=zone_name in self._records_cache,
+            )
+            zone_node = tree.root.add(label, data=node_data)
+
+            if zone_name in self._records_cache:
+                self._populate_record_nodes(zone_node, self._records_cache[zone_name])
+            else:
+                zone_node.add_leaf(
+                    Text("Loading records...", style="dim"),
+                    data=DNSNodeData(kind="placeholder", zone_name=zone_name),
+                )
+
+            if zone_name in expanded_zones:
+                zone_node.expand()
+
+        self._update_controls()
+
+    def _iter_zone_nodes(self, root: TreeNode) -> list[TreeNode]:
+        """Collect all zone-type nodes in the tree."""
+        result = []
+        for child in root.children:
+            if child.data and hasattr(child.data, 'kind') and child.data.kind == "zone":
+                result.append(child)
+        return result
+
+    def _expand_active_zone(self) -> None:
+        """Expand the currently active zone in the tree."""
+        if not self._zones:
+            return
+        zone_name = self._active_zone
+        tree = self.query_one("#dns-tree", Tree)
+        for node in self._iter_zone_nodes(tree.root):
+            if node.data and node.data.zone_name == zone_name:
+                node.expand()
+                tree.select_node(node)
+                break
+
+    # ------------------------------------------------------------------
+    # Tree: lazy-load records on expand
+    # ------------------------------------------------------------------
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        node = event.node
+        if node.data is None or not hasattr(node.data, 'kind'):
+            return
+        if node.data.kind != "zone":
+            return
+        if node.data.records_loaded:
+            return
+        self._lazy_load_records(node)
+
     @work(thread=True)
-    def load_zone_data(self) -> None:
-        """Load DNS zone info and records for the active zone."""
-        self._loading = True
-        dns_cfg = self.app.config.dns
-        zone = self._active_zone
-
-        if not zone:
-            self.app.call_from_thread(self._show_not_configured)
-            self._loading = False
-            return
-
-        if dns_cfg.provider != "bind9" or not dns_cfg.server:
-            self.app.call_from_thread(self._show_not_configured)
-            self._loading = False
-            return
-
-        self.app.call_from_thread(self._set_status, "Connecting to DNS server...")
+    def _lazy_load_records(self, node: TreeNode) -> None:
+        zone_name = node.data.zone_name
+        self.app.call_from_thread(
+            self._set_status, f"Loading records for {zone_name}...",
+        )
 
         try:
             from infraforge.dns_client import DNSClient, DNSError
@@ -494,132 +516,205 @@ class DNSScreen(Screen):
             client = DNSClient.from_config(self.app.config)
 
             # Health check
-            healthy = client.check_health(zone)
+            healthy = client.check_health(zone_name)
             self._dns_healthy = healthy
 
             if not healthy:
                 self.app.call_from_thread(
-                    self._show_error,
-                    f"Cannot reach DNS server at {dns_cfg.server}:{dns_cfg.port}",
+                    self._set_status,
+                    f"[red]Cannot reach DNS server for {zone_name}[/red]",
                 )
-                self._loading = False
                 return
 
+            # Fetch SOA
+            try:
+                soa = client.get_zone_soa(zone_name)
+                self._soa_cache[zone_name] = soa
+            except DNSError:
+                pass
+
+            # Fetch records via AXFR
+            records = client.get_zone_records(zone_name)
+            self._records_cache[zone_name] = records
+
+            self.app.call_from_thread(self._populate_record_nodes, node, records)
+            self.app.call_from_thread(self._update_zone_node_label, node)
+            self.app.call_from_thread(self._update_zone_info)
+            self.app.call_from_thread(self._update_controls)
             self.app.call_from_thread(
-                self._set_status, f"Loading zone {zone}...",
+                self._set_status,
+                f"[green]Connected[/green] | Zone: [bold]{zone_name}[/bold] | "
+                f"{len(records)} records loaded",
+            )
+        except Exception as exc:
+            from rich.markup import escape
+            safe = escape(str(exc))
+            self.app.call_from_thread(
+                self._set_status,
+                f"[red]Failed to load records for {zone_name}: {safe}[/red]",
             )
 
-            # SOA
-            try:
-                soa = client.get_zone_soa(zone)
-                self._soa = soa
-            except DNSError:
-                self._soa = {}
+    def _populate_record_nodes(
+        self, parent_node: TreeNode, records: list,
+    ) -> None:
+        """Remove placeholder and add sorted/filtered record leaf nodes."""
+        parent_node.remove_children()
 
-            # Records via AXFR
-            try:
-                records = client.get_zone_records(zone)
-                self._records = records
-            except DNSError as exc:
-                self._records = []
-                self.app.call_from_thread(
-                    self._show_error, f"Zone transfer failed: {exc}",
-                )
-                self._loading = False
-                return
+        sorted_records = self._sort_records(records)
+        filtered_records = self._filter_records(sorted_records)
 
-            self.app.call_from_thread(self._update_display)
+        for rec in filtered_records:
+            label = _make_record_label(rec)
+            data = DNSNodeData(
+                kind="record",
+                record=rec,
+                zone_name=parent_node.data.zone_name,
+            )
+            parent_node.add_leaf(label, data=data)
 
-        except Exception as exc:
-            self.app.call_from_thread(self._show_error, str(exc))
-        finally:
-            self._loading = False
+        if not filtered_records:
+            parent_node.add_leaf(
+                Text("(no records)", style="dim italic"),
+                data=DNSNodeData(kind="placeholder", zone_name=parent_node.data.zone_name),
+            )
+
+        parent_node.data.records_loaded = True
+
+    def _update_zone_node_label(self, node: TreeNode) -> None:
+        """Update a zone node's label to reflect loaded record count."""
+        zone_name = node.data.zone_name
+        soa = self._soa_cache.get(zone_name, {})
+        record_count = len(self._records_cache.get(zone_name, []))
+        node.set_label(_make_zone_label(zone_name, soa, record_count))
+
+    def _refresh_zone_records(self, zone_name: str) -> None:
+        """Re-fetch and re-render records for a specific zone node."""
+        tree = self.query_one("#dns-tree", Tree)
+        for node in self._iter_zone_nodes(tree.root):
+            if node.data and node.data.zone_name == zone_name:
+                node.data.records_loaded = False
+                if node.is_expanded:
+                    self._lazy_load_records(node)
+                break
 
     # ------------------------------------------------------------------
-    # Display update helpers
+    # Tree: detail panel on highlight
     # ------------------------------------------------------------------
 
-    @work(thread=True)
-    def _auto_discover_zones(self) -> None:
-        """Auto-discover zones from the DNS server when none are configured."""
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        node = event.node
+        if node.data is None or not hasattr(node.data, 'kind'):
+            self._clear_detail_panel()
+            return
+
+        if node.data.kind == "zone":
+            self._show_zone_detail(node.data.zone_name)
+        elif node.data.kind == "record":
+            self._show_record_detail(node.data.record)
+        else:
+            self._clear_detail_panel()
+
+        self._update_controls()
+
+    def _show_zone_detail(self, zone_name: str) -> None:
+        detail = self.query_one("#dns-detail-content", Static)
+        title = self.query_one("#dns-detail-title", Static)
+        title.update("[bold]Zone Details[/bold]")
+
         dns_cfg = self.app.config.dns
+        soa = self._soa_cache.get(zone_name, {})
+        records = self._records_cache.get(zone_name, [])
+        record_count = len(records)
 
-        self.app.call_from_thread(
-            self._set_status,
-            f"Discovering zones from {dns_cfg.server}..."
-        )
-        zone_info = self.query_one("#dns-zone-info", Static)
-        self.app.call_from_thread(
-            zone_info.update,
-            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
-            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
-            "[dim]Discovering zones...[/dim]"
+        # Count records by type
+        type_counts: dict[str, int] = {}
+        for rec in records:
+            type_counts[rec.rtype] = type_counts.get(rec.rtype, 0) + 1
+        type_summary = "  ".join(
+            f"[{RTYPE_COLORS.get(t, 'white')}]{t}: {c}[/{RTYPE_COLORS.get(t, 'white')}]"
+            for t, c in sorted(type_counts.items())
         )
 
+        lines = [
+            f"[bold]Zone:[/bold]        {zone_name}",
+            f"[bold]Server:[/bold]      {dns_cfg.server}:{dns_cfg.port}",
+            f"[bold]Records:[/bold]     [cyan]{record_count}[/cyan]",
+            "",
+        ]
+
+        if soa:
+            lines.extend([
+                f"[bold]Serial:[/bold]      [cyan]{soa.get('serial', '?')}[/cyan]",
+                f"[bold]Primary NS:[/bold]  [cyan]{soa.get('mname', '?')}[/cyan]",
+                f"[bold]Admin:[/bold]       [cyan]{soa.get('rname', '?')}[/cyan]",
+                f"[bold]Refresh:[/bold]     [cyan]{soa.get('refresh', '?')}s[/cyan]",
+                f"[bold]Retry:[/bold]       [cyan]{soa.get('retry', '?')}s[/cyan]",
+                f"[bold]Expire:[/bold]      [cyan]{soa.get('expire', '?')}s[/cyan]",
+                "",
+            ])
+
+        if type_summary:
+            lines.append(f"[bold]Types:[/bold]       {type_summary}")
+
+        detail.update("\n".join(lines))
+
+    def _show_record_detail(self, record) -> None:
+        detail = self.query_one("#dns-detail-content", Static)
+        title = self.query_one("#dns-detail-title", Static)
+        title.update("[bold]Record Details[/bold]")
+
+        color = RTYPE_COLORS.get(record.rtype, "white")
+
+        lines = [
+            f"[bold]Name:[/bold]    {record.name}",
+            f"[bold]Type:[/bold]    [{color}]{record.rtype}[/{color}]",
+            f"[bold]Value:[/bold]   {record.value}",
+            f"[bold]TTL:[/bold]     {record.ttl}s",
+            f"[bold]Zone:[/bold]    {record.zone}",
+        ]
+        detail.update("\n".join(lines))
+
+    def _clear_detail_panel(self) -> None:
+        self.query_one("#dns-detail-title", Static).update("[bold]Details[/bold]")
+        self.query_one("#dns-detail-content", Static).update(
+            "[dim]Select an item to view details.[/dim]"
+        )
+
+    # ------------------------------------------------------------------
+    # Tree: context helpers
+    # ------------------------------------------------------------------
+
+    def _get_highlighted_node(self) -> TreeNode | None:
+        tree = self.query_one("#dns-tree", Tree)
+        cursor = tree.cursor_line
+        if cursor < 0:
+            return None
         try:
-            from infraforge.dns_client import DNSClient
+            return tree.get_node_at_line(cursor)
+        except Exception:
+            return None
 
-            client = DNSClient.from_config(self.app.config)
+    def _get_context_zone(self) -> str | None:
+        """Return the zone name for the highlighted node."""
+        node = self._get_highlighted_node()
+        if node is None or node.data is None or not hasattr(node.data, 'kind'):
+            return None
+        if node.data.kind in ("zone", "record"):
+            return node.data.zone_name
+        return None
 
-            # Build hints: domain is the primary candidate
-            hints = []
-            if dns_cfg.domain:
-                hints.append(dns_cfg.domain)
+    def _get_context_record(self):
+        """Return the DNSRecord if a record node is highlighted."""
+        node = self._get_highlighted_node()
+        if node is None or node.data is None or not hasattr(node.data, 'kind'):
+            return None
+        if node.data.kind == "record":
+            return node.data.record
+        return None
 
-            discovered = client.discover_zones(hints=hints)
-
-            if discovered:
-                self._zones = discovered
-                self._active_zone_index = 0
-                self._persist_zones()
-                self.app.call_from_thread(self._render_zone_bar)
-                # Now load the first zone's data
-                self._loading = True
-                self.app.call_from_thread(
-                    self._set_status,
-                    f"Found {len(discovered)} zone(s) — loading {discovered[0]}..."
-                )
-
-                from infraforge.dns_client import DNSError
-
-                zone = self._active_zone
-                try:
-                    soa = client.get_zone_soa(zone)
-                    self._soa = soa
-                except DNSError:
-                    self._soa = {}
-
-                try:
-                    records = client.get_zone_records(zone)
-                    self._records = records
-                except DNSError as exc:
-                    self._records = []
-                    self.app.call_from_thread(
-                        self._show_error, f"Zone transfer failed: {exc}"
-                    )
-                    self._loading = False
-                    return
-
-                self.app.call_from_thread(self._update_display)
-                self._loading = False
-            else:
-                self.app.call_from_thread(self._show_no_zones)
-
-        except Exception as exc:
-            self.app.call_from_thread(self._show_no_zones)
-
-    def _show_no_zones(self) -> None:
-        """DNS is configured but no zones are added yet."""
-        dns_cfg = self.app.config.dns
-        zone_info = self.query_one("#dns-zone-info", Static)
-        zone_info.update(
-            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
-            f"[bold]Provider:[/bold]   [green]{dns_cfg.provider}[/green]\n"
-            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
-            "[yellow]No zones configured yet.[/yellow]\n\n"
-            "Press [bold cyan]z[/bold cyan] to add a zone from your DNS server."
-        )
-        self._set_status("[dim]Press z to add a zone.[/dim]")
+    # ------------------------------------------------------------------
+    # Display helpers
+    # ------------------------------------------------------------------
 
     def _show_not_configured(self) -> None:
         zone_info = self.query_one("#dns-zone-info", Static)
@@ -638,39 +733,57 @@ class DNSScreen(Screen):
             "[dim]Run 'infraforge setup' to configure interactively.[/dim]"
         )
 
+    def _show_no_zones(self) -> None:
+        dns_cfg = self.app.config.dns
+        zone_info = self.query_one("#dns-zone-info", Static)
+        zone_info.update(
+            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
+            f"[bold]Provider:[/bold]   [green]{dns_cfg.provider}[/green]\n"
+            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
+            "[yellow]No zones configured yet.[/yellow]\n\n"
+            "Press [bold cyan]z[/bold cyan] to add a zone from your DNS server."
+        )
+        self._set_status("[dim]Press z to add a zone.[/dim]")
+
     def _show_error(self, error: str) -> None:
         zone_info = self.query_one("#dns-zone-info", Static)
-        zone_info.update(f"[red]Error: {error}[/red]")
-        self._set_status(f"[red]Error: {error}[/red]")
+        from rich.markup import escape
+        safe = escape(str(error))
+        zone_info.update(f"[red]Error: {safe}[/red]")
+        self._set_status(f"[red]Error: {safe}[/red]")
 
     def _set_status(self, text: str) -> None:
         self.query_one("#dns-status-bar", Static).update(text)
 
-    def _update_display(self) -> None:
-        self._update_zone_info()
-        self._update_controls()
-        self._populate_table()
-        self._set_status(
-            f"[green]Connected[/green] | Zone: [bold]{self._active_zone}[/bold] "
-            f"| {len(self._records)} records loaded"
-        )
-
     def _update_zone_info(self) -> None:
+        """Update the zone info banner with aggregate or active-zone stats."""
         zone_info = self.query_one("#dns-zone-info", Static)
         dns_cfg = self.app.config.dns
 
+        if not self._zones:
+            return
+
+        total_records = sum(len(v) for v in self._records_cache.values())
+        loaded_zones = len(self._records_cache)
+
+        status = "[green]Connected[/green]" if self._dns_healthy else "[yellow]Checking...[/yellow]"
+
         lines = [
-            f"[bold]Zone:[/bold]    [green]{self._active_zone}[/green]"
-            f"    [bold]Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]"
-            f"    [bold]Status:[/bold]  [green]Connected[/green]"
-            f"    [bold]Records:[/bold]  [cyan]{len(self._records)}[/cyan]",
+            f"[bold]Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]"
+            f"    [bold]Status:[/bold]  {status}"
+            f"    [bold]TSIG Key:[/bold]  [green]{dns_cfg.tsig_key_name or '(none)'}[/green]",
+            f"[bold]Zones:[/bold]   [cyan]{len(self._zones)}[/cyan] configured, "
+            f"[cyan]{loaded_zones}[/cyan] loaded"
+            f"    [bold]Total Records:[/bold]  [cyan]{total_records}[/cyan]",
         ]
 
-        if self._soa:
+        # Show active zone SOA if available
+        active_soa = self._soa_cache.get(self._active_zone, {})
+        if active_soa:
             lines.append(
-                f"[bold]Serial:[/bold]  [cyan]{self._soa.get('serial', '?')}[/cyan]"
-                f"    [bold]Primary NS:[/bold]  [cyan]{self._soa.get('mname', '?')}[/cyan]"
-                f"    [bold]Refresh:[/bold]  [cyan]{self._soa.get('refresh', '?')}s[/cyan]"
+                f"[bold]Active:[/bold]  [bold]{self._active_zone}[/bold]"
+                f"    [bold]Serial:[/bold]  [cyan]{active_soa.get('serial', '?')}[/cyan]"
+                f"    [bold]Primary NS:[/bold]  [cyan]{active_soa.get('mname', '?')}[/cyan]"
             )
 
         zone_info.update("\n".join(lines))
@@ -680,95 +793,47 @@ class DNSScreen(Screen):
         sort_label = self.query_one("#dns-sort-label", Static)
         count_label = self.query_one("#dns-count-label", Static)
 
-        current_filter = FILTER_LABELS[self._filter_index]
-        current_sort = SORT_LABELS[self._sort_index]
-        direction = " ▼" if self._sort_reverse else " ▲"
+        current_filter = FILTER_LABELS[self._record_filter_index]
+        current_sort = SORT_LABELS[self._record_sort_index]
+        direction = " \u25bc" if self._record_sort_reverse else " \u25b2"
 
         filter_label.update(f"Filter: [bold]{current_filter}[/bold]")
         sort_label.update(f"Sort: [bold]{current_sort}{direction}[/bold]")
 
-        filtered = self._get_filtered_records()
-        total = len(self._records)
-        shown = len(filtered)
-        if shown == total:
-            count_label.update(f"[dim]{total} records[/dim]")
-        else:
-            count_label.update(f"[dim]{shown} / {total} records[/dim]")
+        total = sum(len(v) for v in self._records_cache.values())
+        count_label.update(
+            f"[dim]{total} records across {len(self._zones)} zones[/dim]"
+        )
 
-    def _get_filtered_records(self) -> list:
-        records = self._records
+    # ------------------------------------------------------------------
+    # Sorting / filtering helpers
+    # ------------------------------------------------------------------
 
-        # Apply type filter
-        if self._filter_index > 0:
-            filter_type = FILTER_TYPES[self._filter_index]
-            records = [r for r in records if r.rtype == filter_type]
-
-        # Apply sort
-        sort_field = SORT_FIELDS[self._sort_index]
+    def _sort_records(self, records: list) -> list:
+        result = list(records)
+        sort_field = SORT_FIELDS[self._record_sort_index]
         if sort_field == "ttl":
-            records = sorted(
-                records, key=lambda r: r.ttl, reverse=self._sort_reverse,
-            )
+            result.sort(key=lambda r: r.ttl, reverse=self._record_sort_reverse)
         else:
-            records = sorted(
-                records,
+            result.sort(
                 key=lambda r: getattr(r, sort_field, "").lower(),
-                reverse=self._sort_reverse,
+                reverse=self._record_sort_reverse,
             )
+        return result
 
-        return records
+    def _filter_records(self, records: list) -> list:
+        if self._record_filter_index == 0:
+            return records
+        filter_type = FILTER_TYPES[self._record_filter_index]
+        return [r for r in records if r.rtype == filter_type]
 
-    def _populate_table(self) -> None:
-        table = self.query_one("#dns-table", DataTable)
-        table.clear()
-
-        filtered = self._get_filtered_records()
-        self._update_controls()
-
-        for record in filtered:
-            color = RTYPE_COLORS.get(record.rtype, "white")
-
-            name_text = Text(record.name)
-            rtype_text = Text(record.rtype)
-            rtype_text.stylize(color)
-            value_text = Text(record.value)
-            ttl_text = Text(str(record.ttl))
-
-            table.add_row(
-                name_text,
-                rtype_text,
-                value_text,
-                ttl_text,
-                key=f"dns_{record.name}_{record.rtype}_{record.value}",
-            )
-
-    # ------------------------------------------------------------------
-    # Record selection helper
-    # ------------------------------------------------------------------
-
-    def _get_selected_record(self):
-        """Return the DNSRecord corresponding to the currently selected row,
-        or None if nothing is selected."""
-        table = self.query_one("#dns-table", DataTable)
-        try:
-            row_key = table.get_row_at(table.cursor_row)
-        except Exception:
-            return None
-
-        cursor_key = str(table.coordinate_to_cell_key(
-            table.cursor_coordinate,
-        ).row_key)
-
-        # Row keys have the form dns_{name}_{rtype}_{value}
-        if not cursor_key.startswith("dns_"):
-            return None
-
-        # Walk filtered records to find the match by index
-        filtered = self._get_filtered_records()
-        idx = table.cursor_row
-        if 0 <= idx < len(filtered):
-            return filtered[idx]
-        return None
+    def _re_sort_all_expanded_records(self) -> None:
+        """Re-sort/re-filter record children of all expanded zone nodes."""
+        tree = self.query_one("#dns-tree", Tree)
+        for node in self._iter_zone_nodes(tree.root):
+            if node.data and node.data.records_loaded and node.is_expanded:
+                records = self._records_cache.get(node.data.zone_name, [])
+                self._populate_record_nodes(node, records)
 
     # ------------------------------------------------------------------
     # Actions: Navigation
@@ -782,51 +847,59 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_cycle_sort(self) -> None:
-        if self._sort_index == len(SORT_FIELDS) - 1 and not self._sort_reverse:
-            self._sort_reverse = True
-        elif self._sort_reverse:
-            self._sort_reverse = False
-            self._sort_index = (self._sort_index + 1) % len(SORT_FIELDS)
+        fields = SORT_FIELDS
+        if self._record_sort_index == len(fields) - 1 and not self._record_sort_reverse:
+            self._record_sort_reverse = True
+        elif self._record_sort_reverse:
+            self._record_sort_reverse = False
+            self._record_sort_index = (self._record_sort_index + 1) % len(fields)
         else:
-            self._sort_index = (self._sort_index + 1) % len(SORT_FIELDS)
-
-        self._populate_table()
+            self._record_sort_index = (self._record_sort_index + 1) % len(fields)
+        self._re_sort_all_expanded_records()
+        self._update_controls()
 
     def action_cycle_filter(self) -> None:
-        self._filter_index = (self._filter_index + 1) % len(FILTER_TYPES)
-        self._populate_table()
+        self._record_filter_index = (self._record_filter_index + 1) % len(FILTER_TYPES)
+        self._re_sort_all_expanded_records()
+        self._update_controls()
 
     def action_refresh(self) -> None:
         if self._loading:
             return
-        zone_info = self.query_one("#dns-zone-info", Static)
-        zone_info.update("[dim]Refreshing...[/dim]")
         self._set_status("[dim]Refreshing...[/dim]")
-        self.load_zone_data()
+        self._records_cache.clear()
+        self._soa_cache.clear()
+
+        if self._zones:
+            self._build_zone_tree()
+            self._expand_active_zone()
+        else:
+            dns_cfg = self.app.config.dns
+            if dns_cfg.provider == "bind9" and dns_cfg.server:
+                self._auto_discover_zones()
 
     # ------------------------------------------------------------------
     # Actions: Zone switching
     # ------------------------------------------------------------------
 
     def _switch_to_zone(self, index: int) -> None:
-        """Switch to the zone at the given index and reload."""
+        """Switch to the zone at the given index — scroll tree and expand."""
         if not self._zones:
             return
         if index < 0 or index >= len(self._zones):
             return
-        if index == self._active_zone_index and self._records:
-            return  # already on this zone
 
         self._active_zone_index = index
-        self._records = []
-        self._soa = {}
         self._render_zone_bar()
-        self._persist_zones()
 
-        table = self.query_one("#dns-table", DataTable)
-        table.clear()
-
-        self.load_zone_data()
+        zone_name = self._zones[index]
+        tree = self.query_one("#dns-tree", Tree)
+        for node in self._iter_zone_nodes(tree.root):
+            if node.data and node.data.zone_name == zone_name:
+                tree.select_node(node)
+                if not node.is_expanded:
+                    node.expand()
+                break
 
     def action_next_zone(self) -> None:
         if self._zones:
@@ -838,7 +911,6 @@ class DNSScreen(Screen):
             new_index = (self._active_zone_index - 1) % len(self._zones)
             self._switch_to_zone(new_index)
 
-    # Number-key zone selectors (1-9)
     def action_select_zone_1(self) -> None:
         self._switch_to_zone(0)
 
@@ -871,8 +943,6 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_add_zone(self) -> None:
-        """Open the zone input modal to add a new zone."""
-
         def _on_zone_result(zone_name: Optional[str]) -> None:
             if zone_name is None:
                 return
@@ -884,14 +954,12 @@ class DNSScreen(Screen):
                     f"[yellow]Zone {zone_name} is already in the list.[/yellow]"
                 )
                 return
-            # Validate via SOA query in background
             self._validate_and_add_zone(zone_name)
 
         self.app.push_screen(ZoneInputScreen(), callback=_on_zone_result)
 
     @work(thread=True)
     def _validate_and_add_zone(self, zone_name: str) -> None:
-        """Check that the zone exists on the server, then add it."""
         self.app.call_from_thread(
             self._set_status, f"Validating zone {zone_name}...",
         )
@@ -909,7 +977,6 @@ class DNSScreen(Screen):
                 )
                 return
 
-            # Zone is valid -- add and switch
             self.app.call_from_thread(self._finalize_add_zone, zone_name)
 
         except Exception as exc:
@@ -919,18 +986,15 @@ class DNSScreen(Screen):
             )
 
     def _finalize_add_zone(self, zone_name: str) -> None:
-        """Add the zone to the list and switch to it (main-thread)."""
         self._zones.append(zone_name)
         new_index = len(self._zones) - 1
         self._active_zone_index = new_index
         self._persist_zones()
         self._render_zone_bar()
-        self._records = []
-        self._soa = {}
-        self.load_zone_data()
+        self._build_zone_tree()
+        self._expand_active_zone()
 
     def action_remove_zone(self) -> None:
-        """Remove the current zone from the managed list (with confirmation)."""
         if not self._zones:
             self._set_status("[yellow]No zones to remove.[/yellow]")
             return
@@ -941,6 +1005,9 @@ class DNSScreen(Screen):
             if not confirmed:
                 return
             self._zones.remove(zone)
+            self._records_cache.pop(zone, None)
+            self._soa_cache.pop(zone, None)
+
             if self._zones:
                 self._active_zone_index = min(
                     self._active_zone_index, len(self._zones) - 1,
@@ -951,20 +1018,17 @@ class DNSScreen(Screen):
             self._render_zone_bar()
 
             if self._zones:
-                self._records = []
-                self._soa = {}
-                self.load_zone_data()
+                self._build_zone_tree()
+                self._expand_active_zone()
             else:
-                # No zones left
-                self._records = []
-                self._soa = {}
-                table = self.query_one("#dns-table", DataTable)
-                table.clear()
+                tree = self.query_one("#dns-tree", Tree)
+                tree.clear()
                 zone_info = self.query_one("#dns-zone-info", Static)
                 zone_info.update(
                     "[yellow]No zones configured. Press [bold]z[/bold] to add one.[/yellow]"
                 )
                 self._set_status("[dim]No active zone.[/dim]")
+                self._clear_detail_panel()
 
         self.app.push_screen(
             ConfirmScreen(
@@ -981,8 +1045,8 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_add_record(self) -> None:
-        """Open the record input modal to create a new DNS record."""
-        if not self._active_zone:
+        zone = self._get_context_zone() or self._active_zone
+        if not zone:
             self._set_status("[yellow]No active zone. Add a zone first.[/yellow]")
             return
 
@@ -990,23 +1054,18 @@ class DNSScreen(Screen):
             if result is None:
                 return
             self._do_create_record(
-                result["name"],
-                result["rtype"],
-                result["value"],
-                result["ttl"],
+                result["name"], result["rtype"], result["value"], result["ttl"],
+                zone,
             )
 
         self.app.push_screen(
-            RecordInputScreen(
-                zone=self._active_zone,
-                title="Add DNS Record",
-            ),
+            RecordInputScreen(zone=zone, title="Add DNS Record"),
             callback=_on_record_result,
         )
 
     @work(thread=True)
     def _do_create_record(
-        self, name: str, rtype: str, value: str, ttl: int,
+        self, name: str, rtype: str, value: str, ttl: int, zone: str,
     ) -> None:
         self.app.call_from_thread(
             self._set_status,
@@ -1016,16 +1075,16 @@ class DNSScreen(Screen):
             from infraforge.dns_client import DNSClient, DNSError
 
             client = DNSClient.from_config(self.app.config)
-            client.create_record(name, rtype, value, ttl, self._active_zone)
+            client.create_record(name, rtype, value, ttl, zone)
 
-            # Refresh records
+            # Refresh cache
             try:
-                records = client.get_zone_records(self._active_zone)
-                self._records = records
+                records = client.get_zone_records(zone)
+                self._records_cache[zone] = records
             except DNSError:
                 pass
 
-            self.app.call_from_thread(self._update_display)
+            self.app.call_from_thread(self._refresh_zone_records, zone)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Created {rtype} record: {name} -> {value}[/green]",
@@ -1037,26 +1096,25 @@ class DNSScreen(Screen):
             )
 
     def action_edit_record(self) -> None:
-        """Edit the currently selected DNS record."""
-        record = self._get_selected_record()
+        record = self._get_context_record()
         if record is None:
-            self._set_status("[yellow]No record selected.[/yellow]")
+            self._set_status("[yellow]Highlight a record to edit.[/yellow]")
             return
+
+        zone = record.zone or self._get_context_zone() or self._active_zone
 
         def _on_edit_result(result: Optional[dict]) -> None:
             if result is None:
                 return
             self._do_update_record(
                 record,
-                result["name"],
-                result["rtype"],
-                result["value"],
-                result["ttl"],
+                result["name"], result["rtype"], result["value"], result["ttl"],
+                zone,
             )
 
         self.app.push_screen(
             RecordInputScreen(
-                zone=self._active_zone,
+                zone=zone,
                 name=record.name,
                 rtype=record.rtype,
                 value=record.value,
@@ -1074,6 +1132,7 @@ class DNSScreen(Screen):
         rtype: str,
         value: str,
         ttl: int,
+        zone: str,
     ) -> None:
         self.app.call_from_thread(
             self._set_status,
@@ -1084,26 +1143,25 @@ class DNSScreen(Screen):
 
             client = DNSClient.from_config(self.app.config)
 
-            # If name or type changed, delete old and create new
             if old_record.name != name or old_record.rtype != rtype:
                 client.delete_record(
                     old_record.name,
                     old_record.rtype,
                     old_record.value,
-                    self._active_zone,
+                    zone,
                 )
-                client.create_record(name, rtype, value, ttl, self._active_zone)
+                client.create_record(name, rtype, value, ttl, zone)
             else:
-                client.update_record(name, rtype, value, ttl, self._active_zone)
+                client.update_record(name, rtype, value, ttl, zone)
 
-            # Refresh records via AXFR
+            # Refresh cache
             try:
-                records = client.get_zone_records(self._active_zone)
-                self._records = records
+                records = client.get_zone_records(zone)
+                self._records_cache[zone] = records
             except DNSError:
                 pass
 
-            self.app.call_from_thread(self._update_display)
+            self.app.call_from_thread(self._refresh_zone_records, zone)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Updated {rtype} record: {name} -> {value}[/green]",
@@ -1115,16 +1173,17 @@ class DNSScreen(Screen):
             )
 
     def action_delete_record(self) -> None:
-        """Delete the currently selected DNS record (with confirmation)."""
-        record = self._get_selected_record()
+        record = self._get_context_record()
         if record is None:
-            self._set_status("[yellow]No record selected.[/yellow]")
+            self._set_status("[yellow]Highlight a record to delete.[/yellow]")
             return
+
+        zone = record.zone or self._get_context_zone() or self._active_zone
 
         def _on_confirm(confirmed: bool) -> None:
             if not confirmed:
                 return
-            self._do_delete_record(record)
+            self._do_delete_record(record, zone)
 
         self.app.push_screen(
             ConfirmScreen(
@@ -1138,7 +1197,7 @@ class DNSScreen(Screen):
         )
 
     @work(thread=True)
-    def _do_delete_record(self, record) -> None:
+    def _do_delete_record(self, record, zone: str) -> None:
         self.app.call_from_thread(
             self._set_status,
             f"Deleting {record.rtype} record {record.name} ...",
@@ -1151,17 +1210,17 @@ class DNSScreen(Screen):
                 record.name,
                 record.rtype,
                 record.value,
-                self._active_zone,
+                zone,
             )
 
-            # Refresh records via AXFR
+            # Refresh cache
             try:
-                records = client.get_zone_records(self._active_zone)
-                self._records = records
+                records = client.get_zone_records(zone)
+                self._records_cache[zone] = records
             except DNSError:
                 pass
 
-            self.app.call_from_thread(self._update_display)
+            self.app.call_from_thread(self._refresh_zone_records, zone)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Deleted {record.rtype} record: {record.name} -> {record.value}[/green]",
@@ -1173,16 +1232,79 @@ class DNSScreen(Screen):
             )
 
     # ------------------------------------------------------------------
-    # DataTable row selection (Enter key)
+    # Auto-discover zones
     # ------------------------------------------------------------------
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle Enter key on a record row -- show details in status bar."""
-        record = self._get_selected_record()
-        if record is None:
-            return
-        self._set_status(
-            f"[bold]{record.name}[/bold]  "
-            f"[{RTYPE_COLORS.get(record.rtype, 'white')}]{record.rtype}[/{RTYPE_COLORS.get(record.rtype, 'white')}]  "
-            f"{record.value}  TTL={record.ttl}"
+    @work(thread=True)
+    def _auto_discover_zones(self) -> None:
+        dns_cfg = self.app.config.dns
+
+        self.app.call_from_thread(
+            self._set_status,
+            f"Discovering zones from {dns_cfg.server}..."
         )
+        zone_info = self.query_one("#dns-zone-info", Static)
+        self.app.call_from_thread(
+            zone_info.update,
+            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
+            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
+            "[dim]Discovering zones...[/dim]"
+        )
+
+        try:
+            from infraforge.dns_client import DNSClient
+
+            client = DNSClient.from_config(self.app.config)
+
+            hints = []
+            if dns_cfg.domain:
+                hints.append(dns_cfg.domain)
+
+            discovered = client.discover_zones(hints=hints)
+
+            if discovered:
+                self._zones = discovered
+                self._active_zone_index = 0
+                self._persist_zones()
+                self._dns_healthy = True
+                self.app.call_from_thread(self._render_zone_bar)
+                self.app.call_from_thread(self._build_zone_tree)
+                self.app.call_from_thread(self._expand_active_zone)
+                self.app.call_from_thread(
+                    self._set_status,
+                    f"Found {len(discovered)} zone(s) — expanding {discovered[0]}..."
+                )
+            else:
+                self.app.call_from_thread(self._show_no_zones)
+
+        except Exception:
+            self.app.call_from_thread(self._show_no_zones)
+
+
+# ---------------------------------------------------------------------------
+# Label builders
+# ---------------------------------------------------------------------------
+
+def _make_zone_label(zone_name: str, soa: dict, record_count: int) -> Text:
+    """Build a Rich Text label for a zone tree node."""
+    label = Text()
+    label.append("\U0001f310 ", style="dim")  # globe icon
+    label.append(zone_name, style="bold")
+    if record_count > 0:
+        label.append(f"  [{record_count} records]", style="dim")
+    elif soa:
+        label.append("  [loaded]", style="dim green")
+    else:
+        label.append("  [not loaded]", style="dim")
+    return label
+
+
+def _make_record_label(record) -> Text:
+    """Build a Rich Text label for a DNS record leaf node."""
+    color = RTYPE_COLORS.get(record.rtype, "white")
+    label = Text()
+    label.append(f"[{record.rtype}]", style=color)
+    label.append(f"  {record.name}", style="bold")
+    label.append(f"  {record.value}")
+    label.append(f"  TTL={record.ttl}", style="dim")
+    return label

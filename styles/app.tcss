@@ -326,9 +326,29 @@ DataTable > .datatable--hover {
     text-align: right;
 }
 
-#dns-table {
+#dns-main-content {
+    layout: horizontal;
     height: 1fr;
     margin: 1 0 0 0;
+}
+
+#dns-tree {
+    width: 2fr;
+    margin: 0 1 0 0;
+    border: round $primary-background;
+}
+
+#dns-detail-panel {
+    width: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#dns-detail-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
 }
 
 #dns-zone-bar {
