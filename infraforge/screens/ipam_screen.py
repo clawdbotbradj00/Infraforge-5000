@@ -1514,11 +1514,14 @@ def _make_subnet_label(subnet: dict, vlans: list[dict]) -> Text:
         label.append("\U0001f4c1 ", style="dim")  # folder icon
         label.append(desc or cidr, style="bold")
     else:
-        label.append(cidr, style="bold")
-        if desc:
-            label.append(f"  {desc}", style="dim")
-        label.append(f"  [{used}/{maxhosts}]", style=util_color)
-        label.append(f"  {pct:.0f}%", style=util_color)
+        cidr_col = cidr.ljust(20)
+        desc_col = desc.ljust(24) if desc else "".ljust(24)
+        usage_col = f"[{used}/{maxhosts}]".ljust(12)
+        pct_col = f"{pct:.0f}%"
+        label.append(cidr_col, style="bold")
+        label.append(desc_col, style="dim")
+        label.append(usage_col, style=util_color)
+        label.append(pct_col, style=util_color)
 
     return label
 
@@ -1530,11 +1533,14 @@ def _make_address_label(addr: dict) -> Text:
     status = _addr_status_label(addr)
     color = STATUS_COLORS.get(status, "bright_black")
 
+    ip_col = ip.ljust(18)
+    host_col = hostname.ljust(28)
+    status_col = f"[{status}]"
+
     label = Text()
-    label.append(ip, style="bold")
-    if hostname:
-        label.append(f"  {hostname}")
-    label.append(f"  [{status}]", style=color)
+    label.append(ip_col, style="bold")
+    label.append(host_col)
+    label.append(status_col, style=color)
     return label
 
 
