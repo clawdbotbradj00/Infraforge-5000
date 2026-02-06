@@ -527,7 +527,9 @@ class IPAMScreen(Screen):
             if subnet_id in expanded_ids:
                 child_node.expand()
 
-        for subnet in top_level:
+        for i, subnet in enumerate(top_level):
+            if i > 0:
+                tree.root.add_leaf(Text(""), data=IPAMNodeData(kind="placeholder"))
             add_subnet_node(tree.root, subnet)
 
         self._update_controls()
