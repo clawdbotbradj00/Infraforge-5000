@@ -9,6 +9,7 @@ from infraforge.screens.node_info import NodeInfoScreen
 from infraforge.screens.help_screen import HelpScreen
 from infraforge.screens.new_vm import NewVMScreen
 from infraforge.screens.dns_screen import DNSScreen
+from infraforge.screens.ipam_screen import IPAMScreen
 
 __all__ = [
     "DashboardScreen",
@@ -20,4 +21,5 @@ __all__ = [
     "HelpScreen",
     "NewVMScreen",
     "DNSScreen",
+    "IPAMScreen",
 ]

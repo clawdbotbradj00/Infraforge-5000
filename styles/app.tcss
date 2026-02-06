@@ -360,6 +360,80 @@ DataTable > .datatable--hover {
     padding: 0 1;
 }
 
+/* ── IPAM Management Screen ── */
+
+#ipam-container {
+    padding: 1 2;
+}
+
+#ipam-overview {
+    margin: 0 0 1 0;
+    border: round $primary-background;
+    padding: 1 2;
+}
+
+#ipam-tab-bar {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+.ipam-tab-btn {
+    width: auto;
+    padding: 1 2;
+    color: $text-muted;
+    text-style: italic;
+}
+
+.ipam-tab-btn.-active {
+    color: $accent;
+    text-style: bold;
+    background: $primary-background;
+}
+
+#ipam-controls {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#ipam-filter-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+}
+
+#ipam-sort-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+    margin: 0 0 0 2;
+}
+
+#ipam-count-label {
+    width: 1fr;
+    padding: 1 1;
+    color: $text-muted;
+    text-align: right;
+}
+
+#ipam-table {
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+#ipam-status-bar {
+    height: 1;
+    margin: 1 0 0 0;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+}
+
 /* Modal input screens */
 .modal-container {
     align: center middle;

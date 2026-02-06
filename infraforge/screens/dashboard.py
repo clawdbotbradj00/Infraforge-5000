@@ -18,6 +18,7 @@ class DashboardScreen(Screen):
         Binding("t", "view_templates", "Templates", show=True),
         Binding("n", "view_nodes", "Nodes", show=True),
         Binding("x", "manage_dns", "DNS", show=True),
+        Binding("i", "manage_ipam", "IPAM", show=True),
         Binding("c", "create_vm", "New VM", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
@@ -50,6 +51,7 @@ class DashboardScreen(Screen):
                 ListItem(Label("  [T]  Templates         —  Browse VM and container templates"), id="nav-templates"),
                 ListItem(Label("  [N]  Node Info         —  Cluster node details and resources"), id="nav-nodes"),
                 ListItem(Label("  [X]  DNS Management    —  View and manage DNS records"), id="nav-dns"),
+                ListItem(Label("  [I]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
                 ListItem(Label("  [C]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
                 id="nav-menu",
             )
@@ -134,6 +136,8 @@ class DashboardScreen(Screen):
             self.action_view_nodes()
         elif item_id == "nav-dns":
             self.action_manage_dns()
+        elif item_id == "nav-ipam":
+            self.action_manage_ipam()
         elif item_id == "nav-create":
             self.action_create_vm()
 
@@ -152,6 +156,10 @@ class DashboardScreen(Screen):
     def action_manage_dns(self):
         from infraforge.screens.dns_screen import DNSScreen
         self.app.push_screen(DNSScreen())
+
+    def action_manage_ipam(self):
+        from infraforge.screens.ipam_screen import IPAMScreen
+        self.app.push_screen(IPAMScreen())
 
     def action_create_vm(self):
         from infraforge.screens.new_vm import NewVMScreen

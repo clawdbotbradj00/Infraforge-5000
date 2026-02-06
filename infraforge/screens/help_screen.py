@@ -22,6 +22,7 @@ HELP_TEXT = """\
   [bold cyan]t[/bold cyan]           View Templates
   [bold cyan]n[/bold cyan]           View Node Info
   [bold cyan]x[/bold cyan]           DNS Management
+  [bold cyan]i[/bold cyan]           IPAM Management
   [bold cyan]c[/bold cyan]           Create New VM (wizard)
   [bold cyan]r[/bold cyan]           Refresh data
   [bold cyan]Enter[/bold cyan]       Select menu item
@@ -60,6 +61,14 @@ HELP_TEXT = """\
   [bold cyan]s[/bold cyan]           Cycle sort field (Name / Type / Value / TTL)
   [bold cyan]f[/bold cyan]           Cycle filter by record type
   [bold cyan]r[/bold cyan]           Refresh records from server
+
+[bold]IPAM Management[/bold]
+  [bold cyan]Tab[/bold cyan]         Switch view (Subnets/Addresses/VLANs)
+  [bold cyan]Enter[/bold cyan]       View subnet addresses
+  [bold cyan]s[/bold cyan]           Cycle sort
+  [bold cyan]f[/bold cyan]           Cycle filter
+  [bold cyan]r[/bold cyan]           Refresh
+  [bold cyan]Escape[/bold cyan]      Go back
 
 [bold]New VM Wizard[/bold]
   [bold cyan]Enter[/bold cyan]       Next step / Confirm selection

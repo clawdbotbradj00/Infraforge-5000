@@ -146,6 +146,7 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `t` | Templates |
 | `n` | Node Info |
 | `x` | DNS Management |
+| `i` | IPAM Management |
 | `c` | Create New VM |
 | `r` | Refresh |
 
@@ -172,6 +173,16 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `f` | Cycle filter by record type |
 | `r` | Refresh records |
 
+### IPAM Management
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch view (Subnets/Addresses/VLANs) |
+| `Enter` | View subnet addresses |
+| `s` | Cycle sort |
+| `f` | Cycle filter |
+| `r` | Refresh |
+| `Escape` | Go back |
+
 ## Project Structure
 
 ```
@@ -193,6 +204,7 @@ InfraForge/
 │       ├── template_detail.py
 │       ├── node_info.py    # Cluster node details
 │       ├── dns_screen.py   # DNS zone record viewer
+│       ├── ipam_screen.py  # IPAM management (phpIPAM)
 │       ├── new_vm.py       # 8-step VM creation wizard
 │       └── help_screen.py  # Keybinding reference
 ├── styles/
