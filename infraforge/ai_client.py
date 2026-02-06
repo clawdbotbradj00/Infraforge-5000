@@ -265,7 +265,7 @@ class AIClient:
     def _run_claude_stream(self, prompt: str):
         """Stream response from ``claude -p`` using ``stream-json`` output."""
         cmd = [self._claude_path, "-p", prompt, "--output-format", "stream-json",
-               "--max-turns", "1"]
+               "--verbose", "--max-turns", "1"]
 
         if self._session_id:
             cmd.extend(["--resume", self._session_id])

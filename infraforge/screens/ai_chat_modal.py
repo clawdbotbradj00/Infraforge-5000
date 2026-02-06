@@ -257,7 +257,7 @@ class AIChatModal(ModalScreen):
         """Update the streaming message widget with accumulated text."""
         if self._streaming_widget:
             self._streaming_widget.update(
-                f"[bold green]AI:[/bold green]  {text}"
+                f"[bold green]AI:[/bold green]  {self._esc(text)}"
             )
             history = self.query_one("#ai-chat-history", VerticalScroll)
             history.scroll_end(animate=False)
@@ -505,11 +505,16 @@ class AIChatModal(ModalScreen):
     # Message display helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _esc(text: str) -> str:
+        """Escape Rich markup brackets in dynamic text."""
+        return text.replace("[", "\\[")
+
     def _add_user_message(self, text: str) -> None:
         """Append a user message bubble to the chat history."""
         history = self.query_one("#ai-chat-history", VerticalScroll)
         msg = Static(
-            f"[bold cyan]You:[/bold cyan]  {text}",
+            f"[bold cyan]You:[/bold cyan]  {self._esc(text)}",
             classes="ai-msg-user",
             markup=True,
         )
@@ -520,7 +525,7 @@ class AIChatModal(ModalScreen):
         """Append an AI message bubble to the chat history."""
         history = self.query_one("#ai-chat-history", VerticalScroll)
         msg = Static(
-            f"[bold green]AI:[/bold green]  {text}",
+            f"[bold green]AI:[/bold green]  {self._esc(text)}",
             classes="ai-msg-ai",
             markup=True,
         )
@@ -532,11 +537,10 @@ class AIChatModal(ModalScreen):
         history = self.query_one("#ai-chat-history", VerticalScroll)
         desc = f"{tool_name}"
         if tool_input:
-            # Brief summary of inputs
             parts = [f"{k}={v}" for k, v in tool_input.items()]
             desc += f"({', '.join(parts[:3])})"
         msg = Static(
-            f"[dim italic]Running: {desc}[/dim italic]",
+            f"[dim italic]Running: {self._esc(desc)}[/dim italic]",
             classes="ai-msg-tool",
             markup=True,
         )
@@ -547,7 +551,7 @@ class AIChatModal(ModalScreen):
         """Append an error message to the chat history."""
         history = self.query_one("#ai-chat-history", VerticalScroll)
         msg = Static(
-            f"[bold red]Error:[/bold red]  {text}",
+            f"[bold red]Error:[/bold red]  {self._esc(text)}",
             classes="ai-msg-error",
             markup=True,
         )
