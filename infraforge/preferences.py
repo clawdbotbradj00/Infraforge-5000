@@ -1,0 +1,88 @@
+"""Persistent user preferences for InfraForge."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any
+
+import logging
+import yaml
+
+logger = logging.getLogger(__name__)
+
+PREFERENCES_PATH = Path.home() / ".config" / "infraforge" / "preferences.yaml"
+
+
+@dataclass
+class VMListPrefs:
+    sort_field: str = "vmid"
+    sort_reverse: bool = False
+    filter_mode: str = "all"
+    group_mode: str = "none"
+
+
+@dataclass
+class TemplateTabPrefs:
+    sort_field: str = ""
+    sort_reverse: bool = False
+    group_mode: str = "none"
+
+
+@dataclass
+class TemplateListPrefs:
+    vm: TemplateTabPrefs = field(default_factory=lambda: TemplateTabPrefs(sort_field="vmid"))
+    ct: TemplateTabPrefs = field(default_factory=lambda: TemplateTabPrefs(sort_field="name"))
+    iso: TemplateTabPrefs = field(default_factory=lambda: TemplateTabPrefs(sort_field="name"))
+
+
+@dataclass
+class Preferences:
+    vm_list: VMListPrefs = field(default_factory=VMListPrefs)
+    template_list: TemplateListPrefs = field(default_factory=TemplateListPrefs)
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> Preferences:
+        path = path or PREFERENCES_PATH
+        if not path.exists():
+            return cls()
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            logger.warning("Could not read preferences file %s; using defaults", path)
+            return cls()
+        return cls._from_dict(data)
+
+    def save(self, path: Path | None = None) -> None:
+        path = path or PREFERENCES_PATH
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                yaml.dump(asdict(self), f, default_flow_style=False, sort_keys=False)
+        except Exception:
+            logger.warning("Could not write preferences file %s", path)
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any]) -> Preferences:
+        prefs = cls()
+        if isinstance(data.get("vm_list"), dict):
+            vl = data["vm_list"]
+            prefs.vm_list = VMListPrefs(
+                sort_field=str(vl.get("sort_field", "vmid")),
+                sort_reverse=bool(vl.get("sort_reverse", False)),
+                filter_mode=str(vl.get("filter_mode", "all")),
+                group_mode=str(vl.get("group_mode", "none")),
+            )
+        if isinstance(data.get("template_list"), dict):
+            tl = data["template_list"]
+            for tab_key in ("vm", "ct", "iso"):
+                if isinstance(tl.get(tab_key), dict):
+                    tab_data = tl[tab_key]
+                    defaults = getattr(TemplateListPrefs(), tab_key)
+                    setattr(prefs.template_list, tab_key, TemplateTabPrefs(
+                        sort_field=str(tab_data.get("sort_field", defaults.sort_field)),
+                        sort_reverse=bool(tab_data.get("sort_reverse", False)),
+                        group_mode=str(tab_data.get("group_mode", "none")),
+                    ))
+        return prefs

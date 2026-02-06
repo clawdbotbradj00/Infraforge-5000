@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infraforge"
+version = "0.1.0"
+description = "Proxmox VM management TUI built with Textual"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.80.0",
+    "proxmoxer>=2.0.0",
+    "requests>=2.31.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "paramiko>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+infraforge = "infraforge.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["infraforge*"]

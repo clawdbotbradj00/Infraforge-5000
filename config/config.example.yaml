@@ -1,0 +1,53 @@
+# InfraForge Configuration
+# Copy this to ~/.config/infraforge/config.yaml and fill in your values
+
+proxmox:
+  host: "192.168.1.100"
+  port: 8006
+  user: "root@pam"
+  # Authentication: use either token OR password (token recommended)
+  auth_method: "token"  # "token" or "password"
+  token_name: "infraforge"
+  token_value: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  password: ""
+  verify_ssl: false
+  # For clusters, specify additional nodes (optional)
+  # nodes:
+  #   - "node1"
+  #   - "node2"
+
+dns:
+  # DNS provider for automated DNS record creation
+  provider: ""  # "cloudflare", "route53", "resolved", etc.
+  api_key: ""
+  zone: ""
+  domain: ""
+
+ipam:
+  # phpIPAM integration for IP address management
+  provider: "phpipam"
+  url: "https://ipam.example.com"
+  app_id: "infraforge"
+  # Authentication: use either token OR username/password
+  token: ""
+  username: ""
+  password: ""
+  verify_ssl: false
+
+terraform:
+  workspace: "./terraform"
+  state_backend: "local"  # "local", "s3", "consul"
+
+ansible:
+  playbook_dir: "./ansible/playbooks"
+  inventory_dir: "./ansible/inventory"
+
+defaults:
+  # Default values for new VM creation
+  cpu_cores: 2
+  memory_mb: 2048
+  disk_gb: 20
+  storage: "local-lvm"
+  network_bridge: "vmbr0"
+  os_type: "l26"  # Linux 2.6+ kernel
+  start_on_create: true

@@ -1,0 +1,79 @@
+# ============================================
+# InfraForge .gitignore
+# ============================================
+
+# ---------- Environment / Secrets ----------
+.env
+.env.*
+!.env.example
+docker/.env
+
+# ---------- Configuration with credentials ----------
+config/config.yaml
+config/config.yml
+
+# ---------- SSL / TLS Certificates ----------
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+docker/phpipam/*.pem
+docker/phpipam/*.key
+docker/phpipam/*.crt
+
+# ---------- Python Bytecode ----------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---------- Virtual Environments ----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- Distribution / Packaging ----------
+*.egg-info/
+*.egg
+dist/
+build/
+sdist/
+wheels/
+*.whl
+
+# ---------- Terraform ----------
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# ---------- Ansible ----------
+*.retry
+
+# ---------- IDE / Editor ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+.project
+.settings/
+
+# ---------- OS Files ----------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---------- Claude Code ----------
+.claude/

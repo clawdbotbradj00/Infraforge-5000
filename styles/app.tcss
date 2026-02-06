@@ -1,0 +1,440 @@
+/* InfraForge Textual CSS */
+
+Screen {
+    background: $surface;
+}
+
+/* ── Connecting Screen ── */
+
+#connecting-box {
+    width: 50;
+    height: 7;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+    content-align: center middle;
+}
+
+#connecting-msg {
+    text-align: center;
+    text-style: bold;
+    color: $text;
+    width: 100%;
+}
+
+/* ── Error Screen ── */
+
+#error-box {
+    width: 70;
+    height: auto;
+    border: round $error;
+    background: $surface;
+    padding: 1 2;
+}
+
+#error-title {
+    text-align: center;
+    text-style: bold;
+    color: $error;
+    width: 100%;
+}
+
+#error-detail {
+    text-align: center;
+    color: $text-muted;
+    width: 100%;
+    margin: 1 0;
+}
+
+#error-help {
+    text-align: center;
+    color: $text-disabled;
+    width: 100%;
+}
+
+/* ── Dashboard Screen ── */
+
+#dashboard-container {
+    padding: 1 2;
+}
+
+.section-title {
+    text-style: bold;
+    color: $accent;
+    padding: 0 0 0 0;
+    margin: 1 0 0 0;
+}
+
+/* Stats cards row */
+#stats-row {
+    layout: horizontal;
+    height: 5;
+    margin: 0 0 1 0;
+}
+
+.stat-card {
+    width: 1fr;
+    height: 5;
+    border: round $primary-background;
+    padding: 0 1;
+    margin: 0 1 0 0;
+    content-align: center middle;
+}
+
+.stat-card:hover {
+    border: round $accent;
+}
+
+.stat-value {
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+    color: $text;
+}
+
+.stat-label {
+    text-align: center;
+    width: 100%;
+    color: $text-muted;
+}
+
+/* Navigation menu */
+#nav-menu {
+    margin: 1 0;
+}
+
+ListView > ListItem.-highlight {
+    background: white;
+    color: black;
+    text-style: bold;
+}
+
+ListView:focus > ListItem.-highlight {
+    background: white;
+    color: black;
+    text-style: bold;
+}
+
+.nav-item {
+    padding: 0 2;
+    height: 3;
+    content-align-vertical: middle;
+    background: $surface;
+    margin: 0 0 0 0;
+}
+
+.nav-item:hover {
+    background: $boost;
+}
+
+.nav-item.-selected {
+    background: $accent 20%;
+    border-left: tall $accent;
+}
+
+/* ── VM List Screen ── */
+
+#vm-list-container {
+    padding: 1 2;
+}
+
+#vm-summary-banner {
+    height: 1;
+    margin: 0 0 1 0;
+    background: $primary-background;
+    color: $text;
+    padding: 0 0;
+}
+
+#vm-controls {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#vm-filter-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+}
+
+#vm-sort-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+    margin: 0 0 0 2;
+}
+
+#vm-group-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+    margin: 0 0 0 2;
+}
+
+#vm-count-label {
+    width: 1fr;
+    padding: 1 1;
+    color: $text-muted;
+    text-align: right;
+}
+
+#vm-table {
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+DataTable {
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    text-style: bold;
+    color: $accent;
+    background: $surface;
+}
+
+DataTable > .datatable--cursor {
+    background: white;
+    color: black;
+    text-style: bold;
+}
+
+DataTable:focus > .datatable--cursor {
+    background: white;
+    color: black;
+    text-style: bold;
+}
+
+DataTable > .datatable--hover {
+    background: $boost;
+}
+
+/* ── VM Detail Screen ── */
+
+#vm-detail-container {
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#vm-detail-header {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 1 0;
+}
+
+#vm-detail-title {
+    width: 1fr;
+    text-style: bold;
+    content-align-vertical: middle;
+    padding: 0 1;
+}
+
+#vm-detail-status {
+    width: auto;
+    padding: 0 2;
+    content-align: center middle;
+}
+
+.detail-section {
+    margin: 0 0 1 0;
+    border: round $primary-background;
+    padding: 1 2;
+}
+
+.detail-section-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
+}
+
+.detail-row {
+    layout: horizontal;
+    height: 1;
+}
+
+.detail-label {
+    width: 20;
+    color: $text-muted;
+}
+
+.detail-value {
+    width: 1fr;
+    color: $text;
+}
+
+/* ── Template List Screen ── */
+
+#template-container {
+    padding: 1 2;
+}
+
+#template-tabs {
+    height: 1fr;
+}
+
+/* ── DNS Management Screen ── */
+
+#dns-container {
+    padding: 1 2;
+}
+
+#dns-zone-info {
+    margin: 0 0 1 0;
+    border: round $primary-background;
+    padding: 1 2;
+}
+
+#dns-controls {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#dns-filter-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+}
+
+#dns-sort-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+    margin: 0 0 0 2;
+}
+
+#dns-count-label {
+    width: 1fr;
+    padding: 1 1;
+    color: $text-muted;
+    text-align: right;
+}
+
+#dns-table {
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+/* ── New VM Wizard ── */
+
+#wizard-container {
+    padding: 1 2;
+}
+
+#wizard-progress {
+    height: 3;
+    margin: 0 0 1 0;
+    layout: horizontal;
+}
+
+.wizard-step {
+    width: 1fr;
+    content-align: center middle;
+    height: 3;
+    color: $text-disabled;
+}
+
+.wizard-step.-active {
+    color: $accent;
+    text-style: bold;
+    border-bottom: tall $accent;
+}
+
+.wizard-step.-completed {
+    color: $success;
+}
+
+#wizard-content {
+    height: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+}
+
+#wizard-actions {
+    height: 3;
+    layout: horizontal;
+    margin: 1 0 0 0;
+    content-align: right middle;
+}
+
+/* ── Node Info ── */
+
+#node-container {
+    padding: 1 2;
+}
+
+.node-card {
+    border: round $primary-background;
+    padding: 1 2;
+    margin: 0 0 1 0;
+}
+
+.node-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
+}
+
+/* ── Help Screen ── */
+
+#help-container {
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#help-title {
+    text-style: bold;
+    text-align: center;
+    color: $accent;
+    width: 100%;
+    margin: 0 0 1 0;
+}
+
+.help-section {
+    margin: 0 0 1 0;
+}
+
+.help-key {
+    color: $accent;
+    text-style: bold;
+}
+
+/* ── General ── */
+
+.status-running {
+    color: $success;
+}
+
+.status-stopped {
+    color: $error;
+}
+
+.status-paused {
+    color: $warning;
+}
+
+.hidden {
+    display: none;
+}
+
+/* Progress bars */
+.progress-bar-container {
+    layout: horizontal;
+    height: 1;
+}
+
+.progress-label {
+    width: 10;
+    color: $text-muted;
+}
+
+.progress-value {
+    width: 8;
+    text-align: right;
+    color: $text;
+}
