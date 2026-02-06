@@ -303,8 +303,7 @@ class InfraForgeApp(App):
     def _on_connected(self):
         """Called when Proxmox connection succeeds."""
         self.pop_screen()  # Remove connecting screen
-        if self.config.ai.api_key:
-            self.ai_client = AIClient(self.config)
+        self.ai_client = AIClient(self.config)
         from infraforge.screens.dashboard import DashboardScreen
         self.push_screen(DashboardScreen())
 

@@ -270,13 +270,13 @@ class DashboardScreen(Screen):
     def _check_ai_config(self):
         """Show a hint banner if AI is not configured."""
         try:
-            ai_key = self.app.config.ai.api_key
-            if not ai_key:
+            import shutil
+            if not shutil.which("claude"):
                 banner = self.query_one("#ai-setup-banner", Static)
                 banner.update(
-                    "  [dim]AI features are available![/dim]  "
-                    "Run [bold white on dark_blue] infraforge setup [/bold white on dark_blue] "
-                    "to add your Anthropic API key"
+                    "  [dim]AI features available![/dim]  "
+                    "Install Claude Code: [bold white on dark_blue] npm install -g @anthropic-ai/claude-code [/bold white on dark_blue] "
+                    "then press [bold]/[/bold] to chat"
                 )
                 banner.remove_class("hidden")
         except Exception:

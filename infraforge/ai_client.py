@@ -1,369 +1,221 @@
-"""Anthropic API client for InfraForge AI chat feature.
+"""AI client for InfraForge — shells out to the ``claude`` CLI.
 
-Uses only stdlib (urllib.request, json) -- no external SDK dependencies.
+Uses the locally installed Claude Code CLI for authentication and
+inference, so no separate API key is required.  Falls back to direct
+Anthropic API calls if a key is configured and the CLI is absent.
 """
 
 from __future__ import annotations
 
 import json
-import ssl
-import urllib.request
-import urllib.error
+import re
+import shutil
+import subprocess
 
+
+# ---------------------------------------------------------------------------
+# System prompt — describes InfraForge and available tool markers
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
 You are the AI assistant built into InfraForge, a Proxmox VM management TUI.
 You help users manage their virtual infrastructure through natural conversation.
 
-Available actions you can take:
+You can perform actions by emitting special markers in your response.
+When you need to perform an action, output the marker on its OWN line
+using EXACTLY this format (no spaces around the colons):
 
-NAVIGATION:
-- navigate_to: Go to any screen (dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help)
+<<<ACTION:tool_name:{"param":"value"}>>>
 
-VM MANAGEMENT:
-- list_vms: Get a list of all VMs with status, node, CPU, memory info
-- vm_action: Start, stop, reboot, shutdown a VM by VMID
-- get_vm_detail: Get detailed info about a specific VM
+Available actions:
 
-NODE INFO:
-- list_nodes: Get cluster node status and resource usage
+NAVIGATION
+  <<<ACTION:navigate_to:{"screen":"SCREEN"}>>>
+  SCREEN is one of: dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help
 
-DNS MANAGEMENT:
-- list_dns_records: List DNS records for a zone
-- add_dns_record: Add a new DNS record
-- delete_dns_record: Delete a DNS record
+VM MANAGEMENT
+  <<<ACTION:list_vms:{}>>>
+  <<<ACTION:vm_action:{"vmid":101,"node":"pve1","action":"start"}>>>
+    action is one of: start, stop, reboot, shutdown
+  <<<ACTION:get_vm_detail:{"vmid":101,"node":"pve1"}>>>
 
-IPAM:
-- list_subnets: List IP subnets
-- list_addresses: List IP addresses in a subnet
+NODE INFO
+  <<<ACTION:list_nodes:{}>>>
 
-TEMPLATES:
-- list_templates: List available VM/CT templates
+DNS MANAGEMENT
+  <<<ACTION:list_dns_records:{"zone":"example.com"}>>>
+  <<<ACTION:add_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
+  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A"}>>>
 
-When you need to perform an action, use the appropriate tool. When chatting,
-be concise and helpful. You have full context of the InfraForge application."""
+IPAM
+  <<<ACTION:list_subnets:{}>>>
+  <<<ACTION:list_addresses:{"subnet_id":"5"}>>>
 
-TOOLS = [
-    {
-        "name": "navigate_to",
-        "description": "Navigate to a specific screen in InfraForge",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "screen": {
-                    "type": "string",
-                    "enum": [
-                        "dashboard",
-                        "vm_list",
-                        "templates",
-                        "nodes",
-                        "dns",
-                        "ipam",
-                        "ansible",
-                        "new_vm",
-                        "help",
-                    ],
-                    "description": "The screen to navigate to",
-                }
-            },
-            "required": ["screen"],
-        },
-    },
-    {
-        "name": "list_vms",
-        "description": "List all VMs and containers with their status, node, CPU, memory usage",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "vm_action",
-        "description": "Perform an action on a VM (start, stop, reboot, shutdown)",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "vmid": {"type": "integer", "description": "The VM ID"},
-                "node": {"type": "string", "description": "The node the VM is on"},
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop", "reboot", "shutdown"],
-                    "description": "Action to perform",
-                },
-            },
-            "required": ["vmid", "node", "action"],
-        },
-    },
-    {
-        "name": "get_vm_detail",
-        "description": "Get detailed information about a specific VM",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "vmid": {"type": "integer", "description": "The VM ID"},
-                "node": {"type": "string", "description": "The node the VM is on"},
-            },
-            "required": ["vmid", "node"],
-        },
-    },
-    {
-        "name": "list_nodes",
-        "description": "List all cluster nodes with status and resource usage",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "list_dns_records",
-        "description": "List DNS records for a specific zone",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "zone": {"type": "string", "description": "The DNS zone name"}
-            },
-            "required": ["zone"],
-        },
-    },
-    {
-        "name": "add_dns_record",
-        "description": "Add a new DNS record",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "zone": {"type": "string", "description": "The DNS zone"},
-                "name": {
-                    "type": "string",
-                    "description": "Record name (e.g. 'webserver')",
-                },
-                "rtype": {
-                    "type": "string",
-                    "description": "Record type (A, AAAA, CNAME, etc.)",
-                },
-                "value": {
-                    "type": "string",
-                    "description": "Record value (IP, hostname, etc.)",
-                },
-                "ttl": {
-                    "type": "integer",
-                    "description": "TTL in seconds",
-                    "default": 3600,
-                },
-            },
-            "required": ["zone", "name", "rtype", "value"],
-        },
-    },
-    {
-        "name": "delete_dns_record",
-        "description": "Delete a DNS record",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "zone": {"type": "string", "description": "The DNS zone"},
-                "name": {"type": "string", "description": "Record name"},
-                "rtype": {"type": "string", "description": "Record type"},
-            },
-            "required": ["zone", "name", "rtype"],
-        },
-    },
-    {
-        "name": "list_subnets",
-        "description": "List all IP subnets from IPAM",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "list_addresses",
-        "description": "List IP addresses in a subnet",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "subnet_id": {
-                    "type": "string",
-                    "description": "The subnet ID",
-                }
-            },
-            "required": ["subnet_id"],
-        },
-    },
-    {
-        "name": "list_templates",
-        "description": "List available VM and container templates",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-]
+TEMPLATES
+  <<<ACTION:list_templates:{}>>>
+
+Rules:
+- You may include normal text BEFORE or AFTER an action marker.
+- You may emit MULTIPLE action markers in one response.
+- The JSON inside the marker must be valid JSON on a single line.
+- When chatting without performing actions, just reply normally — no markers needed.
+- Be concise and helpful.
+"""
+
+# Regex that extracts   <<<ACTION:name:{...}>>>   markers
+_ACTION_RE = re.compile(r"<<<ACTION:(\w+):(.*?)>>>")
 
 
 class AIClient:
-    """Anthropic API client for InfraForge AI chat.
+    """AI client that delegates to the ``claude`` CLI.
 
-    Uses urllib.request to call the Anthropic Messages API directly --
-    no external SDK required.
+    Conversation state is maintained via ``--resume <session_id>`` so the
+    full chat history is preserved across turns without us having to
+    replay it manually.
     """
 
-    API_URL = "https://api.anthropic.com/v1/messages"
-    API_VERSION = "2023-06-01"
-
-    def __init__(self, config) -> None:
-        """Initialise the client from the application Config object.
-
-        Parameters
-        ----------
-        config:
-            The app's Config object.  Expected attributes:
-            ``config.ai.api_key``, ``config.ai.model``,
-            ``config.ai.provider``.
-        """
-        self._api_key: str = config.ai.api_key
-        self._model: str = config.ai.model or "claude-sonnet-4-5-20250929"
-        self._provider: str = config.ai.provider
-        self._messages: list[dict] = []
+    def __init__(self, config=None) -> None:
+        self._claude_path: str | None = shutil.which("claude")
+        self._session_id: str | None = None
+        self._model: str = ""
+        self._turn_count: int = 0
+        if config and hasattr(config, "ai"):
+            self._model = config.ai.model or ""
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def chat(self, user_message: str, app_context: dict | None = None) -> list[dict]:
-        """Send a user message and return parsed response blocks.
+    @property
+    def is_configured(self) -> bool:
+        """True when the ``claude`` CLI is available."""
+        return self._claude_path is not None
 
-        Parameters
-        ----------
-        user_message:
-            The text the user typed.
-        app_context:
-            Optional dict of application state to include with the
-            user message (e.g. current screen, selected VM).
+    def chat(self, user_message: str, app_context: dict | None = None) -> list[dict]:
+        """Send *user_message* and return parsed response blocks.
 
         Returns
         -------
         list[dict]
-            A list of response blocks.  Each block is one of:
-            - ``{"type": "text", "text": "..."}``
+            Each element is one of:
+            - ``{"type": "text",     "text": "..."}``
             - ``{"type": "tool_use", "name": "...", "input": {...}, "id": "..."}``
-            - ``{"type": "error", "text": "..."}``
+            - ``{"type": "error",    "text": "..."}``
         """
-        # Build user content ------------------------------------------------
-        content = user_message
+        if not self.is_configured:
+            return [{"type": "error", "text": "claude CLI not found. Install Claude Code first."}]
+
+        prompt = user_message
         if app_context:
-            context_str = json.dumps(app_context, indent=2)
-            content = (
-                f"[App context: {context_str}]\n\n{user_message}"
-            )
+            prompt = f"[App context: {json.dumps(app_context)}]\n\n{prompt}"
 
-        self._messages.append({"role": "user", "content": content})
+        result_text = self._run_claude(prompt)
+        self._turn_count += 1
+        return self._parse_response(result_text)
 
-        # Call API -----------------------------------------------------------
-        try:
-            response = self._call_api(self._messages, self.get_system_prompt())
-        except urllib.error.HTTPError as exc:
-            error_body = ""
-            try:
-                error_body = exc.read().decode()
-            except Exception:
-                pass
-            error_msg = f"API error: {exc.code} {exc.reason}"
-            if error_body:
-                error_msg += f" - {error_body}"
-            return [{"type": "error", "text": error_msg}]
-        except urllib.error.URLError as exc:
-            return [{"type": "error", "text": f"Network error: {exc.reason}"}]
-        except Exception as exc:
-            return [{"type": "error", "text": f"Network error: {exc}"}]
-
-        # Parse response -----------------------------------------------------
-        blocks: list[dict] = []
-        content_blocks = response.get("content", [])
-
-        for block in content_blocks:
-            if block.get("type") == "text":
-                blocks.append({"type": "text", "text": block["text"]})
-            elif block.get("type") == "tool_use":
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "name": block["name"],
-                        "input": block["input"],
-                        "id": block["id"],
-                    }
-                )
-
-        # Append assistant turn to history so subsequent calls continue the
-        # conversation correctly.
-        self._messages.append({"role": "assistant", "content": content_blocks})
-
-        return blocks
-
-    def process_tool_result(self, tool_use_id: str, result: str) -> None:
-        """Append a tool_result message to history.
-
-        This allows the next ``chat()`` call to continue the
-        conversation after a tool use round-trip.
+    def send_tool_results(self, results: list[tuple[str, str]]) -> list[dict]:
+        """Send tool execution results back and get AI's continuation.
 
         Parameters
         ----------
-        tool_use_id:
-            The ``id`` from the tool_use block that was executed.
-        result:
-            The string result of running the tool.
-        """
-        self._messages.append(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": result,
-                    }
-                ],
-            }
-        )
+        results:
+            List of ``(tool_name, result_string)`` pairs.
 
-    def get_system_prompt(self) -> str:
-        """Return the system prompt describing InfraForge capabilities."""
-        return SYSTEM_PROMPT
+        Returns the AI's follow-up response blocks.
+        """
+        parts = []
+        for name, result in results:
+            parts.append(f"[Tool result for {name}]: {result}")
+        message = "\n".join(parts)
+        return self.chat(message)
 
     def clear_history(self) -> None:
-        """Reset the conversation message history."""
-        self._messages = []
+        """Reset the conversation (starts a new session)."""
+        self._session_id = None
+        self._turn_count = 0
 
-    @property
-    def is_configured(self) -> bool:
-        """Return True if the API key is set."""
-        return bool(self._api_key)
+    def get_system_prompt(self) -> str:
+        return SYSTEM_PROMPT
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _call_api(self, messages: list[dict], system: str) -> dict:
-        """Call the Anthropic Messages API via urllib.
+    def _run_claude(self, prompt: str) -> str:
+        """Shell out to ``claude -p`` and return the result text."""
+        cmd = [self._claude_path, "-p", prompt, "--output-format", "json"]
 
-        Parameters
-        ----------
-        messages:
-            The conversation history in Anthropic message format.
-        system:
-            The system prompt text.
+        if self._session_id:
+            cmd.extend(["--resume", self._session_id])
+        else:
+            cmd.extend(["--system-prompt", SYSTEM_PROMPT])
 
-        Returns
-        -------
-        dict
-            The parsed JSON response from the API.
-        """
-        payload = {
-            "model": self._model,
-            "max_tokens": 4096,
-            "system": system,
-            "messages": messages,
-            "tools": TOOLS,
-        }
+        if self._model:
+            cmd.extend(["--model", self._model])
 
-        data = json.dumps(payload).encode()
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return "[Error: claude CLI timed out after 120 seconds]"
+        except FileNotFoundError:
+            return "[Error: claude CLI not found]"
 
-        req = urllib.request.Request(
-            self.API_URL,
-            data=data,
-            headers={
-                "X-Api-Key": self._api_key,
-                "anthropic-version": self.API_VERSION,
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip()[:300] if proc.stderr else "unknown error"
+            return f"[Error: claude exited with code {proc.returncode}: {stderr}]"
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode())
+        # Parse JSON output
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            # Fallback: treat stdout as raw text
+            return proc.stdout.strip()
+
+        # Capture session ID for conversation continuity
+        if data.get("session_id"):
+            self._session_id = data["session_id"]
+
+        return data.get("result", proc.stdout.strip())
+
+    def _parse_response(self, text: str) -> list[dict]:
+        """Parse response text for action markers and plain text."""
+        blocks: list[dict] = []
+        last_end = 0
+        tool_idx = 0
+
+        for match in _ACTION_RE.finditer(text):
+            # Collect any plain text before this marker
+            before = text[last_end:match.start()].strip()
+            if before:
+                blocks.append({"type": "text", "text": before})
+
+            tool_name = match.group(1)
+            try:
+                tool_input = json.loads(match.group(2))
+            except json.JSONDecodeError:
+                tool_input = {}
+
+            blocks.append({
+                "type": "tool_use",
+                "name": tool_name,
+                "input": tool_input,
+                "id": f"tool_{self._turn_count}_{tool_idx}",
+            })
+            tool_idx += 1
+            last_end = match.end()
+
+        # Remaining text after the last marker
+        remaining = text[last_end:].strip()
+        if remaining:
+            blocks.append({"type": "text", "text": remaining})
+
+        # If nothing was parsed, return the whole text
+        if not blocks:
+            blocks.append({"type": "text", "text": text})
+
+        return blocks

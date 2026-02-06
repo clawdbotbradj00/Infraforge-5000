@@ -120,97 +120,45 @@ class AIChatModal(ModalScreen):
             if not ai_client or not ai_client.is_configured:
                 self.app.call_from_thread(
                     self._add_error_message,
-                    "AI not configured. Run 'infraforge setup' to add your API key.",
+                    "Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code",
                 )
                 return
 
-            response = ai_client.chat(text)
-
-            for block in response:
-                if block["type"] == "text":
-                    self.app.call_from_thread(self._add_ai_message, block["text"])
-                elif block["type"] == "tool_use":
-                    tool_name = block["name"]
-                    tool_input = block["input"]
-                    tool_id = block["id"]
-
-                    # Show tool execution message
-                    self.app.call_from_thread(
-                        self._add_tool_message, tool_name, tool_input
-                    )
-
-                    # Hide modal while executing
-                    self.app.call_from_thread(self._hide_for_action)
-
-                    # Execute the tool
-                    result = self._execute_tool(tool_name, tool_input)
-
-                    # Show modal again
-                    self.app.call_from_thread(self._show_after_action)
-
-                    # Feed result back to AI
-                    ai_client.process_tool_result(tool_id, result)
-
-                    # Continue conversation (AI may want to respond after tool result)
-                    continue_response = self._continue_ai_chat(ai_client)
-                    for cblock in continue_response:
-                        if cblock["type"] == "text":
-                            self.app.call_from_thread(
-                                self._add_ai_message, cblock["text"]
-                            )
-                        elif cblock["type"] == "tool_use":
-                            # Handle chained tool calls
-                            self.app.call_from_thread(
-                                self._add_tool_message,
-                                cblock["name"],
-                                cblock["input"],
-                            )
-                            result2 = self._execute_tool(
-                                cblock["name"], cblock["input"]
-                            )
-                            ai_client.process_tool_result(cblock["id"], result2)
-
-                elif block["type"] == "error":
-                    self.app.call_from_thread(
-                        self._add_error_message, block["text"]
-                    )
+            self._process_response(ai_client, ai_client.chat(text))
 
         except Exception as e:
             self.app.call_from_thread(self._add_error_message, str(e))
 
-    @staticmethod
-    def _continue_ai_chat(ai_client) -> list[dict]:
-        """Continue the AI conversation after a tool result.
+    def _process_response(self, ai_client, response: list[dict]) -> None:
+        """Walk response blocks, execute tools, and send results back."""
+        tool_results: list[tuple[str, str]] = []
 
-        Calls the Anthropic API with the current message history (which
-        already contains the tool_result) without appending a new user
-        message, then parses the response in the same format as
-        ``ai_client.chat()``.
-        """
-        try:
-            raw = ai_client._call_api(ai_client._messages, ai_client.get_system_prompt())
-        except Exception as exc:
-            return [{"type": "error", "text": str(exc)}]
+        for block in response:
+            if block["type"] == "text":
+                self.app.call_from_thread(self._add_ai_message, block["text"])
+            elif block["type"] == "tool_use":
+                tool_name = block["name"]
+                tool_input = block["input"]
 
-        blocks: list[dict] = []
-        content_blocks = raw.get("content", [])
-        for block in content_blocks:
-            if block.get("type") == "text":
-                blocks.append({"type": "text", "text": block["text"]})
-            elif block.get("type") == "tool_use":
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "name": block["name"],
-                        "input": block["input"],
-                        "id": block["id"],
-                    }
+                self.app.call_from_thread(
+                    self._add_tool_message, tool_name, tool_input
+                )
+                self.app.call_from_thread(self._hide_for_action)
+
+                result = self._execute_tool(tool_name, tool_input)
+
+                self.app.call_from_thread(self._show_after_action)
+                tool_results.append((tool_name, result))
+
+            elif block["type"] == "error":
+                self.app.call_from_thread(
+                    self._add_error_message, block["text"]
                 )
 
-        # Append assistant turn to history so subsequent calls continue
-        # the conversation correctly.
-        ai_client._messages.append({"role": "assistant", "content": content_blocks})
-        return blocks
+        # If tools were executed, send results back and process continuation
+        if tool_results:
+            continuation = ai_client.send_tool_results(tool_results)
+            self._process_response(ai_client, continuation)
 
     # ------------------------------------------------------------------
     # Tool execution
