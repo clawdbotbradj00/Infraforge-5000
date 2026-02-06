@@ -1302,9 +1302,15 @@ def _make_zone_label(zone_name: str, soa: dict, record_count: int) -> Text:
 def _make_record_label(record) -> Text:
     """Build a Rich Text label for a DNS record leaf node."""
     color = RTYPE_COLORS.get(record.rtype, "white")
+    # Fixed-width columns so entries align vertically
+    type_col = f"[{record.rtype}]".ljust(8)
+    name_col = record.name.ljust(28)
+    value_col = record.value.ljust(32)
+    ttl_col = f"TTL={record.ttl}"
+
     label = Text()
-    label.append(f"[{record.rtype}]", style=color)
-    label.append(f"  {record.name}", style="bold")
-    label.append(f"  {record.value}")
-    label.append(f"  TTL={record.ttl}", style="dim")
+    label.append(type_col, style=color)
+    label.append(name_col, style="bold")
+    label.append(value_col)
+    label.append(ttl_col, style="dim")
     return label
