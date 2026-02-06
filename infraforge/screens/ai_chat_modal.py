@@ -354,12 +354,19 @@ class AIChatModal(ModalScreen):
                 self.app.call_from_thread(self._navigate_to, screen)
                 return f"Navigated to {screen}"
 
+            # ── Queries ────────────────────────────────────────────
+            elif name.startswith("query_") or name == "lookup_dns":
+                return self._exec_query(name, inputs)
+
             # ── DNS mutations ──────────────────────────────────────
-            elif name in ("create_dns_record", "update_dns_record", "delete_dns_record"):
+            elif name in (
+                "create_dns_record", "update_dns_record",
+                "delete_dns_record", "create_dns_zone",
+            ):
                 return self._exec_dns(name, inputs)
 
             # ── IPAM mutations ─────────────────────────────────────
-            elif name.startswith(("create_ipam_", "delete_ipam_")):
+            elif name.startswith(("create_ipam_", "delete_ipam_")) or name == "enable_ipam_scan":
                 return self._exec_ipam(name, inputs)
 
             else:
@@ -405,6 +412,14 @@ class AIChatModal(ModalScreen):
             if rtype:
                 parts[0] = f"Deleted {rtype} record: {rec_name}.{zone}"
             return parts[0]
+
+        elif name == "create_dns_zone":
+            client.create_zone(
+                zone=zone,
+                master_ns=inputs.get("master_ns", f"ns1.{zone}."),
+                admin_email=inputs.get("admin_email", f"admin.{zone}."),
+            )
+            return f"Created DNS zone {zone}"
 
         return "Unknown DNS action"
 
@@ -475,7 +490,154 @@ class AIChatModal(ModalScreen):
             client.delete_vlan(inputs["vlan_id"])
             return f"Deleted VLAN {inputs['vlan_id']}"
 
+        elif name == "enable_ipam_scan":
+            client.enable_subnet_scanning(inputs["subnet_id"])
+            return f"Enabled ping scanning on subnet {inputs['subnet_id']}"
+
         return "Unknown IPAM action"
+
+    # ------------------------------------------------------------------
+    # Query tool execution
+    # ------------------------------------------------------------------
+
+    def _exec_query(self, name: str, inputs: dict) -> str:
+        """Handle read-only query tools. Returns data as formatted text."""
+
+        if name == "query_vm_detail":
+            return self._query_vm_detail(inputs)
+        elif name == "query_vm_snapshots":
+            return self._query_vm_snapshots(inputs)
+        elif name == "query_free_ips":
+            return self._query_free_ips(inputs)
+        elif name == "query_storage":
+            return self._query_storage()
+        elif name == "lookup_dns":
+            return self._query_dns_lookup(inputs)
+        return f"Unknown query: {name}"
+
+    def _query_vm_detail(self, inputs: dict) -> str:
+        """Fetch detailed VM config."""
+        from infraforge.models import VMType
+
+        vmid = int(inputs["vmid"])
+        node = inputs["node"]
+
+        # Try QEMU first, then LXC
+        for vm_type in (VMType.QEMU, VMType.LXC):
+            try:
+                detail = self.app.proxmox.get_vm_detail(node, vmid, vm_type)
+                config = detail.get("config", {})
+                status = detail.get("status", {})
+                lines = [f"VM {vmid} on {node} ({vm_type.value}):"]
+                lines.append(f"  Status: {status.get('status', '?')}")
+                lines.append(f"  CPU: {status.get('cpus', '?')} cores")
+                mem_mb = status.get("maxmem", 0) // (1024 * 1024)
+                lines.append(f"  Memory: {mem_mb} MB")
+
+                # Disks
+                for key, val in sorted(config.items()):
+                    if any(key.startswith(p) for p in (
+                        "scsi", "virtio", "ide", "sata", "efidisk", "rootfs", "mp",
+                    )):
+                        lines.append(f"  {key}: {val}")
+
+                # Network
+                for key, val in sorted(config.items()):
+                    if key.startswith("net"):
+                        lines.append(f"  {key}: {val}")
+
+                # Boot order, OS
+                for key in ("boot", "ostype", "machine", "bios", "agent"):
+                    if key in config:
+                        lines.append(f"  {key}: {config[key]}")
+
+                # Tags
+                if config.get("tags"):
+                    lines.append(f"  tags: {config['tags']}")
+
+                return "\n".join(lines)
+            except Exception:
+                continue
+
+        return f"Could not fetch detail for VM {vmid} on {node}"
+
+    def _query_vm_snapshots(self, inputs: dict) -> str:
+        """Fetch VM snapshots."""
+        from infraforge.models import VMType
+
+        vmid = int(inputs["vmid"])
+        node = inputs["node"]
+
+        for vm_type in (VMType.QEMU, VMType.LXC):
+            try:
+                snaps = self.app.proxmox.get_vm_snapshots(node, vmid, vm_type)
+                if not snaps:
+                    return f"VM {vmid}: no snapshots"
+                lines = [f"VM {vmid} snapshots:"]
+                for s in snaps:
+                    name = s.get("name", "?")
+                    desc = s.get("description", "")
+                    ram = "RAM" if s.get("vmstate") else "no-RAM"
+                    lines.append(f"  {name} ({ram}) {desc}")
+                return "\n".join(lines)
+            except Exception:
+                continue
+
+        return f"Could not fetch snapshots for VM {vmid} on {node}"
+
+    def _query_free_ips(self, inputs: dict) -> str:
+        """Fetch available IPs in a subnet."""
+        from infraforge.ipam_client import IPAMClient
+
+        client = IPAMClient(self.app.config)
+        subnet_id = inputs["subnet_id"]
+        count = int(inputs.get("count", 10))
+        ips = client.get_available_ips(subnet_id, count=count)
+        if not ips:
+            return f"No available IPs in subnet {subnet_id}"
+        lines = [f"Available IPs in subnet {subnet_id} ({len(ips)} shown):"]
+        for ip in ips:
+            lines.append(f"  {ip}")
+        return "\n".join(lines)
+
+    def _query_storage(self) -> str:
+        """Fetch storage info for all nodes."""
+        storages = self.app.proxmox.get_storage_info()
+        if not storages:
+            return "No storage info available"
+        lines = ["Storage pools:"]
+        for s in sorted(storages, key=lambda x: (x.node, x.storage)):
+            total_gb = s.total / (1024**3) if s.total else 0
+            used_gb = s.used / (1024**3) if s.used else 0
+            pct = (s.used / s.total * 100) if s.total else 0
+            shared = " (shared)" if s.shared else ""
+            lines.append(
+                f"  {s.node}/{s.storage} [{s.storage_type}]{shared}"
+                f"  {used_gb:.1f}/{total_gb:.1f} GB ({pct:.0f}%)"
+                f"  content: {s.content}"
+            )
+        return "\n".join(lines)
+
+    def _query_dns_lookup(self, inputs: dict) -> str:
+        """Look up a specific DNS record."""
+        from infraforge.dns_client import DNSClient
+
+        dns_cfg = self.app.config.dns
+        client = DNSClient(
+            dns_cfg.server, dns_cfg.port,
+            dns_cfg.tsig_key_name, dns_cfg.tsig_key_secret,
+            dns_cfg.tsig_algorithm,
+        )
+        name = inputs["name"]
+        rtype = inputs.get("rtype", "A")
+        zone = inputs.get("zone", "")
+        values = client.lookup_record(name, rtype=rtype, zone=zone)
+        if not values:
+            return f"No {rtype} record found for {name}"
+        lines = [f"{rtype} records for {name}:"]
+        for v in values:
+            lines.append(f"  {v}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Navigation helper

@@ -54,12 +54,13 @@ def _fetch_vms(app: "InfraForgeApp") -> str:
 
     lines: list[str] = []
     lines.append(f"=== VIRTUAL MACHINES ({total} total: {summary}) ===")
-    lines.append(f"  {'VMID':<6}{'Name':<21}{'Status':<9}{'Node':<7}{'CPU%':<7}{'Mem(GB)':<8}")
+    lines.append(f"  {'VMID':<6}{'Name':<21}{'Type':<6}{'Status':<9}{'Node':<7}{'CPU%':<7}{'Mem(GB)':<8}")
 
     for vm in sorted(vms, key=lambda v: v.vmid):
         status_val = vm.status.value if isinstance(vm.status, VMStatus) else str(vm.status)
+        vtype = vm.vm_type.value if hasattr(vm.vm_type, "value") else str(vm.vm_type)
         lines.append(
-            f"  {vm.vmid:<6}{vm.name:<21}{status_val:<9}{vm.node:<7}"
+            f"  {vm.vmid:<6}{vm.name:<21}{vtype:<6}{status_val:<9}{vm.node:<7}"
             f"{vm.cpu_percent:<7.1f}{vm.mem_gb:<8.1f}"
         )
 
@@ -75,6 +76,16 @@ def _fetch_nodes(app: "InfraForgeApp") -> str:
         return f"=== CLUSTER NODES ===\n  Error: {exc}\n"
 
     lines: list[str] = []
+
+    # Proxmox version
+    try:
+        ver = app.proxmox.get_version()
+        pve_ver = ver.get("version", "?")
+        pve_rel = ver.get("release", "")
+        lines.append(f"=== PROXMOX VE {pve_ver} {pve_rel} ===")
+    except Exception:
+        pass
+
     lines.append("=== CLUSTER NODES ===")
     lines.append(
         f"  {'Node':<8}{'Status':<9}{'CPU%':<7}{'Mem%':<7}{'Disk%':<7}{'Uptime':<12}"
@@ -287,6 +298,34 @@ def _fetch_dns(app: "InfraForgeApp") -> str:
     return "\n".join(sections) if sections else "=== DNS ===\n  No zones discovered\n"
 
 
+def _fetch_storage(app: "InfraForgeApp") -> str:
+    """Fetch and format storage pool summary."""
+    try:
+        storages = app.proxmox.get_storage_info()
+    except Exception as exc:
+        return f"=== STORAGE ===\n  Error: {exc}\n"
+
+    if not storages:
+        return ""
+
+    lines: list[str] = ["=== STORAGE ==="]
+    lines.append(
+        f"  {'Node':<8}{'Pool':<14}{'Type':<8}{'Used':<10}{'Total':<10}{'%':<5}{'Content'}"
+    )
+
+    for s in sorted(storages, key=lambda x: (x.node, x.storage)):
+        total_gb = s.total / (1024**3) if s.total else 0
+        used_gb = s.used / (1024**3) if s.used else 0
+        pct = (s.used / s.total * 100) if s.total else 0
+        lines.append(
+            f"  {s.node:<8}{s.storage:<14}{s.storage_type:<8}"
+            f"{used_gb:<10.1f}{total_gb:<10.1f}{pct:<5.0f}{s.content}"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -308,11 +347,12 @@ def gather_context(app: "InfraForgeApp") -> str:
     # Fetch all sources in parallel
     results: dict[str, str] = {}
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures: dict[Future, str] = {
             executor.submit(_fetch_vms, app): "vms",
             executor.submit(_fetch_nodes, app): "nodes",
             executor.submit(_fetch_templates, app): "templates",
+            executor.submit(_fetch_storage, app): "storage",
             executor.submit(_fetch_ipam, app): "ipam",
             executor.submit(_fetch_dns, app): "dns",
         }
@@ -328,6 +368,7 @@ def gather_context(app: "InfraForgeApp") -> str:
     output = "\n".join([
         results.get("vms", ""),
         results.get("nodes", ""),
+        results.get("storage", ""),
         results.get("templates", ""),
         results.get("ipam", ""),
         results.get("dns", ""),

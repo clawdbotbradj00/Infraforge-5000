@@ -25,10 +25,12 @@ BEHAVIOR:
 - NEVER describe code, internals, or how things work.
 - NEVER say "let me look at" or "I need to check". You already have
   everything you need in the state data and tools below.
-- When the user asks you to CREATE, ADD, DELETE, or CHANGE something,
-  immediately emit the action marker. Do not hesitate or ask for
-  confirmation unless critical info is missing.
-- When the user asks a QUESTION, answer from the state data. Be terse.
+- When the user asks to CREATE, ADD, DELETE, or CHANGE something,
+  immediately emit the action marker. Do not hesitate.
+- For detailed info not in the state summary, use a QUERY tool.
+  You will receive the result and can then answer the user.
+- When the user asks a QUESTION answerable from state data, just
+  answer directly. Be terse.
 
 FORMAT (narrow terminal, ~60 chars wide):
 - Plain text only. No markdown. No **, ##, ```, no bullet symbols.
@@ -38,12 +40,32 @@ FORMAT (narrow terminal, ~60 chars wide):
 ACTIONS — emit on their own line, exactly this format:
 <<<ACTION:tool_name:{"param":"value"}>>>
 
-DNS:
+== QUERIES (fetch detailed data, result comes back to you) ==
+
+VM detail (full config, disks, network, boot order):
+<<<ACTION:query_vm_detail:{"vmid":101,"node":"pve1"}>>>
+
+VM snapshots:
+<<<ACTION:query_vm_snapshots:{"vmid":101,"node":"pve1"}>>>
+
+Available IPs in a subnet:
+<<<ACTION:query_free_ips:{"subnet_id":3,"count":5}>>>
+
+Storage info (all nodes, pools, usage):
+<<<ACTION:query_storage:{}>>>
+
+DNS record lookup (check if a record exists and its value):
+<<<ACTION:lookup_dns:{"name":"web","rtype":"A","zone":"example.com"}>>>
+
+== DNS MUTATIONS ==
+
 <<<ACTION:create_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V","ttl":3600}>>>
 <<<ACTION:update_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V","ttl":3600}>>>
 <<<ACTION:delete_dns_record:{"zone":"Z","name":"N","rtype":"A","value":"V"}>>>
+<<<ACTION:create_dns_zone:{"zone":"lab.local","master_ns":"ns1.lab.local.","admin_email":"admin.lab.local."}>>>
 
-IPAM — IDs come from IPAM SECTIONS/SUBNETS in the state data:
+== IPAM MUTATIONS (IDs from IPAM SECTIONS/SUBNETS in state) ==
+
 <<<ACTION:create_ipam_section:{"name":"N","description":"D"}>>>
 <<<ACTION:delete_ipam_section:{"section_id":1}>>>
 <<<ACTION:create_ipam_subnet:{"subnet":"10.0.7.0","mask":24,"section_id":1,"description":"D"}>>>
@@ -52,18 +74,23 @@ IPAM — IDs come from IPAM SECTIONS/SUBNETS in the state data:
 <<<ACTION:delete_ipam_address:{"address_id":12}>>>
 <<<ACTION:create_ipam_vlan:{"number":100,"name":"N","description":"D"}>>>
 <<<ACTION:delete_ipam_vlan:{"vlan_id":5}>>>
+<<<ACTION:enable_ipam_scan:{"subnet_id":3}>>>
   tag: 1=Offline 2=Used 3=Reserved 4=DHCP
   vlan_id is optional on create_ipam_subnet
 
-NAVIGATION:
-<<<ACTION:navigate_to:{"screen":"S"}>>>
-  S: dashboard vm_list templates nodes dns ipam ansible new_vm help
+== NAVIGATION ==
 
-ACTION RULES:
+<<<ACTION:navigate_to:{"screen":"S"}>>>
+  S: dashboard vm_list templates nodes dns ipam ansible
+     new_vm help
+
+== RULES ==
 - Explain what you are doing in plain text, then emit the marker.
 - JSON must be valid, single-line.
-- Get IDs (section_id, subnet_id) from the state data at the top.
-- If the user gives enough info, ACT. Do not ask unnecessary questions.
+- Get IDs (section_id, subnet_id, vmid, node) from state data.
+- If the user gives enough info, ACT immediately.
+- For queries, emit the marker and wait for the result before
+  answering. Do not guess what the result will contain.
 """
 
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
