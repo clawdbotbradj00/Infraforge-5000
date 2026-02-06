@@ -211,11 +211,12 @@ def _fetch_ipam(app: "InfraForgeApp") -> str:
             try:
                 addresses = client.get_subnet_addresses(str(subnet_id))
                 for addr in addresses[:30]:
+                    aid = addr.get("id", "?")
                     ip = addr.get("ip", "?")
                     hostname = addr.get("hostname", "")
                     tag = addr.get("tag", "")
                     tag_str = tag if isinstance(tag, str) else str(tag)
-                    sub_lines.append(f"    {ip:<17}{hostname:<20}{tag_str}")
+                    sub_lines.append(f"    id={aid:<4} {ip:<17}{hostname:<20}{tag_str}")
                 if len(addresses) > 30:
                     sub_lines.append(f"    ... and {len(addresses) - 30} more addresses")
             except Exception:

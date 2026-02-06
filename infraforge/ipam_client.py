@@ -270,6 +270,10 @@ class IPAMClient:
         }
         return self._post("/addresses/", payload)
 
+    def delete_address(self, address_id: int | str) -> dict:
+        """Delete an IP address reservation."""
+        return self._delete(f"/addresses/{address_id}/")
+
     # ------------------------------------------------------------------
     # VLANs
     # ------------------------------------------------------------------
@@ -323,6 +327,10 @@ class IPAMClient:
         }
         return self._post("/sections/", payload)
 
+    def delete_section(self, section_id: int | str) -> dict:
+        """Delete an IPAM section and all its subnets."""
+        return self._delete(f"/sections/{section_id}/")
+
     def find_section_by_name(self, name: str) -> dict | None:
         """Find a section by name, returns None if not found."""
         try:
@@ -374,6 +382,10 @@ class IPAMClient:
             payload["vlanId"] = str(vlan_id)
         return self._post("/subnets/", payload)
 
+    def delete_subnet(self, subnet_id: int | str) -> dict:
+        """Delete a subnet and all its addresses."""
+        return self._delete(f"/subnets/{subnet_id}/")
+
     def enable_subnet_scanning(
         self,
         subnet_id: int | str,
@@ -404,6 +416,10 @@ class IPAMClient:
             "description": description,
         }
         return self._post("/vlans/", payload)
+
+    def delete_vlan(self, vlan_id: int | str) -> dict:
+        """Delete a VLAN."""
+        return self._delete(f"/vlans/{vlan_id}/")
 
     def find_vlan_by_number(self, number: int) -> dict | None:
         """Find a VLAN by number."""

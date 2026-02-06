@@ -359,12 +359,7 @@ class AIChatModal(ModalScreen):
                 return self._exec_dns(name, inputs)
 
             # ── IPAM mutations ─────────────────────────────────────
-            elif name in (
-                "create_ipam_section",
-                "create_ipam_subnet",
-                "create_ipam_address",
-                "create_ipam_vlan",
-            ):
+            elif name.startswith(("create_ipam_", "delete_ipam_")):
                 return self._exec_ipam(name, inputs)
 
             else:
@@ -463,6 +458,22 @@ class AIChatModal(ModalScreen):
             )
             vlan_id = result.get("id", "?")
             return f"Created VLAN {inputs['number']} (id={vlan_id})"
+
+        elif name == "delete_ipam_section":
+            client.delete_section(inputs["section_id"])
+            return f"Deleted IPAM section {inputs['section_id']}"
+
+        elif name == "delete_ipam_subnet":
+            client.delete_subnet(inputs["subnet_id"])
+            return f"Deleted subnet {inputs['subnet_id']}"
+
+        elif name == "delete_ipam_address":
+            client.delete_address(inputs["address_id"])
+            return f"Deleted address {inputs['address_id']}"
+
+        elif name == "delete_ipam_vlan":
+            client.delete_vlan(inputs["vlan_id"])
+            return f"Deleted VLAN {inputs['vlan_id']}"
 
         return "Unknown IPAM action"
 

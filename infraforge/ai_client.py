@@ -45,9 +45,13 @@ DNS:
 
 IPAM — IDs come from IPAM SECTIONS/SUBNETS in the state data:
 <<<ACTION:create_ipam_section:{"name":"N","description":"D"}>>>
+<<<ACTION:delete_ipam_section:{"section_id":1}>>>
 <<<ACTION:create_ipam_subnet:{"subnet":"10.0.7.0","mask":24,"section_id":1,"description":"D"}>>>
+<<<ACTION:delete_ipam_subnet:{"subnet_id":4}>>>
 <<<ACTION:create_ipam_address:{"ip":"10.0.7.50","subnet_id":3,"hostname":"H","description":"D","tag":2}>>>
+<<<ACTION:delete_ipam_address:{"address_id":12}>>>
 <<<ACTION:create_ipam_vlan:{"number":100,"name":"N","description":"D"}>>>
+<<<ACTION:delete_ipam_vlan:{"vlan_id":5}>>>
   tag: 1=Offline 2=Used 3=Reserved 4=DHCP
   vlan_id is optional on create_ipam_subnet
 
