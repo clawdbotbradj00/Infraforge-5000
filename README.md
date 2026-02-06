@@ -14,7 +14,7 @@
 [![Ansible](https://img.shields.io/badge/Ansible-Playbook_Runner-EE0000?logo=ansible&logoColor=white)](https://www.ansible.com/)
 [![Claude AI](https://img.shields.io/badge/Claude-AI_Copilot-D4A574?logo=anthropic&logoColor=white)](https://claude.ai/)
 
-<img src="assets/logo.png" alt="InfraForge Logo" width="400">
+<img src="assets/logo.png" alt="InfraForge Logo" width="100%">
 
 # InfraForge
 
