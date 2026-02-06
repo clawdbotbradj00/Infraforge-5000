@@ -4,6 +4,9 @@ Provides a full-screen modal overlay for chatting with the AI assistant.
 The modal can be invoked from any screen by pressing ``/`` and supports
 natural-language interaction including tool execution (VM management,
 DNS, IPAM, navigation, etc.) via the Claude Code CLI.
+
+Chat history is stored on ``app._ai_chat_history`` so it persists across
+open/close cycles.  Press Ctrl+N to start a fresh conversation.
 """
 
 from __future__ import annotations
@@ -20,11 +23,19 @@ from textual import work
 from infraforge.ai_context import gather_context
 
 
+# -- Lightweight message record stored on the app --------------------------
+
+def _msg(role: str, text: str, markup: str = "", css_class: str = "") -> dict:
+    """Create a chat history entry."""
+    return {"role": role, "text": text, "markup": markup, "css_class": css_class}
+
+
 class AIChatModal(ModalScreen):
     """Full-screen modal overlay for AI chat."""
 
     BINDINGS = [
         Binding("escape", "close_chat", "Close", show=True),
+        Binding("ctrl+n", "new_chat", "New Chat", show=True),
     ]
 
     DEFAULT_CSS = """
@@ -81,25 +92,59 @@ class AIChatModal(ModalScreen):
         super().__init__()
         self._streaming_widget: Static | None = None
 
+    # ------------------------------------------------------------------
+    # Persistent history helpers (stored on app)
+    # ------------------------------------------------------------------
+
+    def _get_history(self) -> list[dict]:
+        """Return the app-level chat history list, creating if needed."""
+        if not hasattr(self.app, "_ai_chat_history"):
+            self.app._ai_chat_history = []
+        return self.app._ai_chat_history
+
+    def _append_history(self, entry: dict) -> None:
+        self._get_history().append(entry)
+
+    # ------------------------------------------------------------------
+    # Compose / Mount
+    # ------------------------------------------------------------------
+
     def compose(self) -> ComposeResult:
         yield Static(
-            "[bold]AI Assistant[/bold]    [dim]Press Esc to close[/dim]",
+            "[bold]AI Assistant[/bold]  "
+            "[dim]Esc[/dim] close  [dim]Ctrl+N[/dim] new chat",
             id="ai-chat-title",
             markup=True,
         )
         with VerticalScroll(id="ai-chat-history"):
-            pass  # Messages added dynamically
+            pass  # Messages replayed in on_mount
         yield Input(placeholder="Type a message...", id="ai-chat-input")
 
     def on_mount(self) -> None:
-        """Focus the input and show a welcome message if history is empty."""
+        """Replay stored history into the UI, or show welcome."""
         self.query_one("#ai-chat-input", Input).focus()
-        history = self.query_one("#ai-chat-history", VerticalScroll)
-        if not history.children:
-            self._add_ai_message(
+        history = self._get_history()
+        if history:
+            self._replay_history(history)
+        else:
+            welcome = (
                 "Hello! I'm your InfraForge AI assistant. "
-                "Ask me anything about your infrastructure, or tell me what to do."
+                "Ask me anything about your infrastructure, "
+                "or tell me what to do."
             )
+            self._add_ai_message(welcome)
+
+    def _replay_history(self, history: list[dict]) -> None:
+        """Mount Static widgets for every stored message."""
+        container = self.query_one("#ai-chat-history", VerticalScroll)
+        for entry in history:
+            widget = Static(entry["markup"], classes=entry["css_class"], markup=True)
+            container.mount(widget)
+        container.scroll_end(animate=False)
+
+    # ------------------------------------------------------------------
+    # Input handling
+    # ------------------------------------------------------------------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user pressing Enter in the chat input."""
@@ -110,9 +155,30 @@ class AIChatModal(ModalScreen):
         self._add_user_message(text)
         self._send_to_ai(text)
 
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
     def action_close_chat(self) -> None:
         """Close the modal and return to the underlying screen."""
         self.app.pop_screen()
+
+    def action_new_chat(self) -> None:
+        """Clear chat history and start a fresh conversation."""
+        # Clear stored history
+        self.app._ai_chat_history = []
+        # Clear the AI client session so it starts fresh
+        ai_client = getattr(self.app, "ai_client", None)
+        if ai_client:
+            ai_client.clear_history()
+        # Clear UI
+        container = self.query_one("#ai-chat-history", VerticalScroll)
+        container.remove_children()
+        # Show welcome
+        self._add_ai_message(
+            "New conversation started. How can I help?"
+        )
+        self.query_one("#ai-chat-input", Input).focus()
 
     # ------------------------------------------------------------------
     # AI communication — streaming
@@ -179,7 +245,8 @@ class AIChatModal(ModalScreen):
         tool_blocks = [b for b in blocks if b["type"] == "tool_use"]
 
         if not tool_blocks:
-            # Pure text response — we're done
+            # Pure text response — persist it and we're done
+            self.app.call_from_thread(self._persist_streaming_message, full_text)
             self._streaming_widget = None
             return
 
@@ -190,6 +257,7 @@ class AIChatModal(ModalScreen):
             self.app.call_from_thread(
                 self._update_streaming_message, clean_text
             )
+            self.app.call_from_thread(self._persist_streaming_message, clean_text)
         else:
             self.app.call_from_thread(self._remove_streaming_message)
 
@@ -262,6 +330,11 @@ class AIChatModal(ModalScreen):
             )
             history = self.query_one("#ai-chat-history", VerticalScroll)
             history.scroll_end(animate=False)
+
+    def _persist_streaming_message(self, text: str) -> None:
+        """Save the final streaming message text to persistent history."""
+        markup = f"[bold green]AI:[/bold green]  {self._esc(text)}"
+        self._append_history(_msg("ai", text, markup=markup, css_class="ai-msg-ai"))
 
     def _remove_streaming_message(self) -> None:
         """Remove the streaming message (e.g., only contained action markers)."""
@@ -442,7 +515,7 @@ class AIChatModal(ModalScreen):
         scroll.scroll_end(animate=False)
 
     # ------------------------------------------------------------------
-    # Message display helpers
+    # Message display helpers (all persist to app-level history)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -452,48 +525,44 @@ class AIChatModal(ModalScreen):
 
     def _add_user_message(self, text: str) -> None:
         """Append a user message bubble to the chat history."""
+        markup = f"[bold cyan]You:[/bold cyan]  {self._esc(text)}"
+        css_class = "ai-msg-user"
+        self._append_history(_msg("user", text, markup=markup, css_class=css_class))
         history = self.query_one("#ai-chat-history", VerticalScroll)
-        msg = Static(
-            f"[bold cyan]You:[/bold cyan]  {self._esc(text)}",
-            classes="ai-msg-user",
-            markup=True,
-        )
+        msg = Static(markup, classes=css_class, markup=True)
         history.mount(msg)
         history.scroll_end(animate=False)
 
     def _add_ai_message(self, text: str) -> None:
         """Append an AI message bubble to the chat history."""
+        markup = f"[bold green]AI:[/bold green]  {self._esc(text)}"
+        css_class = "ai-msg-ai"
+        self._append_history(_msg("ai", text, markup=markup, css_class=css_class))
         history = self.query_one("#ai-chat-history", VerticalScroll)
-        msg = Static(
-            f"[bold green]AI:[/bold green]  {self._esc(text)}",
-            classes="ai-msg-ai",
-            markup=True,
-        )
+        msg = Static(markup, classes=css_class, markup=True)
         history.mount(msg)
         history.scroll_end(animate=False)
 
     def _add_tool_message(self, tool_name: str, tool_input: dict) -> None:
         """Append a tool-execution status message to the chat history."""
-        history = self.query_one("#ai-chat-history", VerticalScroll)
         desc = f"{tool_name}"
         if tool_input:
             parts = [f"{k}={v}" for k, v in tool_input.items()]
             desc += f"({', '.join(parts[:3])})"
-        msg = Static(
-            f"[dim italic]Running: {self._esc(desc)}[/dim italic]",
-            classes="ai-msg-tool",
-            markup=True,
-        )
+        markup = f"[dim italic]Running: {self._esc(desc)}[/dim italic]"
+        css_class = "ai-msg-tool"
+        self._append_history(_msg("tool", desc, markup=markup, css_class=css_class))
+        history = self.query_one("#ai-chat-history", VerticalScroll)
+        msg = Static(markup, classes=css_class, markup=True)
         history.mount(msg)
         history.scroll_end(animate=False)
 
     def _add_error_message(self, text: str) -> None:
         """Append an error message to the chat history."""
+        markup = f"[bold red]Error:[/bold red]  {self._esc(text)}"
+        css_class = "ai-msg-error"
+        self._append_history(_msg("error", text, markup=markup, css_class=css_class))
         history = self.query_one("#ai-chat-history", VerticalScroll)
-        msg = Static(
-            f"[bold red]Error:[/bold red]  {self._esc(text)}",
-            classes="ai-msg-error",
-            markup=True,
-        )
+        msg = Static(markup, classes=css_class, markup=True)
         history.mount(msg)
         history.scroll_end(animate=False)
