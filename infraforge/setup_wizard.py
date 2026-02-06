@@ -141,8 +141,8 @@ def _configure_ai(console: Console, prev: dict | None = None) -> dict:
             api_key = Prompt.ask("  Anthropic API Key", password=True)
     else:
         console.print("  [bold]To get an API key:[/bold]")
-        console.print("  1. Visit [bold cyan]https://console.anthropic.com/settings/keys[/bold cyan]")
-        console.print("  2. Click [bold]Create Key[/bold] and copy the key starting with [bold]sk-ant-...[/bold]")
+        console.print("  Run [bold cyan]claude setup-token[/bold cyan] and follow the instructions.")
+        console.print("  Copy the key it gives you — it starts with [bold]sk-ant-...[/bold]")
         console.print()
         api_key = Prompt.ask("  Anthropic API Key (sk-ant-...)", password=True)
 
