@@ -73,7 +73,7 @@ TAG_STATUS_MAP = {
 }
 
 STATUS_COLORS = {
-    "Active": "green",
+    "Active": "#2E7D32",
     "Reserved": "yellow",
     "Offline": "red",
     "DHCP": "cyan",
@@ -1516,11 +1516,13 @@ def _make_subnet_label(subnet: dict, vlans: list[dict]) -> Text:
     else:
         cidr_col = cidr.ljust(20)
         desc_col = desc.ljust(24) if desc else "".ljust(24)
-        usage_col = f"[{used}/{maxhosts}]".ljust(12)
+        usage_col = f"[{used}/{maxhosts}]".ljust(14)
         pct_col = f"{pct:.0f}%"
         label.append(cidr_col, style="bold")
         label.append(desc_col, style="dim")
+        label.append("\t", style="default")
         label.append(usage_col, style=util_color)
+        label.append("\t", style="default")
         label.append(pct_col, style=util_color)
 
     return label
