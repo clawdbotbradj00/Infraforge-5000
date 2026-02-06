@@ -11,6 +11,9 @@ import time
 
 from infraforge.models import VMStatus
 
+NODE_SORT_FIELDS = ["name", "status", "cpu", "mem", "disk", "uptime"]
+NODE_SORT_LABELS = ["Name", "Status", "CPU %", "Mem %", "Disk %", "Uptime"]
+
 
 class DashboardScreen(Screen):
     """Main dashboard screen."""
@@ -22,8 +25,14 @@ class DashboardScreen(Screen):
         Binding("x", "manage_dns", "DNS", show=True),
         Binding("i", "manage_ipam", "IPAM", show=True),
         Binding("c", "create_vm", "New VM", show=True),
+        Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._node_sort_index: int = 0
+        self._node_sort_reverse: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -44,7 +53,9 @@ class DashboardScreen(Screen):
                     yield Static("0", id="stat-templates-value", classes="stat-value")
                     yield Static("Templates", classes="stat-label")
 
-            yield Static("Cluster Nodes", classes="section-title")
+            with Horizontal(id="node-header-row"):
+                yield Static("Cluster Nodes", classes="section-title")
+                yield Static("  Sort: [bold]Name \u25b2[/bold]", id="node-sort-label", markup=True)
             yield Container(id="node-summary")
 
             yield Static("Navigation", classes="section-title")
@@ -106,11 +117,57 @@ class DashboardScreen(Screen):
         self.query_one("#stat-stopped-value", Static).update(str(stopped))
         self.query_one("#stat-templates-value", Static).update(str(templates))
 
+    def _sort_nodes(self, nodes):
+        """Sort nodes based on current sort field and direction."""
+        field = NODE_SORT_FIELDS[self._node_sort_index]
+        if field == "name":
+            key = lambda n: n.node.lower()
+        elif field == "status":
+            key = lambda n: (0 if n.status == "online" else 1, n.node.lower())
+        elif field == "cpu":
+            key = lambda n: n.cpu_percent
+        elif field == "mem":
+            key = lambda n: n.mem_percent
+        elif field == "disk":
+            key = lambda n: n.disk_percent
+        elif field == "uptime":
+            key = lambda n: n.uptime
+        else:
+            key = lambda n: n.node.lower()
+        return sorted(nodes, key=key, reverse=self._node_sort_reverse)
+
+    def _update_sort_label(self):
+        label = NODE_SORT_LABELS[self._node_sort_index]
+        direction = " \u25bc" if self._node_sort_reverse else " \u25b2"
+        self.query_one("#node-sort-label", Static).update(
+            f"  Sort: [bold]{label}{direction}[/bold]"
+        )
+
+    def action_cycle_node_sort(self):
+        """Cycle through node sort fields and direction."""
+        fields = NODE_SORT_FIELDS
+        if self._node_sort_index == len(fields) - 1 and not self._node_sort_reverse:
+            self._node_sort_reverse = True
+        elif self._node_sort_reverse:
+            self._node_sort_reverse = False
+            self._node_sort_index = (self._node_sort_index + 1) % len(fields)
+        else:
+            self._node_sort_index = (self._node_sort_index + 1) % len(fields)
+        self._update_sort_label()
+        # Re-render with current cached nodes (next refresh will also use new sort)
+        if hasattr(self, '_last_nodes') and self._last_nodes:
+            self._render_node_list(self._last_nodes)
+
     def _update_nodes(self, nodes):
+        self._last_nodes = nodes
+        self._render_node_list(nodes)
+
+    def _render_node_list(self, nodes):
         container = self.query_one("#node-summary")
         container.remove_children()
 
-        for node in nodes:
+        sorted_nodes = self._sort_nodes(nodes)
+        for node in sorted_nodes:
             cpu_bar = self._make_bar(node.cpu_percent)
             mem_bar = self._make_bar(node.mem_percent)
             disk_bar = self._make_bar(node.disk_percent)
