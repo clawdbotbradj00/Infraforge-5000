@@ -115,14 +115,14 @@ Screen {
 }
 
 ListView > ListItem.-highlight {
-    background: white;
-    color: black;
+    background: $accent;
+    color: $text;
     text-style: bold;
 }
 
 ListView:focus > ListItem.-highlight {
-    background: white;
-    color: black;
+    background: $accent;
+    color: $text;
     text-style: bold;
 }
 
@@ -208,14 +208,14 @@ DataTable > .datatable--header {
 }
 
 DataTable > .datatable--cursor {
-    background: white;
-    color: black;
+    background: $accent;
+    color: $text;
     text-style: bold;
 }
 
 DataTable:focus > .datatable--cursor {
-    background: white;
-    color: black;
+    background: $accent;
+    color: $text;
     text-style: bold;
 }
 
