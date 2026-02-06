@@ -10,7 +10,7 @@ Built with [Textual](https://github.com/Textualize/textual) (Python TUI framewor
 - **VM Management** — List all VMs/containers with sort, filter, and group controls; drill into details
 - **Template Browser** — Tabbed view of VM templates, container templates, and ISO images
 - **Node Info** — Per-node CPU, memory, disk, and storage pool stats
-- **DNS Management** — Browse BIND9 zone records via AXFR, sort/filter by record type
+- **DNS Management** — Multi-zone BIND9 management with full record CRUD (add/edit/delete), zone switching, and AXFR zone transfers
 - **New VM Wizard** — 8-step guided creation (basics, template, resources, network, IPAM, DNS, provisioning, review)
 - **phpIPAM Integration** — Auto-deployed Docker stack with subnet scanning and IP allocation
 - **Persistent Preferences** — Sort/filter/group settings survive restarts
@@ -96,12 +96,16 @@ dns:
   provider: "bind9"
   server: "10.0.0.1"
   port: 53
-  zone: "lab.local"
+  zones:
+    - "lab.local"
+    - "dev.local"
   domain: "lab.local"
   tsig_key_name: "infraforge-key"
   tsig_key_secret: "base64-encoded-secret"
   tsig_algorithm: "hmac-sha256"
 ```
+
+Zones can also be added/removed from within the DNS Management screen in InfraForge.
 
 Generate a TSIG key on your BIND9 server:
 
@@ -145,7 +149,7 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `c` | Create New VM |
 | `r` | Refresh |
 
-### VM List / DNS / Templates
+### VM List / Templates
 | Key | Action |
 |-----|--------|
 | `s` | Cycle sort field |
@@ -153,6 +157,20 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `g` | Cycle grouping |
 | `r` | Refresh |
 | `Enter` | View details |
+
+### DNS Management
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Switch zones |
+| `1`-`9` | Jump to zone by number |
+| `z` | Add a zone |
+| `Z` | Remove current zone |
+| `a` | Add DNS record |
+| `e` | Edit selected record |
+| `d` | Delete selected record |
+| `s` | Cycle sort field |
+| `f` | Cycle filter by record type |
+| `r` | Refresh records |
 
 ## Project Structure
 

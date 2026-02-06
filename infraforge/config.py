@@ -28,12 +28,20 @@ class DNSConfig:
     provider: str = ""          # "bind9", "cloudflare", "route53", etc.
     server: str = ""            # BIND9 server IP / hostname
     port: int = 53              # DNS port
-    zone: str = ""              # Zone to manage (e.g. "lab.local")
-    domain: str = ""            # Domain for FQDN construction
-    tsig_key_name: str = ""     # TSIG key name for BIND9 auth
-    tsig_key_secret: str = ""   # TSIG key secret (base64)
-    tsig_algorithm: str = "hmac-sha256"  # TSIG algorithm
+    zones: list = field(default_factory=list)  # List of zone names e.g. ["lab.local", "dev.local"]
+    domain: str = ""            # Default domain for FQDN construction
+    tsig_key_name: str = ""
+    tsig_key_secret: str = ""
+    tsig_algorithm: str = "hmac-sha256"
     api_key: str = ""           # Generic API key (Cloudflare, etc.)
+
+    def add_zone(self, zone: str) -> None:
+        if zone not in self.zones:
+            self.zones.append(zone)
+
+    def remove_zone(self, zone: str) -> None:
+        if zone in self.zones:
+            self.zones.remove(zone)
 
 
 @dataclass
@@ -131,12 +139,22 @@ class Config:
         # Parse dns section
         if "dns" in data:
             dns = data["dns"]
+            # Support both new "zones" list and old single "zone" string
+            zones_val = dns.get("zones", [])
+            if not zones_val and dns.get("zone"):
+                zones_val = [str(dns.get("zone"))]
+            if not isinstance(zones_val, list):
+                zones_val = [str(zones_val)]
+            # Fall back: use old "zone" for domain if domain is empty
+            domain_val = str(dns.get("domain", ""))
+            if not domain_val and dns.get("zone"):
+                domain_val = str(dns.get("zone"))
             config.dns = DNSConfig(
                 provider=str(dns.get("provider", "")),
                 server=str(dns.get("server", "")),
                 port=int(dns.get("port", 53)),
-                zone=str(dns.get("zone", "")),
-                domain=str(dns.get("domain", "")),
+                zones=zones_val,
+                domain=domain_val,
                 tsig_key_name=str(dns.get("tsig_key_name", "")),
                 tsig_key_secret=str(dns.get("tsig_key_secret", "")),
                 tsig_algorithm=str(dns.get("tsig_algorithm", "hmac-sha256")),

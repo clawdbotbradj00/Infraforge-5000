@@ -320,6 +320,63 @@ DataTable > .datatable--hover {
     margin: 1 0 0 0;
 }
 
+#dns-zone-bar {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+.dns-zone-btn {
+    width: auto;
+    padding: 1 2;
+    color: $text-muted;
+    text-style: italic;
+}
+
+.dns-zone-btn.-active {
+    color: $accent;
+    text-style: bold;
+    background: $primary-background;
+}
+
+#dns-status-bar {
+    height: 1;
+    margin: 1 0 0 0;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* Modal input screens */
+.modal-container {
+    align: center middle;
+}
+
+.modal-box {
+    width: 60;
+    height: auto;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+.modal-title {
+    text-style: bold;
+    color: $accent;
+    text-align: center;
+    width: 100%;
+    margin: 0 0 1 0;
+}
+
+.modal-buttons {
+    layout: horizontal;
+    height: 3;
+    margin: 1 0 0 0;
+    content-align: center middle;
+}
+
 /* ── New VM Wizard ── */
 
 #wizard-container {

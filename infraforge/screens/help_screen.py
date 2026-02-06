@@ -49,8 +49,16 @@ HELP_TEXT = """\
   [bold cyan]↑ ↓[/bold cyan]         Scroll content
 
 [bold]DNS Management[/bold]
+  [bold cyan]Tab[/bold cyan]         Next zone
+  [bold cyan]Shift+Tab[/bold cyan]   Previous zone
+  [bold cyan]1-9[/bold cyan]         Jump to zone by number
+  [bold cyan]z[/bold cyan]           Add a zone
+  [bold cyan]Z[/bold cyan]           Remove current zone
+  [bold cyan]a[/bold cyan]           Add a DNS record
+  [bold cyan]e[/bold cyan]           Edit selected record
+  [bold cyan]d[/bold cyan]           Delete selected record
   [bold cyan]s[/bold cyan]           Cycle sort field (Name / Type / Value / TTL)
-  [bold cyan]f[/bold cyan]           Cycle filter by record type (All / A / AAAA / CNAME / ...)
+  [bold cyan]f[/bold cyan]           Cycle filter by record type
   [bold cyan]r[/bold cyan]           Refresh records from server
 
 [bold]New VM Wizard[/bold]

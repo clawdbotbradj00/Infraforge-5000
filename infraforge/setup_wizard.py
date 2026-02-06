@@ -190,7 +190,7 @@ def _configure_dns(console: Console, prev: dict | None = None) -> dict:
 
     if not Confirm.ask("Configure DNS provider?", default=has_existing):
         return {
-            "provider": "", "server": "", "port": 53, "zone": "", "domain": "",
+            "provider": "", "server": "", "port": 53, "zones": [], "domain": "",
             "tsig_key_name": "", "tsig_key_secret": "", "tsig_algorithm": "hmac-sha256",
             "api_key": "",
         }
@@ -212,8 +212,6 @@ def _configure_dns(console: Console, prev: dict | None = None) -> dict:
         )
         dns_server = Prompt.ask("BIND9 server IP/hostname", default=prev.get("server") or None)
         dns_port = Prompt.ask("DNS port", default=str(prev.get("port", 53)))
-        dns_zone = Prompt.ask("DNS zone (e.g. lab.local)", default=prev.get("zone") or None)
-        dns_domain = Prompt.ask("Domain for FQDNs", default=prev.get("domain") or dns_zone)
         tsig_name = Prompt.ask("TSIG key name", default=prev.get("tsig_key_name", "infraforge-key"))
 
         prev_secret = prev.get("tsig_key_secret", "")
@@ -229,11 +227,40 @@ def _configure_dns(console: Console, prev: dict | None = None) -> dict:
 
         tsig_algo = Prompt.ask("TSIG algorithm", default=prev.get("tsig_algorithm", "hmac-sha256"))
 
+        # Collect DNS zones (multi-zone support)
+        console.print("\n[bold]Add DNS zones to manage?[/bold] [dim](you can also add zones later in the TUI)[/dim]")
+        # Seed with previous zones (handle both old "zone" and new "zones" keys)
+        prev_zones = prev.get("zones", [])
+        if not prev_zones and prev.get("zone"):
+            prev_zones = [prev["zone"]]
+        dns_zones: list[str] = []
+        for pz in prev_zones:
+            console.print(f"  [dim]Previous zone: {pz}[/dim]")
+
+        while True:
+            default_hint = prev_zones[len(dns_zones)] if len(dns_zones) < len(prev_zones) else None
+            zone_input = Prompt.ask(
+                "Zone name (blank to finish)",
+                default=default_hint or "",
+            )
+            if not zone_input:
+                break
+            if zone_input in dns_zones:
+                console.print(f"  [yellow]Zone '{zone_input}' already added.[/yellow]")
+                continue
+            dns_zones.append(zone_input)
+            console.print(f"  [green]+[/green] Added zone: {zone_input}")
+
+        # Domain defaults to first zone if not set
+        prev_domain = prev.get("domain", "")
+        default_domain = prev_domain or (dns_zones[0] if dns_zones else "")
+        dns_domain = Prompt.ask("Domain for FQDNs", default=default_domain or None)
+
         result = {
             "provider": "bind9",
             "server": dns_server,
             "port": int(dns_port),
-            "zone": dns_zone,
+            "zones": dns_zones,
             "domain": dns_domain,
             "tsig_key_name": tsig_name,
             "tsig_key_secret": tsig_secret,
@@ -261,13 +288,13 @@ def _configure_dns(console: Console, prev: dict | None = None) -> dict:
     else:
         dns_api_key = Prompt.ask("API Key", password=True, default="")
 
-    dns_zone = Prompt.ask("DNS Zone / Domain", default=prev.get("zone", ""))
+    dns_zone = Prompt.ask("DNS Zone / Domain", default=prev.get("domain", "") or (prev.get("zones", [None])[0] if prev.get("zones") else prev.get("zone", "")))
 
     return {
         "provider": dns_provider,
         "server": "",
         "port": 53,
-        "zone": dns_zone,
+        "zones": [dns_zone] if dns_zone else [],
         "domain": dns_zone,
         "tsig_key_name": "",
         "tsig_key_secret": "",
@@ -282,32 +309,30 @@ def _test_dns_connection(console: Console, dns_config: dict) -> None:
     try:
         from infraforge.dns_client import DNSClient, DNSError
 
-        # Build a minimal config-like object for the client
-        class _DnsCfg:
-            pass
-
-        class _Cfg:
-            pass
-
-        cfg = _Cfg()
-        dns_cfg = _DnsCfg()
-        for k, v in dns_config.items():
-            setattr(dns_cfg, k, v)
-        cfg.dns = dns_cfg
-
-        client = DNSClient(cfg)
+        client = DNSClient(
+            dns_config["server"],
+            dns_config.get("port", 53),
+            dns_config.get("tsig_key_name", ""),
+            dns_config.get("tsig_key_secret", ""),
+            dns_config.get("tsig_algorithm", "hmac-sha256"),
+        )
         if client.check_health():
             console.print(f"[green]✓[/green] Connected to DNS server at {dns_config['server']}")
-            try:
-                soa = client.get_zone_soa()
-                if soa:
-                    console.print(
-                        f"  Zone: {soa.get('zone', '?')}  "
-                        f"Serial: {soa.get('serial', '?')}  "
-                        f"Primary: {soa.get('mname', '?')}"
-                    )
-            except DNSError:
-                pass
+            # Test SOA for each configured zone
+            zones = dns_config.get("zones", [])
+            for zone in zones:
+                try:
+                    soa = client.get_zone_soa(zone)
+                    if soa:
+                        console.print(
+                            f"  Zone: {soa.get('zone', zone)}  "
+                            f"Serial: {soa.get('serial', '?')}  "
+                            f"Primary: {soa.get('mname', '?')}"
+                        )
+                    else:
+                        console.print(f"  [yellow]Zone {zone}: no SOA record found[/yellow]")
+                except DNSError:
+                    console.print(f"  [yellow]Zone {zone}: SOA query failed[/yellow]")
         else:
             console.print(f"[red]✗[/red] Cannot reach DNS server at {dns_config['server']}")
             console.print("[yellow]Check the server IP and ensure port 53 is accessible.[/yellow]")

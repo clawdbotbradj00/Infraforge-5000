@@ -190,7 +190,7 @@ load_existing_config() {
     PREV_DNS_PROVIDER=""
     PREV_DNS_SERVER=""
     PREV_DNS_PORT=""
-    PREV_DNS_ZONE=""
+    PREV_DNS_ZONES=""
     PREV_DNS_DOMAIN=""
     PREV_DNS_TSIG_KEY_NAME=""
     PREV_DNS_TSIG_KEY_SECRET=""
@@ -215,7 +215,20 @@ load_existing_config() {
     PREV_DNS_PROVIDER=$(cfg_get dns provider)
     PREV_DNS_SERVER=$(cfg_get dns server)
     PREV_DNS_PORT=$(cfg_get dns port)
-    PREV_DNS_ZONE=$(cfg_get dns zone)
+    # Load zones as space-separated list; fall back to old single "zone" key
+    PREV_DNS_ZONES=$($PYTHON_CMD -c "
+import yaml
+try:
+    with open('$CONFIG_FILE') as f:
+        data = yaml.safe_load(f) or {}
+    dns = data.get('dns', {})
+    zones = dns.get('zones', [])
+    if not zones and dns.get('zone'):
+        zones = [str(dns.get('zone'))]
+    print(' '.join(str(z) for z in zones))
+except Exception:
+    print('')
+" 2>/dev/null || echo "")
     PREV_DNS_DOMAIN=$(cfg_get dns domain)
     PREV_DNS_TSIG_KEY_NAME=$(cfg_get dns tsig_key_name)
     PREV_DNS_TSIG_KEY_SECRET=$(cfg_get dns tsig_key_secret)
@@ -297,6 +310,7 @@ configure_dns() {
     DNS_TSIG_KEY_NAME="${PREV_DNS_TSIG_KEY_NAME}"
     DNS_TSIG_KEY_SECRET="${PREV_DNS_TSIG_KEY_SECRET}"
     DNS_TSIG_ALGORITHM="${PREV_DNS_TSIG_ALGORITHM:-hmac-sha256}"
+    DNS_ZONES=""
 
     local has_dns="n"
     [[ -n "$PREV_DNS_PROVIDER" ]] && has_dns="y"
@@ -331,8 +345,6 @@ configure_dns() {
                 echo
                 prompt_input "BIND9 server IP/hostname" "${PREV_DNS_SERVER}" DNS_SERVER
                 prompt_input "DNS port" "${PREV_DNS_PORT:-53}" DNS_PORT
-                prompt_input "DNS zone (e.g. lab.local)" "${PREV_DNS_ZONE}" DNS_ZONE
-                prompt_input "Domain for FQDNs" "${PREV_DNS_DOMAIN:-$DNS_ZONE}" DNS_DOMAIN
                 prompt_input "TSIG key name" "${PREV_DNS_TSIG_KEY_NAME:-infraforge-key}" DNS_TSIG_KEY_NAME
 
                 if [[ -n "$PREV_DNS_TSIG_KEY_SECRET" ]]; then
@@ -348,6 +360,52 @@ configure_dns() {
                 fi
 
                 prompt_input "TSIG algorithm" "${PREV_DNS_TSIG_ALGORITHM:-hmac-sha256}" DNS_TSIG_ALGORITHM
+
+                # Collect DNS zones (multi-zone support)
+                echo
+                echo -e "${BOLD}Add DNS zones to manage${NC} ${DIM}(you can also add zones later in the TUI)${NC}"
+                if [[ -n "$PREV_DNS_ZONES" ]]; then
+                    echo -e "  ${DIM}Previous zones: ${PREV_DNS_ZONES}${NC}"
+                fi
+
+                DNS_ZONES=""
+                while true; do
+                    # Suggest the next previous zone as default
+                    local zone_default=""
+                    local zone_count
+                    zone_count=$(echo "$DNS_ZONES" | wc -w)
+                    local prev_arr=($PREV_DNS_ZONES)
+                    if [[ $zone_count -lt ${#prev_arr[@]} ]]; then
+                        zone_default="${prev_arr[$zone_count]}"
+                    fi
+
+                    prompt_input "Zone name (blank to finish)" "${zone_default}" zone_input
+                    [[ -z "$zone_input" ]] && break
+
+                    # Check for duplicates
+                    local is_dup=false
+                    for existing_zone in $DNS_ZONES; do
+                        if [[ "$existing_zone" == "$zone_input" ]]; then
+                            is_dup=true
+                            break
+                        fi
+                    done
+                    if $is_dup; then
+                        warn "Zone '${zone_input}' already added."
+                        continue
+                    fi
+
+                    DNS_ZONES="${DNS_ZONES:+$DNS_ZONES }${zone_input}"
+                    success "Added zone: ${zone_input}"
+                done
+
+                # Domain defaults to first zone
+                local first_zone=""
+                for z in $DNS_ZONES; do
+                    first_zone="$z"
+                    break
+                done
+                prompt_input "Domain for FQDNs" "${PREV_DNS_DOMAIN:-$first_zone}" DNS_DOMAIN
                 ;;
             2)
                 DNS_PROVIDER="cloudflare"
@@ -361,32 +419,44 @@ configure_dns() {
                 else
                     prompt_secret "Cloudflare API Key" DNS_API_KEY
                 fi
-                prompt_input "DNS Zone (e.g., example.com)" "${PREV_DNS_ZONE}" DNS_ZONE
-                DNS_DOMAIN="$DNS_ZONE"
+                local prev_cf_zone=""
+                for z in $PREV_DNS_ZONES; do
+                    prev_cf_zone="$z"
+                    break
+                done
+                prompt_input "DNS Zone (e.g., example.com)" "${prev_cf_zone}" DNS_ZONE_INPUT
+                DNS_ZONES="$DNS_ZONE_INPUT"
+                DNS_DOMAIN="$DNS_ZONE_INPUT"
                 ;;
             3)
                 DNS_PROVIDER="route53"
                 prompt_input "AWS Access Key ID" "${PREV_DNS_API_KEY}" DNS_API_KEY
-                prompt_input "DNS Zone ID" "${PREV_DNS_ZONE}" DNS_ZONE
+                local prev_r53_zone=""
+                for z in $PREV_DNS_ZONES; do
+                    prev_r53_zone="$z"
+                    break
+                done
+                prompt_input "DNS Zone ID" "${prev_r53_zone}" DNS_ZONE_INPUT
+                DNS_ZONES="$DNS_ZONE_INPUT"
                 prompt_input "Domain" "${PREV_DNS_DOMAIN}" DNS_DOMAIN
                 ;;
             4)
                 DNS_PROVIDER="custom"
                 DNS_API_KEY=""
                 prompt_input "Domain" "${PREV_DNS_DOMAIN}" DNS_DOMAIN
-                DNS_ZONE=""
+                DNS_ZONES=""
                 ;;
             *)
                 DNS_PROVIDER=""
                 DNS_API_KEY=""
-                DNS_ZONE=""
+                DNS_ZONES=""
                 DNS_DOMAIN=""
                 ;;
         esac
     else
         DNS_PROVIDER=""
         DNS_API_KEY=""
-        DNS_ZONE=""
+        DNS_ZONES=""
         DNS_DOMAIN=""
     fi
 }
@@ -627,7 +697,7 @@ dns:
   provider: "${DNS_PROVIDER}"
   server: "${DNS_SERVER}"
   port: ${DNS_PORT:-53}
-  zone: "${DNS_ZONE}"
+$(if [[ -z "$DNS_ZONES" ]]; then echo "  zones: []"; else echo "  zones:"; for z in $DNS_ZONES; do echo "    - \"$z\""; done; fi)
   domain: "${DNS_DOMAIN}"
   tsig_key_name: "${DNS_TSIG_KEY_NAME}"
   tsig_key_secret: "${DNS_TSIG_KEY_SECRET}"

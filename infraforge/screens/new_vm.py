@@ -403,10 +403,25 @@ class NewVMScreen(Screen):
                 f"[bold]Domain:[/bold]        [green]{dns_cfg.domain}[/green]\n"
             )
 
+            # Zone picker — show available zones from config
+            if dns_cfg.zones:
+                # Initialize dns_zone on spec if not already set
+                if not getattr(self.spec, "dns_zone", ""):
+                    self.spec.dns_zone = dns_cfg.zones[0] if dns_cfg.zones else ""
+                lines.append("[bold]DNS Zones:[/bold]")
+                for zone in dns_cfg.zones:
+                    marker = " [bold green]<-- selected[/bold green]" if zone == self.spec.dns_zone else ""
+                    lines.append(f"    * {zone}{marker}")
+                lines.append("")
+            else:
+                lines.append("[dim]No zones configured.[/dim]\n")
+
         hostname_display = self.spec.dns_name or "(not set)"
         domain_display = self.spec.dns_domain or "(not set)"
+        selected_zone = getattr(self.spec, "dns_zone", "") or "(not set)"
         lines.extend([
             f"[bold]Hostname:[/bold]      [green]{hostname_display}[/green]",
+            f"[bold]Zone:[/bold]          [green]{selected_zone}[/green]",
             f"[bold]Domain:[/bold]        [green]{domain_display}[/green]",
         ])
 
@@ -457,8 +472,9 @@ class NewVMScreen(Screen):
         """Check if a DNS record already exists for the chosen hostname."""
         try:
             from infraforge.dns_client import DNSClient
-            client = DNSClient(self.app.config)
-            existing = client.lookup_record(self.spec.dns_name, "A")
+            client = DNSClient.from_config(self.app.config)
+            selected_zone = getattr(self.spec, "dns_zone", "") or self.app.config.dns.domain
+            existing = client.lookup_record(self.spec.dns_name, "A", selected_zone)
             self._dns_check_result = existing
             self.app.call_from_thread(self._render_step)
         except Exception:

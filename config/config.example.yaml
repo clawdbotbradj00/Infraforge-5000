@@ -17,11 +17,16 @@ proxmox:
   #   - "node2"
 
 dns:
-  # DNS provider for automated DNS record creation
-  provider: ""  # "cloudflare", "route53", "resolved", etc.
-  api_key: ""
-  zone: ""
-  domain: ""
+  provider: "bind9"
+  server: "10.0.0.1"
+  port: 53
+  zones:
+    - "lab.local"
+    - "dev.local"
+  domain: "lab.local"
+  tsig_key_name: "infraforge-key"
+  tsig_key_secret: ""
+  tsig_algorithm: "hmac-sha256"
 
 ipam:
   # phpIPAM integration for IP address management
