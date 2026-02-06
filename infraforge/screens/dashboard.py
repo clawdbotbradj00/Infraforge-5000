@@ -7,6 +7,8 @@ from textual.widgets import Header, Footer, Static, ListView, ListItem, Label
 from textual.containers import Container, Horizontal, Vertical
 from textual import work
 
+import time
+
 from infraforge.models import VMStatus
 
 
@@ -58,41 +60,45 @@ class DashboardScreen(Screen):
         yield Footer()
 
     def on_mount(self):
-        self.load_data()
+        self._start_auto_refresh()
         self._check_for_update()
-        self.set_interval(10, self._auto_refresh)
 
     def on_screen_resume(self):
         """Refresh data when returning to the dashboard from another screen."""
-        self.load_data()
+        self._start_auto_refresh()
 
-    def _auto_refresh(self):
-        """Periodic refresh — only fires when dashboard is the active screen."""
-        if self.app.screen is self:
-            self.load_data()
+    @work(thread=True, exclusive=True, group="dashboard-refresh")
+    def _start_auto_refresh(self):
+        """Background worker that refreshes dashboard data every 10 seconds."""
+        while True:
+            try:
+                self._do_load_data()
+            except Exception as e:
+                self.app.call_from_thread(self._show_error, str(e))
+            time.sleep(10)
 
-    @work(thread=True, exclusive=True)
+    def _do_load_data(self):
+        """Fetch fresh data from Proxmox and update the UI."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_vms = pool.submit(self.app.proxmox.get_all_vms_and_templates)
+            fut_nodes = pool.submit(self.app.proxmox.get_node_info, True)
+
+            vms, templates = fut_vms.result()
+            nodes = fut_nodes.result()
+
+        total = len(vms)
+        running = sum(1 for v in vms if v.status == VMStatus.RUNNING)
+        stopped = sum(1 for v in vms if v.status == VMStatus.STOPPED)
+        template_count = len(templates)
+
+        self.app.call_from_thread(self._update_stats, total, running, stopped, template_count)
+        self.app.call_from_thread(self._update_nodes, nodes)
+
     def load_data(self):
-        """Load dashboard data from Proxmox."""
-        try:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_vms = pool.submit(self.app.proxmox.get_all_vms_and_templates)
-                fut_nodes = pool.submit(self.app.proxmox.get_node_info, True)
-
-                vms, templates = fut_vms.result()
-                nodes = fut_nodes.result()
-
-            total = len(vms)
-            running = sum(1 for v in vms if v.status == VMStatus.RUNNING)
-            stopped = sum(1 for v in vms if v.status == VMStatus.STOPPED)
-            template_count = len(templates)
-
-            self.app.call_from_thread(self._update_stats, total, running, stopped, template_count)
-            self.app.call_from_thread(self._update_nodes, nodes)
-        except Exception as e:
-            self.app.call_from_thread(self._show_error, str(e))
+        """Manual refresh (called by action_refresh)."""
+        self._start_auto_refresh()
 
     def _update_stats(self, total: int, running: int, stopped: int, templates: int):
         self.query_one("#stat-total-value", Static).update(str(total))
