@@ -53,7 +53,6 @@ class TerraformConfig:
 @dataclass
 class AnsibleConfig:
     playbook_dir: str = "./ansible/playbooks"
-    inventory_dir: str = "./ansible/inventory"
 
 
 @dataclass
@@ -182,7 +181,6 @@ class Config:
             ans = data["ansible"]
             config.ansible = AnsibleConfig(
                 playbook_dir=str(ans.get("playbook_dir", "./ansible/playbooks")),
-                inventory_dir=str(ans.get("inventory_dir", "./ansible/inventory")),
             )
 
         # Parse ipam section

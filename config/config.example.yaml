@@ -45,7 +45,6 @@ terraform:
 
 ansible:
   playbook_dir: "./ansible/playbooks"
-  inventory_dir: "./ansible/inventory"
 
 defaults:
   # Default values for new VM creation

@@ -294,7 +294,6 @@ def run_setup_wizard():
     }
     config["ansible"] = {
         "playbook_dir": ex_ans.get("playbook_dir", "./ansible/playbooks"),
-        "inventory_dir": ex_ans.get("inventory_dir", "./ansible/inventory"),
     }
     config["defaults"] = {
         "cpu_cores": ex_def.get("cpu_cores", 2),

@@ -4,9 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infraforge"
-version = "0.1.9"
+version = "0.2.2"
 description = "Proxmox VM management TUI built with Textual"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
+keywords = ["proxmox", "tui", "textual", "infrastructure", "ipam", "dns", "ansible"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "textual>=0.80.0",
     "proxmoxer>=2.0.0",
@@ -16,6 +31,11 @@ dependencies = [
     "paramiko>=3.0.0",
     "dnspython>=2.4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/clawdbotbradj00/InfraForge"
+Repository = "https://github.com/clawdbotbradj00/InfraForge"
+Issues = "https://github.com/clawdbotbradj00/InfraForge/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]

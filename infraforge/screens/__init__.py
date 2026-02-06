@@ -10,6 +10,7 @@ from infraforge.screens.new_vm import NewVMScreen
 from infraforge.screens.dns_screen import DNSScreen
 from infraforge.screens.ipam_screen import IPAMScreen
 from infraforge.screens.ansible_screen import AnsibleScreen
+from infraforge.screens.ansible_run_modal import AnsibleRunModal
 from infraforge.screens.ai_settings_screen import AISettingsScreen
 from infraforge.screens.ai_chat_modal import AIChatModal
 
@@ -24,6 +25,7 @@ __all__ = [
     "DNSScreen",
     "IPAMScreen",
     "AnsibleScreen",
+    "AnsibleRunModal",
     "AISettingsScreen",
     "AIChatModal",
 ]

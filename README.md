@@ -1,20 +1,44 @@
+<div align="center">
+
 # InfraForge
 
-A terminal UI for managing Proxmox VE clusters, with integrated phpIPAM for IP address management and BIND9 for DNS record automation.
+**A powerful terminal UI for managing Proxmox VE infrastructure**
 
-Built with [Textual](https://github.com/Textualize/textual) (Python TUI framework).
+Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible playbook execution, and an AI copilot powered by Claude.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+[![GitHub release](https://img.shields.io/github/v/release/clawdbotbradj00/InfraForge?include_prereleases&sort=semver)](https://github.com/clawdbotbradj00/InfraForge/releases)
+[![GitHub stars](https://img.shields.io/github/stars/clawdbotbradj00/InfraForge?style=social)](https://github.com/clawdbotbradj00/InfraForge/stargazers)
+[![GitHub last commit](https://img.shields.io/github/last-commit/clawdbotbradj00/InfraForge)](https://github.com/clawdbotbradj00/InfraForge/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/clawdbotbradj00/InfraForge)](https://github.com/clawdbotbradj00/InfraForge/issues)
+
+[![Built with Textual](https://img.shields.io/badge/Built_with-Textual-4EAA25?logo=python&logoColor=white)](https://github.com/Textualize/textual)
+[![Proxmox VE](https://img.shields.io/badge/Proxmox-VE_7.x%2F8.x-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
+[![Docker](https://img.shields.io/badge/Docker-phpIPAM_Stack-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![BIND9 DNS](https://img.shields.io/badge/BIND9-DNS_Automation-4A8CC2?logo=internetexplorer&logoColor=white)](https://www.isc.org/bind/)
+[![Ansible](https://img.shields.io/badge/Ansible-Playbook_Runner-EE0000?logo=ansible&logoColor=white)](https://www.ansible.com/)
+[![Claude AI](https://img.shields.io/badge/Claude-AI_Copilot-D4A574?logo=anthropic&logoColor=white)](https://claude.ai/)
+
+</div>
+
+---
 
 ## Features
 
-- **Dashboard** — Cluster overview with VM counts, node health bars, and quick navigation
+- **Dashboard** — Cluster overview with VM counts, node health bars, numbered hotkeys for quick navigation
 - **VM Management** — List all VMs/containers with sort, filter, and group controls; drill into details
-- **Template Browser** — Tabbed view of VM templates, container templates, and ISO images
+- **Template Browser** — Hierarchical tree of VM templates, container templates, and ISO images
 - **Node Info** — Per-node CPU, memory, disk, and storage pool stats
-- **DNS Management** — Multi-zone BIND9 management with full record CRUD (add/edit/delete), zone switching, and AXFR zone transfers
+- **DNS Management** — Multi-zone BIND9 with hierarchical tree view, full record CRUD, AXFR zone transfers, SOA display
+- **IPAM Management** — phpIPAM integration with tree-based subnet/VLAN/address browsing, section management, ping scan control
+- **Ansible Playbooks** — Auto-discovers `.yml` playbooks from a configured directory; run against dynamically targeted hosts with ping-sweep validation and live-streamed output
+- **AI Copilot** — Claude-powered assistant (`/` to open) that can query VMs, manage DNS records, create IPAM subnets, navigate screens, and more — with streaming responses and persistent chat history
 - **New VM Wizard** — 8-step guided creation (basics, template, resources, network, IPAM, DNS, provisioning, review)
-- **phpIPAM Integration** — Auto-deployed Docker stack with subnet scanning and IP allocation
+- **phpIPAM Docker Stack** — Turnkey 3-container deployment (web + MariaDB + cron scanner) with automated bootstrap
 - **Persistent Preferences** — Sort/filter/group settings survive restarts
 - **Parallelized API Calls** — ThreadPoolExecutor for fast data loading across nodes
+- **Auto-Update Checker** — Checks GitHub releases on startup, notifies when updates are available
 
 ## Requirements
 
@@ -137,17 +161,19 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `q` | Quit |
 | `d` | Go to Dashboard |
 | `?` | Help screen |
+| `/` | Open AI Copilot |
 | `Escape` | Go back |
 
 ### Dashboard
 | Key | Action |
 |-----|--------|
-| `v` | Virtual Machines |
-| `t` | Templates |
-| `n` | Node Info |
-| `x` | DNS Management |
-| `i` | IPAM Management |
-| `c` | Create New VM |
+| `1` | Virtual Machines |
+| `2` | Templates |
+| `3` | Node Info |
+| `4` | Create New VM |
+| `5` | DNS Management |
+| `6` | IPAM Management |
+| `7` | Ansible Playbooks |
 | `r` | Refresh |
 
 ### VM List / Templates
@@ -183,6 +209,21 @@ phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + M
 | `r` | Refresh |
 | `Escape` | Go back |
 
+### Ansible Playbooks
+| Key | Action |
+|-----|--------|
+| `x` / `Enter` | Run selected playbook |
+| `l` | View last run log |
+| `s` | Cycle sort field |
+| `r` | Refresh / rescan directory |
+
+### AI Copilot
+| Key | Action |
+|-----|--------|
+| `/` | Open AI chat (from any screen) |
+| `Escape` | Cancel generation / close chat |
+| `Ctrl+N` | Start new conversation |
+
 ## Project Structure
 
 ```
@@ -192,33 +233,39 @@ InfraForge/
 │   ├── config.py           # Config dataclasses + YAML loader
 │   ├── models.py           # VM, Template, Node data models
 │   ├── proxmox_client.py   # Proxmox API wrapper (parallelized)
-│   ├── ipam_client.py      # phpIPAM REST client
+│   ├── ipam_client.py      # phpIPAM REST client (full CRUD)
 │   ├── dns_client.py       # BIND9 client (dnspython, TSIG, RFC 2136)
+│   ├── ansible_runner.py   # Playbook discovery, ping sweep, execution
+│   ├── ai_client.py        # Claude CLI integration (streaming)
+│   ├── ai_context.py       # Live infrastructure context for AI
 │   ├── preferences.py      # Persistent sort/filter/group prefs
+│   ├── updater.py          # GitHub release auto-update checker
 │   ├── setup_wizard.py     # Rich-based interactive setup
 │   └── screens/
-│       ├── dashboard.py    # Main dashboard
-│       ├── vm_list.py      # VM list with sort/filter/group
-│       ├── vm_detail.py    # VM detail view
-│       ├── template_list.py # Tabbed template browser
+│       ├── dashboard.py        # Main dashboard with hotkeys
+│       ├── vm_list.py          # VM list with sort/filter/group
+│       ├── vm_detail.py        # VM detail view
+│       ├── template_list.py    # Hierarchical template browser
 │       ├── template_detail.py
-│       ├── node_info.py    # Cluster node details
-│       ├── dns_screen.py   # DNS zone record viewer
-│       ├── ipam_screen.py  # IPAM management (phpIPAM)
-│       ├── new_vm.py       # 8-step VM creation wizard
-│       └── help_screen.py  # Keybinding reference
+│       ├── node_info.py        # Cluster node details
+│       ├── dns_screen.py       # Multi-zone DNS tree + CRUD
+│       ├── ipam_screen.py      # IPAM tree (subnets/VLANs/addresses)
+│       ├── ansible_screen.py   # Playbook discovery + management
+│       ├── ansible_run_modal.py # Playbook execution modal
+│       ├── ai_chat_modal.py    # AI copilot chat overlay
+│       ├── ai_settings_screen.py
+│       ├── new_vm.py           # 8-step VM creation wizard
+│       └── help_screen.py      # Keybinding reference
+├── ansible/
+│   └── playbooks/          # Drop .yml playbooks here
 ├── styles/
 │   └── app.tcss            # Textual CSS
 ├── docker/
 │   ├── docker-compose.yml  # phpIPAM stack (web + db + cron)
-│   ├── .env.example
-│   └── phpipam/
-│       ├── bootstrap-ipam.sh   # DB seeding script
-│       └── generate-ssl.sh     # Self-signed cert generator
+│   └── phpipam/            # phpIPAM config + bootstrap scripts
 ├── config/
 │   └── config.example.yaml
 ├── setup.sh                # Bash setup wizard
-├── requirements.txt
 └── pyproject.toml
 ```
 

@@ -1,0 +1,45 @@
+---
+- name: Deploy monitoring stack
+  hosts: targets
+  become: true
+
+  roles:
+    - node_exporter
+
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name:
+          - curl
+          - wget
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create monitoring user
+      user:
+        name: monitoring
+        system: yes
+        shell: /usr/sbin/nologin
+
+    - name: Download node_exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+
+    - name: Extract node_exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /opt/
+        remote_src: yes
+
+    - name: Create systemd service
+      template:
+        src: node_exporter.service.j2
+        dest: /etc/systemd/system/node_exporter.service
+
+    - name: Start node_exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes

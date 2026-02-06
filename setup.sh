@@ -979,7 +979,6 @@ terraform:
 
 ansible:
   playbook_dir: "./ansible/playbooks"
-  inventory_dir: "./ansible/inventory"
 
 defaults:
   cpu_cores: 2
