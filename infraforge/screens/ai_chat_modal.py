@@ -17,6 +17,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Static, Input
 from textual import work
 
+from infraforge.ai_context import gather_context
+
 
 class AIChatModal(ModalScreen):
     """Full-screen modal overlay for AI chat."""
@@ -129,13 +131,15 @@ class AIChatModal(ModalScreen):
                 )
                 return
 
-            self._stream_and_handle(ai_client, text)
+            # Gather live infrastructure context
+            context = gather_context(self.app)
+            self._stream_and_handle(ai_client, text, context=context)
 
         except Exception as e:
             self.app.call_from_thread(self._hide_thinking)
             self.app.call_from_thread(self._add_error_message, str(e))
 
-    def _stream_and_handle(self, ai_client, message: str, depth: int = 0) -> None:
+    def _stream_and_handle(self, ai_client, message: str, depth: int = 0, context: str = "") -> None:
         """Stream a message to AI, execute tools, send results back.
 
         This is the core loop — every round (initial message and tool-result
@@ -154,7 +158,7 @@ class AIChatModal(ModalScreen):
         # Stream response
         full_text = ""
         first_chunk = True
-        for chunk in ai_client.chat_stream(message):
+        for chunk in ai_client.chat_stream(message, context=context):
             if first_chunk:
                 self.app.call_from_thread(self._replace_thinking_with_response)
                 first_chunk = False
@@ -277,86 +281,12 @@ class AIChatModal(ModalScreen):
                 self.app.call_from_thread(self._navigate_to, screen)
                 return f"Navigated to {screen}"
 
-            elif name == "list_vms":
-                vms = self.app.proxmox.get_all_vms()
-                result = []
-                for vm in vms:
-                    result.append(
-                        {
-                            "vmid": vm.vmid,
-                            "name": vm.name,
-                            "status": vm.status.value,
-                            "node": vm.node,
-                            "cpu_percent": round(vm.cpu_percent, 1),
-                            "mem_gb": round(vm.mem_gb, 1),
-                        }
-                    )
-                return json.dumps(result)
-
             elif name == "vm_action":
                 vmid = inputs["vmid"]
                 node = inputs["node"]
                 action = inputs["action"]
                 self.app.proxmox.vm_action(node, vmid, action)
                 return f"Successfully executed {action} on VM {vmid}"
-
-            elif name == "get_vm_detail":
-                vmid = inputs["vmid"]
-                node = inputs["node"]
-                vm = self.app.proxmox.get_vm_status(node, vmid)
-                return json.dumps(
-                    {
-                        "vmid": vm.vmid,
-                        "name": vm.name,
-                        "status": vm.status.value,
-                        "node": vm.node,
-                        "cpu_percent": round(vm.cpu_percent, 1),
-                        "mem_gb": round(vm.mem_gb, 1),
-                        "disk_gb": round(vm.disk_gb, 1),
-                        "uptime": vm.uptime_str,
-                        "tags": vm.tags,
-                    }
-                )
-
-            elif name == "list_nodes":
-                nodes = self.app.proxmox.get_node_info()
-                result = []
-                for n in nodes:
-                    result.append(
-                        {
-                            "node": n.node,
-                            "status": n.status,
-                            "cpu_percent": round(n.cpu_percent, 1),
-                            "mem_percent": round(n.mem_percent, 1),
-                            "disk_percent": round(n.disk_percent, 1),
-                            "uptime": n.uptime_str,
-                        }
-                    )
-                return json.dumps(result)
-
-            elif name == "list_dns_records":
-                zone = inputs["zone"]
-                from infraforge.dns_client import DNSClient
-
-                dns_cfg = self.app.config.dns
-                client = DNSClient(
-                    dns_cfg.server,
-                    dns_cfg.port,
-                    dns_cfg.tsig_key_name,
-                    dns_cfg.tsig_key_secret,
-                    dns_cfg.tsig_algorithm,
-                )
-                records = client.get_zone_records(zone)
-                result = [
-                    {
-                        "name": r.name,
-                        "type": r.rtype,
-                        "value": r.value,
-                        "ttl": r.ttl,
-                    }
-                    for r in records
-                ]
-                return json.dumps(result)
 
             elif name == "add_dns_record":
                 zone = inputs["zone"]
@@ -398,51 +328,6 @@ class AIChatModal(ModalScreen):
                 return (
                     f"Deleted {inputs['rtype']} record: {inputs['name']}.{zone}"
                 )
-
-            elif name == "list_subnets":
-                from infraforge.ipam_client import IPAMClient
-
-                client = IPAMClient(self.app.config)
-                subnets = client.get_all_subnets()
-                result = [
-                    {
-                        "id": s.get("id"),
-                        "subnet": s.get("subnet"),
-                        "mask": s.get("mask"),
-                        "description": s.get("description", ""),
-                    }
-                    for s in subnets
-                ]
-                return json.dumps(result)
-
-            elif name == "list_addresses":
-                from infraforge.ipam_client import IPAMClient
-
-                client = IPAMClient(self.app.config)
-                addresses = client.get_subnet_addresses(inputs["subnet_id"])
-                result = [
-                    {
-                        "ip": a.get("ip"),
-                        "hostname": a.get("hostname", ""),
-                        "description": a.get("description", ""),
-                        "tag": a.get("tag", ""),
-                    }
-                    for a in addresses
-                ]
-                return json.dumps(result)
-
-            elif name == "list_templates":
-                _, templates = self.app.proxmox.get_all_vms_and_templates()
-                result = [
-                    {
-                        "vmid": t.vmid,
-                        "name": t.name,
-                        "node": t.node,
-                        "type": t.type_label,
-                    }
-                    for t in templates
-                ]
-                return json.dumps(result)
 
             else:
                 return f"Unknown tool: {name}"

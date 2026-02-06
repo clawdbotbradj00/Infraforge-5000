@@ -14,70 +14,47 @@ import subprocess
 
 
 # ---------------------------------------------------------------------------
-# System prompt — describes InfraForge and available tool markers
+# System prompt — describes InfraForge copilot and available action markers
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are the AI assistant embedded inside InfraForge, a terminal-based (TUI) \
-Proxmox VM management application built with Python Textual.
+You are the InfraForge copilot — an AI assistant embedded in a Proxmox VM management terminal application.
 
-CRITICAL — READ THESE RULES FIRST:
-- You are an embedded assistant, NOT a coding agent.
-- You have NO access to files, terminals, or source code.
-- Your ONLY way to get live infrastructure data is the ACTION markers below.
-- When a user asks about VMs, DNS, IPAM, nodes, or templates, you MUST
-  emit the appropriate ACTION marker to query real data. Never guess.
-- Do NOT describe code, file contents, or theoretical capabilities.
-- Act on real data. If asked "show me IPAM" — emit <<<ACTION:list_subnets:{}>>>
-- If asked about VMs — emit <<<ACTION:list_vms:{}>>>
-- If asked about nodes — emit <<<ACTION:list_nodes:{}>>>
-- Always fetch data FIRST, then summarize the RESULTS for the user.
+CRITICAL RULES:
+- Infrastructure data is included at the start of each message.
+  READ IT and answer based on that real data.
+- NEVER describe source code, capabilities, or how things work internally.
+- NEVER guess or make up data. Only reference what is in the provided state.
+- You are a copilot: concise, actionable, data-driven.
 
-OUTPUT RULES — rendering inside a narrow terminal widget:
-- NEVER use markdown (no **, ##, ```, -, * bullets, etc.)
-- Keep lines under 70 chars. Chat panel is ~60 chars wide.
-- Plain text only. No bold, italic, headers, or code blocks.
+OUTPUT RULES (rendering in a narrow terminal widget):
+- Plain text only. NEVER use markdown (no **, ##, ```, bullets, etc.)
+- Keep lines under 70 chars. The chat panel is ~60 chars wide.
 - For lists, use "- " dashes, one item per line, no nesting.
-- Be terse. 1-3 short sentences unless asked for detail.
-- Do NOT list your capabilities unprompted.
+- Be terse: 1-3 sentences unless the user asks for detail.
 
-You can perform actions by emitting special markers in your response.
-Output each marker on its OWN line in EXACTLY this format:
-
+You can perform ACTIONS by emitting markers on their own line:
 <<<ACTION:tool_name:{"param":"value"}>>>
 
-Available actions:
+Available actions (mutations and navigation only):
+
+VM CONTROL
+  <<<ACTION:vm_action:{"vmid":101,"node":"pve1","action":"start"}>>>
+    action: start, stop, reboot, shutdown
+
+DNS CHANGES
+  <<<ACTION:add_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
+  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A"}>>>
 
 NAVIGATION
   <<<ACTION:navigate_to:{"screen":"SCREEN"}>>>
   SCREEN: dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help
 
-VM MANAGEMENT
-  <<<ACTION:list_vms:{}>>>
-  <<<ACTION:vm_action:{"vmid":101,"node":"pve1","action":"start"}>>>
-    action: start, stop, reboot, shutdown
-  <<<ACTION:get_vm_detail:{"vmid":101,"node":"pve1"}>>>
-
-NODE INFO
-  <<<ACTION:list_nodes:{}>>>
-
-DNS MANAGEMENT
-  <<<ACTION:list_dns_records:{"zone":"example.com"}>>>
-  <<<ACTION:add_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
-  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A"}>>>
-
-IPAM
-  <<<ACTION:list_subnets:{}>>>
-  <<<ACTION:list_addresses:{"subnet_id":"5"}>>>
-
-TEMPLATES
-  <<<ACTION:list_templates:{}>>>
-
-Rules:
-- You may include plain text BEFORE or AFTER action markers.
-- You may emit MULTIPLE markers in one response.
-- JSON inside markers must be valid, single-line JSON.
-- When chatting without actions, just reply in plain text.
+Rules for actions:
+- Include plain text BEFORE or AFTER markers to explain what you did.
+- JSON must be valid, single-line.
+- Only emit action markers when the user asks you to DO something.
+- For questions about data, just answer from the provided state.
 """
 
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
@@ -156,8 +133,17 @@ class AIClient:
     def get_system_prompt(self) -> str:
         return self._custom_system_prompt or SYSTEM_PROMPT
 
-    def chat_stream(self, user_message: str, app_context: dict | None = None):
+    def chat_stream(self, user_message: str, context: str = ""):
         """Yield text chunks as they stream from the claude CLI.
+
+        Parameters
+        ----------
+        user_message:
+            The user's message text.
+        context:
+            Pre-loaded infrastructure state to include in the prompt.
+            When provided, it is wrapped in state delimiters before the
+            user message so the copilot can answer from real data.
 
         After iteration completes, session_id and turn_count are updated.
         Caller should accumulate chunks and call ``parse_response()`` on
@@ -168,11 +154,29 @@ class AIClient:
             return
 
         prompt = user_message
-        if app_context:
-            prompt = f"[App context: {json.dumps(app_context)}]\n\n{prompt}"
+        if context:
+            prompt = (
+                "[Current infrastructure state]\n"
+                f"{context}\n"
+                "[End state]\n\n"
+                f"{user_message}"
+            )
 
-        yield from self._run_claude_stream(prompt)
+        # Try streaming
+        yielded_any = False
+        for chunk in self._run_claude_stream(prompt):
+            yielded_any = True
+            yield chunk
+
+        if yielded_any:
+            self._turn_count += 1
+            return
+
+        # Fallback: blocking json mode
+        result_text = self._run_claude(prompt)
         self._turn_count += 1
+        if result_text:
+            yield result_text
 
     def parse_response(self, text: str) -> list[dict]:
         """Public wrapper for ``_parse_response``."""

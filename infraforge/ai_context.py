@@ -1,0 +1,287 @@
+"""Gather live infrastructure context for the AI copilot.
+
+Before each AI message we call ``gather_context(app)`` to build a plain-text
+snapshot of every data source the user can see in the TUI.  This text is
+prepended to the user's prompt so the model already has the data and never
+needs to "fetch" anything via tool calls.
+
+All backend calls are issued in parallel via a ThreadPoolExecutor, and
+results are cached for 30 seconds to avoid hammering the APIs on rapid
+successive messages.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, Future
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from infraforge.app import InfraForgeApp
+
+from infraforge.models import VMStatus
+
+# ---------------------------------------------------------------------------
+# Module-level cache
+# ---------------------------------------------------------------------------
+
+_cache_lock = threading.Lock()
+_cache_timestamp: float = 0.0
+_cache_result: str = ""
+_CACHE_TTL: float = 30.0  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Individual data-source formatters
+# ---------------------------------------------------------------------------
+
+def _fetch_vms(app: "InfraForgeApp") -> str:
+    """Fetch and format all virtual machines."""
+    try:
+        vms = app.proxmox.get_all_vms()
+    except Exception as exc:
+        return f"=== VIRTUAL MACHINES ===\n  Error: {exc}\n"
+
+    total = len(vms)
+    counts: dict[str, int] = {}
+    for vm in vms:
+        status_val = vm.status.value if isinstance(vm.status, VMStatus) else str(vm.status)
+        counts[status_val] = counts.get(status_val, 0) + 1
+
+    summary_parts = [f"{count} {status}" for status, count in sorted(counts.items())]
+    summary = ", ".join(summary_parts)
+
+    lines: list[str] = []
+    lines.append(f"=== VIRTUAL MACHINES ({total} total: {summary}) ===")
+    lines.append(f"  {'VMID':<6}{'Name':<21}{'Status':<9}{'Node':<7}{'CPU%':<7}{'Mem(GB)':<8}")
+
+    for vm in sorted(vms, key=lambda v: v.vmid):
+        status_val = vm.status.value if isinstance(vm.status, VMStatus) else str(vm.status)
+        lines.append(
+            f"  {vm.vmid:<6}{vm.name:<21}{status_val:<9}{vm.node:<7}"
+            f"{vm.cpu_percent:<7.1f}{vm.mem_gb:<8.1f}"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fetch_nodes(app: "InfraForgeApp") -> str:
+    """Fetch and format cluster node information."""
+    try:
+        nodes = app.proxmox.get_node_info()
+    except Exception as exc:
+        return f"=== CLUSTER NODES ===\n  Error: {exc}\n"
+
+    lines: list[str] = []
+    lines.append("=== CLUSTER NODES ===")
+    lines.append(
+        f"  {'Node':<8}{'Status':<9}{'CPU%':<7}{'Mem%':<7}{'Disk%':<7}{'Uptime':<12}"
+    )
+
+    for node in sorted(nodes, key=lambda n: n.node):
+        lines.append(
+            f"  {node.node:<8}{node.status:<9}{node.cpu_percent:<7.1f}"
+            f"{node.mem_percent:<7.1f}{node.disk_percent:<7.1f}{node.uptime_str:<12}"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fetch_templates(app: "InfraForgeApp") -> str:
+    """Fetch and format VM/CT templates."""
+    try:
+        _vms, templates = app.proxmox.get_all_vms_and_templates()
+    except Exception as exc:
+        return f"=== TEMPLATES ===\n  Error: {exc}\n"
+
+    lines: list[str] = []
+    lines.append("=== TEMPLATES ===")
+
+    if not templates:
+        lines.append("  (none)")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"  {'VMID':<6}{'Name':<21}{'Node':<7}{'Type':<12}")
+
+    for tpl in sorted(templates, key=lambda t: (t.vmid or 0)):
+        vmid_str = str(tpl.vmid) if tpl.vmid is not None else "-"
+        lines.append(
+            f"  {vmid_str:<6}{tpl.name:<21}{tpl.node:<7}{tpl.type_label:<12}"
+        )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fetch_ipam(app: "InfraForgeApp") -> str:
+    """Fetch and format IPAM subnets and addresses."""
+    # Check if IPAM is configured
+    ipam_cfg = getattr(app.config, "ipam", None)
+    if ipam_cfg is None or not getattr(ipam_cfg, "url", ""):
+        return "=== IPAM SUBNETS ===\n  Not configured\n"
+
+    try:
+        from infraforge.ipam_client import IPAMClient
+    except ImportError:
+        return "=== IPAM SUBNETS ===\n  Not configured (ipam_client not available)\n"
+
+    try:
+        client = IPAMClient(app.config)
+        subnets = client.get_subnets()
+    except Exception as exc:
+        return f"=== IPAM SUBNETS ===\n  Error: {exc}\n"
+
+    lines: list[str] = []
+    lines.append("=== IPAM SUBNETS ===")
+
+    if not subnets:
+        lines.append("  (none)")
+        lines.append("")
+        return "\n".join(lines)
+
+    for subnet in subnets:
+        subnet_addr = subnet.get("subnet", "?")
+        mask = subnet.get("mask", "?")
+        description = subnet.get("description", "")
+        usage = subnet.get("usage", {})
+        used = usage.get("used", "?")
+        maxhosts = usage.get("maxhosts", "?")
+
+        desc_part = f' "{description}"' if description else ""
+        lines.append(f"  {subnet_addr}/{mask}{desc_part} ({used}/{maxhosts} used)")
+
+        # Fetch addresses for this subnet (limit to 30)
+        subnet_id = subnet.get("id")
+        if subnet_id is not None:
+            try:
+                addresses = client.get_subnet_addresses(str(subnet_id))
+                for addr in addresses[:30]:
+                    ip = addr.get("ip", "?")
+                    hostname = addr.get("hostname", "")
+                    tag = addr.get("tag", "")
+                    tag_str = tag if isinstance(tag, str) else str(tag)
+                    lines.append(f"    {ip:<17}{hostname:<20}{tag_str}")
+                if len(addresses) > 30:
+                    lines.append(f"    ... and {len(addresses) - 30} more addresses")
+            except Exception:
+                lines.append("    (could not fetch addresses)")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fetch_dns(app: "InfraForgeApp") -> str:
+    """Fetch and format DNS zone records."""
+    # Check if DNS is configured
+    dns_cfg = getattr(app.config, "dns", None)
+    if dns_cfg is None or not getattr(dns_cfg, "server", ""):
+        return "=== DNS ===\n  Not configured\n"
+
+    try:
+        from infraforge.dns_client import DNSClient
+    except ImportError:
+        return "=== DNS ===\n  Not configured (dnspython not installed)\n"
+
+    try:
+        client = DNSClient(
+            server=dns_cfg.server,
+            port=dns_cfg.port,
+            tsig_key_name=dns_cfg.tsig_key_name,
+            tsig_key_secret=dns_cfg.tsig_key_secret,
+            tsig_algorithm=dns_cfg.tsig_algorithm,
+        )
+    except Exception as exc:
+        return f"=== DNS ===\n  Error creating client: {exc}\n"
+
+    # Determine zones to query
+    zones = list(dns_cfg.zones) if dns_cfg.zones else []
+    if not zones:
+        try:
+            zones = client.discover_zones()
+        except Exception:
+            zones = []
+
+    if not zones:
+        return "=== DNS ===\n  No zones discovered\n"
+
+    sections: list[str] = []
+
+    for zone in zones:
+        try:
+            records = client.get_zone_records(zone)
+        except Exception as exc:
+            sections.append(f"=== DNS: {zone} ===\n  Error: {exc}\n")
+            continue
+
+        total = len(records)
+        lines: list[str] = []
+        lines.append(f"=== DNS: {zone} ({total} records) ===")
+
+        for rec in records[:75]:
+            lines.append(
+                f"  {rec.rtype:<7}{rec.name:<12}{rec.value:<27}TTL={rec.ttl}"
+            )
+        if total > 75:
+            lines.append(f"  ... and {total - 75} more records")
+
+        lines.append("")
+        sections.append("\n".join(lines))
+
+    return "\n".join(sections) if sections else "=== DNS ===\n  No zones discovered\n"
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def gather_context(app: "InfraForgeApp") -> str:
+    """Gather a plain-text snapshot of all live infrastructure data.
+
+    Returns a formatted string suitable for prepending to an AI prompt.
+    Results are cached for 30 seconds to avoid excessive API calls.
+    """
+    global _cache_timestamp, _cache_result
+
+    now = time.monotonic()
+
+    with _cache_lock:
+        if _cache_result and (now - _cache_timestamp) < _CACHE_TTL:
+            return _cache_result
+
+    # Fetch all sources in parallel
+    results: dict[str, str] = {}
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures: dict[Future, str] = {
+            executor.submit(_fetch_vms, app): "vms",
+            executor.submit(_fetch_nodes, app): "nodes",
+            executor.submit(_fetch_templates, app): "templates",
+            executor.submit(_fetch_ipam, app): "ipam",
+            executor.submit(_fetch_dns, app): "dns",
+        }
+
+        for future in futures:
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:
+                results[key] = f"=== {key.upper()} ===\n  Error: {exc}\n"
+
+    # Assemble in a stable order
+    output = "\n".join([
+        results.get("vms", ""),
+        results.get("nodes", ""),
+        results.get("templates", ""),
+        results.get("ipam", ""),
+        results.get("dns", ""),
+    ])
+
+    with _cache_lock:
+        _cache_timestamp = time.monotonic()
+        _cache_result = output
+
+    return output
