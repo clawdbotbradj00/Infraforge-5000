@@ -577,10 +577,11 @@ def _test_ipam_connection(console: Console, ipam_config: dict) -> None:
 
 
 def _configure_ipam_docker(console: Console, prev: dict) -> dict:
-    """Deploy a new phpIPAM instance with Docker."""
+    """Deploy a new phpIPAM instance with Docker (turnkey)."""
     console.print()
     console.print(
-        "[dim]A local Docker instance will be deployed automatically.[/dim]\n"
+        "[dim]A local Docker instance will be deployed automatically.\n"
+        "The database schema and API app are configured on first boot.[/dim]\n"
     )
 
     # ── Check prerequisites ──
@@ -589,6 +590,26 @@ def _configure_ipam_docker(console: Console, prev: dict) -> dict:
         if Confirm.ask("Connect to an existing phpIPAM server instead?", default=True):
             return _configure_ipam_existing(console, prev)
         return _empty_ipam_config()
+
+    # ── Detect existing broken deployment ──
+    if _detect_broken_phpipam(console):
+        console.print(
+            "[yellow]An existing phpIPAM deployment was detected but its database "
+            "is not properly initialized.[/yellow]"
+        )
+        if Confirm.ask("Wipe and redeploy from scratch?", default=True):
+            console.print("[dim]Stopping containers and removing data volume...[/dim]")
+            compose_cmd = _get_compose_cmd()
+            subprocess.run(
+                [*compose_cmd, "down", "-v"],
+                cwd=str(DOCKER_DIR),
+                capture_output=True,
+            )
+            console.print("[green]✓[/green] Old deployment removed")
+        else:
+            if Confirm.ask("Connect to an existing phpIPAM server instead?", default=False):
+                return _configure_ipam_existing(console, prev)
+            return _empty_ipam_config()
 
     # ── Port ──
     prev_port = "8443"
@@ -606,23 +627,33 @@ def _configure_ipam_docker(console: Console, prev: dict) -> dict:
     admin_password = Prompt.ask("phpIPAM admin password", default="admin", password=True)
     db_pass = secrets.token_urlsafe(16)
 
+    # ── Generate admin password hash ──
+    console.print("\n[dim]Generating admin password hash...[/dim]")
+    admin_hash = _generate_php_password_hash(console, admin_password)
+
     # ── Generate SSL certs ──
-    console.print("\n[dim]Generating self-signed SSL certificate...[/dim]")
+    console.print("[dim]Generating self-signed SSL certificate...[/dim]")
     ssl_script = DOCKER_DIR / "phpipam" / "generate-ssl.sh"
     subprocess.run(["bash", str(ssl_script)], check=True, capture_output=True)
     console.print("[green]✓[/green] SSL certificate generated")
 
     # ── Write .env ──
     env_path = DOCKER_DIR / ".env"
-    env_path.write_text(
-        f"IPAM_DB_ROOT_PASS={secrets.token_urlsafe(16)}\n"
-        f"IPAM_DB_PASS={db_pass}\n"
-        f"IPAM_PORT={ipam_port}\n"
-        f"SCAN_INTERVAL=15m\n"
-    )
+    env_lines = [
+        f"IPAM_DB_ROOT_PASS={secrets.token_urlsafe(16)}",
+        f"IPAM_DB_PASS={db_pass}",
+        f"IPAM_PORT={ipam_port}",
+        f"SCAN_INTERVAL=15m",
+    ]
+    if admin_hash:
+        # Escape $ as $$ for docker compose .env variable interpolation
+        escaped_hash = admin_hash.replace("$", "$$")
+        env_lines.append(f"IPAM_ADMIN_HASH={escaped_hash}")
+    env_path.write_text("\n".join(env_lines) + "\n")
 
     # ── Launch containers ──
     console.print("\n[bold]Launching phpIPAM containers...[/bold]")
+    console.print("[dim]MariaDB will auto-initialize the schema on first boot.[/dim]")
     try:
         compose_cmd = _get_compose_cmd()
         subprocess.run(
@@ -638,31 +669,33 @@ def _configure_ipam_docker(console: Console, prev: dict) -> dict:
 
     # ── Wait for phpIPAM to be ready ──
     ipam_url = f"https://localhost:{ipam_port}"
-    console.print(f"\n[dim]Waiting for phpIPAM at {ipam_url}...[/dim]")
+    console.print(f"\n[dim]Waiting for phpIPAM at {ipam_url} (schema init may take 30-60s)...[/dim]")
 
-    if not _wait_for_phpipam(ipam_url, timeout=120):
+    if not _wait_for_phpipam(ipam_url, timeout=180):
         console.print("[red]✗[/red] phpIPAM did not become ready in time")
         console.print("[dim]Check: docker logs infraforge-ipam-web[/dim]")
+        console.print("[dim]Check: docker logs infraforge-ipam-db[/dim]")
         return _empty_ipam_config()
 
     console.print("[green]✓[/green] phpIPAM is running")
 
-    # ── Bootstrap: create API app, set admin password, enable scanning ──
-    console.print("[dim]Bootstrapping phpIPAM (API app, scanning, admin password)...[/dim]")
-    _bootstrap_phpipam(console, admin_password, db_pass)
-
-    console.print(f"\n[green]✓[/green] phpIPAM deployed at [bold]{ipam_url}[/bold]")
-    console.print(f"  [dim]Web UI: {ipam_url}  (admin / {admin_password})[/dim]")
-
-    return {
+    # ── Verify API is functional ──
+    ipam_config = {
         "provider": "phpipam",
         "url": ipam_url,
         "app_id": "infraforge",
         "token": "",
-        "username": "admin",
+        "username": "Admin",
         "password": admin_password,
         "verify_ssl": False,
     }
+    console.print("[dim]Verifying API connectivity...[/dim]")
+    _verify_ipam_api(console, ipam_config)
+
+    console.print(f"\n[green]✓[/green] phpIPAM deployed at [bold]{ipam_url}[/bold]")
+    console.print(f"  [dim]Web UI: {ipam_url}  (Admin / {admin_password})[/dim]")
+
+    return ipam_config
 
 
 def _empty_ipam_config() -> dict:
@@ -768,73 +801,137 @@ def _wait_for_phpipam(url: str, timeout: int = 120) -> bool:
     return False
 
 
-def _bootstrap_phpipam(console: Console, admin_password: str, db_pass: str) -> None:
-    """Bootstrap phpIPAM via direct DB access in the MariaDB container."""
+def _generate_php_password_hash(console: Console, password: str) -> str:
+    """Generate a bcrypt hash using PHP (via the phpipam-web container or a temp PHP container).
+
+    Returns the hash string, or empty string on failure.
+    """
+    escaped_pw = password.replace("'", "\\'")
+    php_code = f"echo password_hash('{escaped_pw}', PASSWORD_DEFAULT);"
+
+    # Try 1: Use the running phpipam-web container if available
     try:
-        # Wait a bit for schema to be fully created by phpIPAM on first access
-        time.sleep(3)
-
-        db_container = "infraforge-ipam-db"
-
-        def db_exec(sql: str) -> str:
-            result = subprocess.run(
-                ["docker", "exec", db_container, "mysql", "-u", "phpipam",
-                 f"-p{db_pass}", "phpipam", "-sN", "-e", sql],
-                capture_output=True, text=True, timeout=15,
-            )
-            return result.stdout.strip()
-
-        # Wait for settings table (phpIPAM auto-creates schema on first web access)
-        for attempt in range(30):
-            try:
-                count = db_exec("SELECT COUNT(*) FROM settings;")
-                if count and int(count) > 0:
-                    break
-            except Exception:
-                pass
-            time.sleep(3)
-        else:
-            console.print("[yellow]Warning: DB schema may not be fully ready[/yellow]")
-
-        # Enable API globally
-        db_exec("UPDATE settings SET api=1, scanPingType='fping', scanMaxThreads=32;")
-
-        # Create API app
-        existing = db_exec("SELECT COUNT(*) FROM api WHERE app_id='infraforge';")
-        if existing and int(existing) > 0:
-            db_exec("UPDATE api SET app_permissions=2, app_security='none' WHERE app_id='infraforge';")
-        else:
-            db_exec(
-                "INSERT INTO api (app_id, app_code, app_permissions, app_security, app_lock_expire) "
-                "VALUES ('infraforge', 'infraforge_auto', 2, 'none', 0);"
-            )
-
-        # Set admin password via PHP inside the web container
-        escaped_pw = admin_password.replace("'", "\\'")
-        hash_result = subprocess.run(
-            ["docker", "exec", "infraforge-ipam-web",
-             "php", "-r", f"echo password_hash('{escaped_pw}', PASSWORD_DEFAULT);"],
+        result = subprocess.run(
+            ["docker", "exec", "infraforge-ipam-web", "php", "-r", php_code],
             capture_output=True, text=True, timeout=10,
         )
-        if hash_result.returncode == 0 and hash_result.stdout:
-            pw_hash = hash_result.stdout.strip().replace("'", "\\'")
-            db_exec(f"UPDATE users SET password='{pw_hash}' WHERE username='admin';")
+        if result.returncode == 0 and result.stdout.strip().startswith("$2"):
+            return result.stdout.strip()
+    except Exception:
+        pass
 
-        # Ensure default scan agent exists
-        agent_count = db_exec("SELECT COUNT(*) FROM scanAgents WHERE id=1;")
-        if agent_count and int(agent_count) > 0:
-            db_exec("UPDATE scanAgents SET type='mysql' WHERE id=1;")
-        else:
-            db_exec(
-                "INSERT INTO scanAgents (id, name, description, type) "
-                "VALUES (1, 'cron', 'Default cron agent', 'mysql');"
-            )
+    # Try 2: Use a throwaway PHP container
+    try:
+        result = subprocess.run(
+            ["docker", "run", "--rm", "php:cli", "php", "-r", php_code],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0 and result.stdout.strip().startswith("$2"):
+            return result.stdout.strip()
+    except Exception:
+        pass
 
-        console.print("[green]✓[/green] phpIPAM bootstrapped (API enabled, scanning on)")
+    # Try 3: Use the phpipam image itself
+    try:
+        result = subprocess.run(
+            ["docker", "run", "--rm", "phpipam/phpipam-www:latest", "php", "-r", php_code],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0 and result.stdout.strip().startswith("$2"):
+            return result.stdout.strip()
+    except Exception:
+        pass
 
+    console.print("[yellow]Warning: Could not generate password hash — admin password must be set via web UI[/yellow]")
+    return ""
+
+
+def _detect_broken_phpipam(console: Console) -> bool:
+    """Check if phpIPAM containers exist but the DB has no schema."""
+    try:
+        # Check if the DB container is running
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", "infraforge-ipam-db"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or "true" not in result.stdout.lower():
+            return False
+
+        # Check if the settings table exists
+        result = subprocess.run(
+            ["docker", "exec", "infraforge-ipam-db", "mysql", "-u", "root",
+             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', 'infraforge_root_pw')}",
+             "phpipam", "-sN", "-e", "SELECT COUNT(*) FROM settings;"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            # settings table doesn't exist — broken deployment
+            return True
+
+        # Check if the API app exists
+        result = subprocess.run(
+            ["docker", "exec", "infraforge-ipam-db", "mysql", "-u", "root",
+             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', 'infraforge_root_pw')}",
+             "phpipam", "-sN", "-e", "SELECT COUNT(*) FROM api WHERE app_id='infraforge';"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "0":
+            # Schema exists but API app is missing — also broken
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def _read_env_var(name: str, default: str = "") -> str:
+    """Read a variable from the Docker .env file."""
+    env_path = DOCKER_DIR / ".env"
+    if not env_path.exists():
+        return default
+    try:
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{name}="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return default
+
+
+def _verify_ipam_api(console: Console, ipam_config: dict) -> None:
+    """Verify phpIPAM API is functional after deployment."""
+    try:
+        from infraforge.ipam_client import IPAMClient, IPAMError
+        from infraforge.config import Config, IPAMConfig
+
+        cfg = Config()
+        cfg.ipam = IPAMConfig(
+            provider=ipam_config.get("provider", "phpipam"),
+            url=ipam_config.get("url", ""),
+            app_id=ipam_config.get("app_id", ""),
+            token=ipam_config.get("token", ""),
+            username=ipam_config.get("username", ""),
+            password=ipam_config.get("password", ""),
+            verify_ssl=ipam_config.get("verify_ssl", False),
+        )
+
+        client = IPAMClient(cfg)
+        # Retry a few times — init scripts may still be running
+        for attempt in range(5):
+            if client.check_health():
+                console.print("[green]✓[/green] phpIPAM API is functional")
+                try:
+                    sections = client.get_sections()
+                    console.print(f"  [dim]Sections: {len(sections)}[/dim]")
+                except IPAMError:
+                    pass
+                return
+            time.sleep(3)
+
+        console.print("[yellow]Warning: API not responding yet — it may need a moment[/yellow]")
+        console.print("[dim]You can test later with: infraforge setup[/dim]")
     except Exception as e:
-        console.print(f"[yellow]Warning: Bootstrap partially failed: {e}[/yellow]")
-        console.print("[dim]You may need to configure the API app manually in phpIPAM web UI.[/dim]")
+        console.print(f"[yellow]Warning: API check failed: {e}[/yellow]")
 
 
 # =====================================================================

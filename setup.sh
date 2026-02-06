@@ -712,7 +712,8 @@ else:
 
 deploy_phpipam_docker() {
     echo
-    echo -e "${DIM}A local Docker instance will be deployed automatically.${NC}"
+    echo -e "${DIM}A local Docker instance will be deployed automatically."
+    echo -e "The database schema and API app are configured on first boot.${NC}"
     echo
 
     if ! $DOCKER_AVAILABLE; then
@@ -730,6 +731,28 @@ deploy_phpipam_docker() {
         return
     fi
 
+    # Detect existing broken deployment
+    if detect_broken_phpipam; then
+        warn "An existing phpIPAM deployment was detected but its database is not properly initialized."
+        if prompt_yesno "Wipe and redeploy from scratch?" "y"; then
+            info "Stopping containers and removing data volume..."
+            $COMPOSE_CMD -f "$DOCKER_DIR/docker-compose.yml" down -v 2>/dev/null || true
+            success "Old deployment removed"
+        else
+            if prompt_yesno "Connect to an existing phpIPAM server instead?" "n"; then
+                deploy_phpipam_existing
+                return
+            fi
+            IPAM_URL=""
+            IPAM_APP_ID=""
+            IPAM_TOKEN=""
+            IPAM_USERNAME=""
+            IPAM_PASSWORD=""
+            IPAM_VERIFY_SSL="false"
+            return
+        fi
+    fi
+
     # Detect existing port from docker .env
     local prev_port="8443"
     if [[ -f "$DOCKER_DIR/.env" ]]; then
@@ -742,22 +765,32 @@ deploy_phpipam_docker() {
     DB_PASS="$(generate_password)"
     DB_ROOT_PASS="$(generate_password)"
 
+    # Generate admin password hash
+    info "Generating admin password hash..."
+    ADMIN_HASH=$(generate_php_password_hash "$IPAM_ADMIN_PASS")
+
     # Generate SSL certs
     info "Generating self-signed SSL certificate..."
     bash "$DOCKER_DIR/phpipam/generate-ssl.sh"
     success "SSL certificate generated"
 
-    # Write .env
+    # Write .env (includes admin hash for MariaDB init script)
     cat > "$DOCKER_DIR/.env" << EOF
 IPAM_DB_ROOT_PASS=${DB_ROOT_PASS}
 IPAM_DB_PASS=${DB_PASS}
 IPAM_PORT=${IPAM_PORT}
 SCAN_INTERVAL=15m
 EOF
+    if [[ -n "$ADMIN_HASH" ]]; then
+        # Escape $ as $$ for docker compose .env variable interpolation
+        local escaped_hash="${ADMIN_HASH//\$/\$\$}"
+        echo "IPAM_ADMIN_HASH=${escaped_hash}" >> "$DOCKER_DIR/.env"
+    fi
 
     # Launch containers
     echo
     info "Launching phpIPAM containers..."
+    echo -e "${DIM}MariaDB will auto-initialize the schema on first boot.${NC}"
     if $COMPOSE_CMD -f "$DOCKER_DIR/docker-compose.yml" up -d 2>/dev/null; then
         success "Containers started"
     else
@@ -773,10 +806,10 @@ EOF
 
     IPAM_URL="https://localhost:${IPAM_PORT}"
 
-    # Wait for phpIPAM to be ready
-    info "Waiting for phpIPAM at ${IPAM_URL}..."
+    # Wait for phpIPAM to be ready (schema init may take 30-60s)
+    info "Waiting for phpIPAM at ${IPAM_URL} (schema init may take 30-60s)..."
     READY=false
-    for i in $(seq 1 40); do
+    for i in $(seq 1 60); do
         if curl -sk -o /dev/null -w "%{http_code}" "${IPAM_URL}" 2>/dev/null | grep -qE "^(200|301|302)$"; then
             sleep 5
             READY=true
@@ -788,6 +821,7 @@ EOF
     if ! $READY; then
         error "phpIPAM did not become ready in time."
         warn "Check: docker logs infraforge-ipam-web"
+        warn "Check: docker logs infraforge-ipam-db"
         IPAM_URL=""
         IPAM_APP_ID=""
         IPAM_TOKEN=""
@@ -798,65 +832,106 @@ EOF
     fi
     success "phpIPAM is running"
 
-    # Bootstrap phpIPAM
-    info "Bootstrapping phpIPAM (API app, scanning, admin password)..."
-    bootstrap_phpipam
-
     IPAM_APP_ID="infraforge"
     IPAM_TOKEN=""
-    IPAM_USERNAME="admin"
+    IPAM_USERNAME="Admin"
     IPAM_PASSWORD="$IPAM_ADMIN_PASS"
     IPAM_VERIFY_SSL="false"
 
+    # Verify API connectivity
+    info "Verifying API connectivity..."
+    verify_ipam_api
+
     echo
     success "phpIPAM deployed at ${IPAM_URL}"
-    echo -e "  ${DIM}Web UI: ${IPAM_URL}  (admin / ${IPAM_ADMIN_PASS})${NC}"
+    echo -e "  ${DIM}Web UI: ${IPAM_URL}  (Admin / ${IPAM_ADMIN_PASS})${NC}"
 }
 
-bootstrap_phpipam() {
-    local db_container="infraforge-ipam-db"
+generate_php_password_hash() {
+    local password="$1"
+    local escaped_pw
+    escaped_pw=$(echo "$password" | sed "s/'/\\\\'/g")
+    local php_code="echo password_hash('${escaped_pw}', PASSWORD_DEFAULT);"
+    local hash=""
 
-    db_exec() {
-        docker exec "$db_container" mysql -u phpipam -p"${DB_PASS}" phpipam -sN -e "$1" 2>/dev/null
-    }
+    # Try 1: Use the running phpipam-web container if available
+    hash=$(docker exec infraforge-ipam-web php -r "$php_code" 2>/dev/null || echo "")
+    if [[ "$hash" == \$2* ]]; then
+        echo "$hash"
+        return
+    fi
 
-    # Wait for schema
-    for i in $(seq 1 30); do
-        COUNT=$(db_exec "SELECT COUNT(*) FROM settings;" 2>/dev/null || echo "0")
-        if [[ "${COUNT:-0}" -gt 0 ]]; then
-            break
+    # Try 2: Use a throwaway PHP container
+    hash=$(docker run --rm php:cli php -r "$php_code" 2>/dev/null || echo "")
+    if [[ "$hash" == \$2* ]]; then
+        echo "$hash"
+        return
+    fi
+
+    # Try 3: Use the phpipam image
+    hash=$(docker run --rm phpipam/phpipam-www:latest php -r "$php_code" 2>/dev/null || echo "")
+    if [[ "$hash" == \$2* ]]; then
+        echo "$hash"
+        return
+    fi
+
+    warn "Could not generate password hash — admin password must be set via web UI"
+    echo ""
+}
+
+detect_broken_phpipam() {
+    # Check if DB container is running but schema is missing or API app not created
+    local running
+    running=$(docker inspect --format '{{.State.Running}}' infraforge-ipam-db 2>/dev/null || echo "false")
+    if [[ "$running" != "true" ]]; then
+        return 1
+    fi
+
+    # Read root password from .env
+    local root_pass
+    root_pass=$(grep -oP 'IPAM_DB_ROOT_PASS=\K.*' "$DOCKER_DIR/.env" 2>/dev/null || echo "infraforge_root_pw")
+
+    # Check if settings table exists
+    if ! docker exec infraforge-ipam-db mysql -u root -p"${root_pass}" phpipam -sN -e "SELECT COUNT(*) FROM settings;" 2>/dev/null | grep -q "[0-9]"; then
+        return 0  # broken — no schema
+    fi
+
+    # Check if API app exists
+    local api_count
+    api_count=$(docker exec infraforge-ipam-db mysql -u root -p"${root_pass}" phpipam -sN -e "SELECT COUNT(*) FROM api WHERE app_id='infraforge';" 2>/dev/null || echo "0")
+    if [[ "${api_count:-0}" -eq 0 ]]; then
+        return 0  # broken — no API app
+    fi
+
+    return 1  # not broken
+}
+
+verify_ipam_api() {
+    # Retry a few times — init scripts may still be running
+    for attempt in $(seq 1 5); do
+        local result
+        result=$($PYTHON_CMD -c "
+from infraforge.config import Config, IPAMConfig
+from infraforge.ipam_client import IPAMClient
+cfg = Config()
+cfg.ipam = IPAMConfig(provider='phpipam', url='${IPAM_URL}', app_id='${IPAM_APP_ID}', token='', username='${IPAM_USERNAME}', password='${IPAM_PASSWORD}', verify_ssl=False)
+client = IPAMClient(cfg)
+if client.check_health():
+    sections = client.get_sections()
+    print(f'OK|Sections: {len(sections)}')
+else:
+    print('FAIL')
+" 2>/dev/null || echo "FAIL")
+        if [[ "$result" == OK* ]]; then
+            local details="${result#OK|}"
+            success "phpIPAM API is functional"
+            echo -e "  ${DIM}${details}${NC}"
+            return
         fi
         sleep 3
     done
-
-    # Enable API and scanning globally
-    db_exec "UPDATE settings SET api=1, scanPingType='fping', scanMaxThreads=32;" || true
-
-    # Create API app
-    EXISTING=$(db_exec "SELECT COUNT(*) FROM api WHERE app_id='infraforge';" || echo "0")
-    if [[ "${EXISTING:-0}" -gt 0 ]]; then
-        db_exec "UPDATE api SET app_permissions=2, app_security='none' WHERE app_id='infraforge';" || true
-    else
-        db_exec "INSERT INTO api (app_id, app_code, app_permissions, app_security, app_lock_expire) VALUES ('infraforge', 'infraforge_auto', 2, 'none', 0);" || true
-    fi
-
-    # Set admin password via PHP in web container
-    ESCAPED_PW=$(echo "$IPAM_ADMIN_PASS" | sed "s/'/\\\\'/g")
-    PW_HASH=$(docker exec infraforge-ipam-web php -r "echo password_hash('${ESCAPED_PW}', PASSWORD_DEFAULT);" 2>/dev/null || echo "")
-    if [[ -n "$PW_HASH" ]]; then
-        ESCAPED_HASH=$(echo "$PW_HASH" | sed "s/'/\\\\'/g")
-        db_exec "UPDATE users SET password='${ESCAPED_HASH}' WHERE username='admin';" || true
-    fi
-
-    # Ensure default scan agent exists
-    AGENT_COUNT=$(db_exec "SELECT COUNT(*) FROM scanAgents WHERE id=1;" || echo "0")
-    if [[ "${AGENT_COUNT:-0}" -gt 0 ]]; then
-        db_exec "UPDATE scanAgents SET type='mysql' WHERE id=1;" || true
-    else
-        db_exec "INSERT INTO scanAgents (id, name, description, type) VALUES (1, 'cron', 'Default cron agent', 'mysql');" || true
-    fi
-
-    success "phpIPAM bootstrapped (API enabled, scanning on)"
+    warn "API not responding yet — it may need a moment"
+    echo -e "  ${DIM}You can test later with: infraforge setup${NC}"
 }
 
 write_config() {

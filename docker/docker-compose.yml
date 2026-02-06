@@ -1,5 +1,3 @@
-version: "3.8"
-
 # InfraForge phpIPAM Stack
 # Managed by: infraforge setup
 
@@ -13,8 +11,10 @@ services:
       MYSQL_DATABASE: phpipam
       MYSQL_USER: phpipam
       MYSQL_PASSWORD: "${IPAM_DB_PASS:-infraforge_ipam_pw}"
+      IPAM_ADMIN_HASH: "${IPAM_ADMIN_HASH:-}"
     volumes:
       - phpipam-db-data:/var/lib/mysql
+      - ./phpipam/initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - infraforge-ipam
     healthcheck:
@@ -37,11 +37,14 @@ services:
       IPAM_DATABASE_USER: phpipam
       IPAM_DATABASE_PASS: "${IPAM_DB_PASS:-infraforge_ipam_pw}"
       IPAM_DATABASE_NAME: phpipam
+      IPAM_DISABLE_INSTALLER: 1
     ports:
       - "${IPAM_PORT:-8443}:443"
     volumes:
       - phpipam-logo:/phpipam/css/images/logo
       - ./phpipam/ssl:/etc/apache2/ssl:ro
+      - ./phpipam/apache-ssl-phpipam.conf:/etc/apache2/conf.d/ssl.conf:ro
+      - ./phpipam/config-override.php:/phpipam/config.docker.php:ro
     networks:
       - infraforge-ipam
 
