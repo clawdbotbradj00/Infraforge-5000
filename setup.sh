@@ -509,7 +509,7 @@ generate_password() {
 
 deploy_phpipam() {
     echo
-    echo -e "${CYAN}${BOLD}── phpIPAM Deployment ──${NC}"
+    echo -e "${CYAN}${BOLD}── phpIPAM Configuration ──${NC}"
     echo
 
     # If phpIPAM is already configured, offer to keep existing setup
@@ -529,8 +529,162 @@ deploy_phpipam() {
         echo
     fi
 
-    echo -e "${DIM}InfraForge uses phpIPAM for IP address management."
-    echo -e "A local Docker instance will be deployed automatically.${NC}"
+    if ! prompt_yesno "Configure phpIPAM for IP address management?" "y"; then
+        IPAM_URL=""
+        IPAM_APP_ID=""
+        IPAM_TOKEN=""
+        IPAM_USERNAME=""
+        IPAM_PASSWORD=""
+        IPAM_VERIFY_SSL="false"
+        return
+    fi
+
+    echo
+    echo -e "${BOLD}phpIPAM setup method:${NC}"
+    echo "  1) Connect to existing phpIPAM server (recommended)"
+    echo "  2) Deploy new phpIPAM with Docker"
+    echo "  3) Skip for now"
+    read -rp "$(echo -e "${BOLD}Select [1]:${NC} ")" ipam_choice
+    ipam_choice="${ipam_choice:-1}"
+
+    case "$ipam_choice" in
+        1)
+            deploy_phpipam_existing
+            ;;
+        2)
+            deploy_phpipam_docker
+            ;;
+        *)
+            IPAM_URL=""
+            IPAM_APP_ID=""
+            IPAM_TOKEN=""
+            IPAM_USERNAME=""
+            IPAM_PASSWORD=""
+            IPAM_VERIFY_SSL="false"
+            ;;
+    esac
+}
+
+deploy_phpipam_existing() {
+    echo
+    echo -e "${DIM}Enter your phpIPAM server details."
+    echo -e "You'll need an API app configured in phpIPAM:"
+    echo -e "  Administration > API > Create API app"
+    echo -e "  Set app_id, permissions (Read/Write), and security method.${NC}"
+    echo
+
+    prompt_input "phpIPAM URL (e.g. https://ipam.example.com)" "${PREV_IPAM_URL}" IPAM_URL
+    # Strip trailing slash
+    IPAM_URL="${IPAM_URL%/}"
+
+    prompt_input "API app ID" "$(cfg_get ipam app_id || echo 'infraforge')" IPAM_APP_ID
+
+    echo
+    echo -e "${BOLD}Authentication method:${NC}"
+    echo "  1) API Token (app security = 'none' or 'ssl')"
+    echo "  2) Username / Password (app security = 'user')"
+    read -rp "$(echo -e "${BOLD}Select [1]:${NC} ")" auth_choice
+    auth_choice="${auth_choice:-1}"
+
+    IPAM_TOKEN=""
+    IPAM_USERNAME=""
+    IPAM_PASSWORD=""
+
+    if [[ "$auth_choice" == "1" ]]; then
+        local prev_token
+        prev_token=$(cfg_get ipam token)
+        if [[ -n "$prev_token" ]]; then
+            local masked="${prev_token:0:4}...${prev_token: -4}"
+            echo -e "  ${DIM}Current token: ${masked}${NC}"
+            if prompt_yesno "  Keep existing token?" "y"; then
+                IPAM_TOKEN="$prev_token"
+            else
+                prompt_secret "API Token" IPAM_TOKEN
+            fi
+        else
+            echo -e "${DIM}Leave blank if app security is 'none'${NC}"
+            prompt_input "API Token" "" IPAM_TOKEN
+        fi
+    else
+        prompt_input "Username" "$(cfg_get ipam username || echo 'admin')" IPAM_USERNAME
+        local prev_pw
+        prev_pw=$(cfg_get ipam password)
+        if [[ -n "$prev_pw" ]]; then
+            echo -e "  ${DIM}Password is already set.${NC}"
+            if prompt_yesno "  Keep existing password?" "y"; then
+                IPAM_PASSWORD="$prev_pw"
+            else
+                prompt_secret "Password" IPAM_PASSWORD
+            fi
+        else
+            prompt_secret "Password" IPAM_PASSWORD
+        fi
+    fi
+
+    if prompt_yesno "Verify SSL certificate?" "n"; then
+        IPAM_VERIFY_SSL="true"
+    else
+        IPAM_VERIFY_SSL="false"
+    fi
+
+    # Test connection
+    if prompt_yesno "Test phpIPAM connection?" "y"; then
+        info "Connecting to phpIPAM..."
+        if $PYTHON_CMD -c "
+from infraforge.config import Config, IPAMConfig
+from infraforge.ipam_client import IPAMClient
+
+cfg = Config()
+cfg.ipam = IPAMConfig(
+    provider='phpipam',
+    url='${IPAM_URL}',
+    app_id='${IPAM_APP_ID}',
+    token='${IPAM_TOKEN}',
+    username='${IPAM_USERNAME}',
+    password='${IPAM_PASSWORD}',
+    verify_ssl=${IPAM_VERIFY_SSL^},
+)
+client = IPAMClient(cfg)
+if client.check_health():
+    sections = client.get_sections()
+    vlans = client.get_vlans()
+    print(f'OK|Sections: {len(sections)} | VLANs: {len(vlans)}')
+else:
+    print('FAIL|Cannot reach phpIPAM API')
+" 2>/dev/null; then
+            local result
+            result=$($PYTHON_CMD -c "
+from infraforge.config import Config, IPAMConfig
+from infraforge.ipam_client import IPAMClient
+cfg = Config()
+cfg.ipam = IPAMConfig(provider='phpipam', url='${IPAM_URL}', app_id='${IPAM_APP_ID}', token='${IPAM_TOKEN}', username='${IPAM_USERNAME}', password='${IPAM_PASSWORD}', verify_ssl=${IPAM_VERIFY_SSL^})
+client = IPAMClient(cfg)
+if client.check_health():
+    sections = client.get_sections()
+    vlans = client.get_vlans()
+    print(f'OK|Sections: {len(sections)} | VLANs: {len(vlans)}')
+else:
+    print('FAIL|Cannot reach phpIPAM API')
+" 2>/dev/null || echo "FAIL|Connection error")
+            if [[ "$result" == OK* ]]; then
+                local details="${result#OK|}"
+                success "Connected to phpIPAM at ${IPAM_URL}"
+                echo -e "  ${details}"
+            else
+                local details="${result#FAIL|}"
+                error "${details}"
+                warn "Check the URL, app ID, and credentials."
+            fi
+        else
+            error "Connection test failed"
+            warn "Check the URL, app ID, and credentials."
+        fi
+    fi
+}
+
+deploy_phpipam_docker() {
+    echo
+    echo -e "${DIM}A local Docker instance will be deployed automatically.${NC}"
     echo
 
     if ! $DOCKER_AVAILABLE; then
@@ -902,17 +1056,125 @@ print_summary() {
     echo
 }
 
+select_setup_mode() {
+    SETUP_MODE="all"
+    MISSING_SECTIONS=""
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        return
+    fi
+
+    # Detect which sections are configured
+    local has_proxmox=false has_dns=false has_ipam=false
+    local pve_host dns_provider ipam_url
+
+    pve_host=$(cfg_get proxmox host)
+    dns_provider=$(cfg_get dns provider)
+    ipam_url=$(cfg_get ipam url)
+
+    [[ -n "$pve_host" ]] && has_proxmox=true
+    [[ -n "$dns_provider" ]] && has_dns=true
+    [[ -n "$ipam_url" ]] && has_ipam=true
+
+    echo
+    echo -e "${BOLD}Current configuration:${NC}"
+    if $has_proxmox; then
+        echo -e "  ${GREEN}✓${NC} Proxmox (${pve_host})"
+    else
+        echo -e "  ${RED}✗${NC} Proxmox — not configured"
+        MISSING_SECTIONS="${MISSING_SECTIONS} proxmox"
+    fi
+    if $has_dns; then
+        echo -e "  ${GREEN}✓${NC} DNS (${dns_provider})"
+    else
+        echo -e "  ${RED}✗${NC} DNS — not configured"
+        MISSING_SECTIONS="${MISSING_SECTIONS} dns"
+    fi
+    if $has_ipam; then
+        echo -e "  ${GREEN}✓${NC} IPAM (${ipam_url})"
+    else
+        echo -e "  ${RED}✗${NC} IPAM — not configured"
+        MISSING_SECTIONS="${MISSING_SECTIONS} ipam"
+    fi
+
+    echo
+    echo -e "${BOLD}Setup mode:${NC}"
+    echo "  1) Configure only missing settings (recommended)"
+    echo "  2) Reconfigure all settings"
+    read -rp "$(echo -e "${BOLD}Select [1]:${NC} ")" mode_choice
+    mode_choice="${mode_choice:-1}"
+
+    if [[ "$mode_choice" == "1" ]]; then
+        SETUP_MODE="missing"
+    fi
+}
+
+should_configure() {
+    local section="$1"
+    if [[ "$SETUP_MODE" == "all" ]]; then
+        return 0
+    fi
+    # In "missing" mode, only configure sections that are missing
+    echo "$MISSING_SECTIONS" | grep -qw "$section"
+}
+
 # ── Main ──
 
 banner
 check_python
 setup_venv
 load_existing_config
-configure_proxmox
-configure_dns
+select_setup_mode
+
+if should_configure proxmox; then
+    configure_proxmox
+else
+    echo -e "${DIM}Proxmox: already configured — skipping.${NC}"
+    PVE_HOST="$PREV_PVE_HOST"
+    PVE_PORT="${PREV_PVE_PORT:-8006}"
+    PVE_USER="${PREV_PVE_USER:-root@pam}"
+    PVE_AUTH_METHOD="${PREV_PVE_AUTH:-token}"
+    PVE_TOKEN_NAME="$PREV_PVE_TOKEN_NAME"
+    PVE_TOKEN_VALUE="$PREV_PVE_TOKEN_VALUE"
+    PVE_PASSWORD="$PREV_PVE_PASSWORD"
+    PVE_VERIFY_SSL="${PREV_PVE_VERIFY_SSL:-false}"
+fi
+
+if should_configure dns; then
+    configure_dns
+else
+    echo -e "${DIM}DNS: already configured — skipping.${NC}"
+    DNS_PROVIDER="$PREV_DNS_PROVIDER"
+    DNS_SERVER="$PREV_DNS_SERVER"
+    DNS_PORT="${PREV_DNS_PORT:-53}"
+    DNS_ZONES="$PREV_DNS_ZONES"
+    DNS_DOMAIN="$PREV_DNS_DOMAIN"
+    DNS_TSIG_KEY_NAME="$PREV_DNS_TSIG_KEY_NAME"
+    DNS_TSIG_KEY_SECRET="$PREV_DNS_TSIG_KEY_SECRET"
+    DNS_TSIG_ALGORITHM="${PREV_DNS_TSIG_ALGORITHM:-hmac-sha256}"
+    DNS_API_KEY="$PREV_DNS_API_KEY"
+fi
+
 check_docker || true
-deploy_phpipam
+
+if should_configure ipam; then
+    deploy_phpipam
+else
+    echo -e "${DIM}IPAM: already configured — skipping.${NC}"
+    IPAM_URL="$PREV_IPAM_URL"
+    IPAM_APP_ID=$(cfg_get ipam app_id)
+    IPAM_TOKEN=$(cfg_get ipam token)
+    IPAM_USERNAME=$(cfg_get ipam username)
+    IPAM_PASSWORD=$(cfg_get ipam password)
+    IPAM_VERIFY_SSL=$(cfg_get ipam verify_ssl)
+    [[ -z "$IPAM_VERIFY_SSL" ]] && IPAM_VERIFY_SSL="false"
+fi
+
 write_config
-test_connection
+
+if should_configure proxmox; then
+    test_connection
+fi
+
 configure_subnets
 print_summary

@@ -39,6 +39,21 @@ def _load_existing_config() -> dict:
         return {}
 
 
+def _detect_missing(existing: dict) -> list[str]:
+    """Return a list of section names that are not yet configured."""
+    missing = []
+    pve = existing.get("proxmox", {})
+    if not pve.get("host"):
+        missing.append("proxmox")
+    dns = existing.get("dns", {})
+    if not dns.get("provider"):
+        missing.append("dns")
+    ipam = existing.get("ipam", {})
+    if not ipam.get("url"):
+        missing.append("ipam")
+    return missing
+
+
 def run_setup_wizard():
     """Run the interactive setup wizard."""
     console = Console()
@@ -53,19 +68,56 @@ def run_setup_wizard():
 
     # Load existing config so we can pre-populate defaults
     existing = _load_existing_config()
+
+    # ── Setup mode selection ──────────────────────────────────────────
+    missing_only = False
     if existing:
-        console.print("[dim]Existing configuration found — previous values shown as defaults.[/dim]\n")
+        missing = _detect_missing(existing)
+        configured = []
+        if "proxmox" not in missing:
+            configured.append(f"Proxmox ([green]{existing['proxmox'].get('host', '?')}[/green])")
+        if "dns" not in missing:
+            configured.append(f"DNS ([green]{existing['dns'].get('provider', '?')}[/green])")
+        if "ipam" not in missing:
+            configured.append(f"IPAM ([green]{existing['ipam'].get('url', '?')}[/green])")
+
+        if configured:
+            console.print("[bold]Already configured:[/bold]")
+            for c in configured:
+                console.print(f"  [green]✓[/green] {c}", markup=True)
+        if missing:
+            console.print(f"[bold]Not configured:[/bold] {', '.join(missing)}")
+        console.print()
+
+        console.print("[bold]Setup mode:[/bold]")
+        console.print("  1) Configure only missing settings [dim](recommended)[/dim]")
+        console.print("  2) Reconfigure all settings")
+        mode_choice = Prompt.ask("Select", choices=["1", "2"], default="1")
+        missing_only = mode_choice == "1"
+        console.print()
 
     config: dict = {}
 
     # ── Proxmox ──────────────────────────────────────────────────────
-    config["proxmox"] = _configure_proxmox(console, existing.get("proxmox", {}))
+    if missing_only and "proxmox" not in missing:
+        console.print("[dim]Proxmox: already configured — skipping.[/dim]")
+        config["proxmox"] = existing.get("proxmox", {})
+    else:
+        config["proxmox"] = _configure_proxmox(console, existing.get("proxmox", {}))
 
     # ── DNS ───────────────────────────────────────────────────────────
-    config["dns"] = _configure_dns(console, existing.get("dns", {}))
+    if missing_only and "dns" not in missing:
+        console.print("[dim]DNS: already configured — skipping.[/dim]")
+        config["dns"] = existing.get("dns", {})
+    else:
+        config["dns"] = _configure_dns(console, existing.get("dns", {}))
 
-    # ── phpIPAM (Docker deploy + subnet config) ──────────────────────
-    config["ipam"] = _configure_ipam(console, existing.get("ipam", {}))
+    # ── phpIPAM ───────────────────────────────────────────────────────
+    if missing_only and "ipam" not in missing:
+        console.print("[dim]IPAM: already configured — skipping.[/dim]")
+        config["ipam"] = existing.get("ipam", {})
+    else:
+        config["ipam"] = _configure_ipam(console, existing.get("ipam", {}))
 
     # ── Defaults ──────────────────────────────────────────────────────
     ex_tf = existing.get("terraform", {})
@@ -101,10 +153,11 @@ def run_setup_wizard():
     console.print(f"\n[green]✓[/green] Configuration saved to [bold]{config_path}[/bold]")
 
     # ── Test Proxmox connection ───────────────────────────────────────
-    if Confirm.ask("\nTest Proxmox connection?", default=True):
-        _test_proxmox_connection(console, config_path)
+    if not (missing_only and "proxmox" not in missing):
+        if Confirm.ask("\nTest Proxmox connection?", default=True):
+            _test_proxmox_connection(console, config_path)
 
-    # ── Configure subnets if phpIPAM was deployed ─────────────────────
+    # ── Configure subnets if phpIPAM is configured ────────────────────
     if config["ipam"].get("url"):
         _configure_subnets(console, config_path)
 
@@ -367,9 +420,9 @@ def _test_dns_connection(console: Console, dns_config: dict) -> None:
 
 def _configure_ipam(console: Console, prev: dict | None = None) -> dict:
     prev = prev or {}
-    console.print("\n[bold cyan]─── phpIPAM Deployment ───[/bold cyan]\n")
+    console.print("\n[bold cyan]─── phpIPAM Configuration ───[/bold cyan]\n")
 
-    # If phpIPAM is already configured and running, offer to keep it
+    # If phpIPAM is already configured, offer to keep it
     prev_url = prev.get("url", "")
     if prev_url:
         console.print(f"  [dim]Existing phpIPAM: {prev_url}[/dim]")
@@ -379,15 +432,151 @@ def _configure_ipam(console: Console, prev: dict | None = None) -> dict:
                 "url": prev_url,
                 "app_id": prev.get("app_id", "infraforge"),
                 "token": prev.get("token", ""),
-                "username": prev.get("username", "admin"),
+                "username": prev.get("username", ""),
                 "password": prev.get("password", ""),
                 "verify_ssl": prev.get("verify_ssl", False),
             }
         console.print()
 
+    if not Confirm.ask("Configure phpIPAM for IP address management?", default=True):
+        return _empty_ipam_config()
+
+    console.print()
+    console.print("[bold]phpIPAM setup method:[/bold]")
+    console.print("  1) Connect to existing phpIPAM server [dim](recommended)[/dim]")
+    console.print("  2) Deploy new phpIPAM with Docker")
+    console.print("  3) Skip for now")
+    ipam_choice = Prompt.ask("Select", choices=["1", "2", "3"], default="1")
+
+    if ipam_choice == "3":
+        return _empty_ipam_config()
+
+    if ipam_choice == "1":
+        return _configure_ipam_existing(console, prev)
+
+    return _configure_ipam_docker(console, prev)
+
+
+def _configure_ipam_existing(console: Console, prev: dict) -> dict:
+    """Configure connection to an existing phpIPAM server."""
+    console.print()
     console.print(
-        "[dim]InfraForge uses phpIPAM for IP address management.\n"
-        "A local Docker instance will be deployed automatically.[/dim]\n"
+        "[dim]Enter your phpIPAM server details.\n"
+        "You'll need an API app configured in phpIPAM:\n"
+        "  Administration > API > Create API app\n"
+        "  Set app_id, permissions (Read/Write), and security method.[/dim]\n"
+    )
+
+    ipam_url = Prompt.ask(
+        "phpIPAM URL (e.g. https://ipam.example.com)",
+        default=prev.get("url") or None,
+    )
+    # Strip trailing slash
+    ipam_url = ipam_url.rstrip("/")
+
+    app_id = Prompt.ask("API app ID", default=prev.get("app_id", "infraforge"))
+
+    # Auth method
+    prev_has_token = bool(prev.get("token"))
+    prev_has_user = bool(prev.get("username"))
+    default_auth = "1" if prev_has_token else "2" if prev_has_user else "1"
+
+    console.print()
+    console.print("[bold]Authentication method:[/bold]")
+    console.print("  1) API Token [dim](app security = 'none' or 'ssl')[/dim]")
+    console.print("  2) Username / Password [dim](app security = 'user')[/dim]")
+    auth_choice = Prompt.ask("Select", choices=["1", "2"], default=default_auth)
+
+    token = ""
+    username = ""
+    password = ""
+
+    if auth_choice == "1":
+        prev_token = prev.get("token", "")
+        if prev_token:
+            masked = prev_token[:4] + "..." + prev_token[-4:] if len(prev_token) > 8 else "****"
+            console.print(f"  [dim]Current token: {masked}[/dim]")
+            if Confirm.ask("  Keep existing token?", default=True):
+                token = prev_token
+            else:
+                token = Prompt.ask("API Token", password=True)
+        else:
+            token = Prompt.ask(
+                "API Token [dim](leave blank if app security is 'none')[/dim]",
+                default="",
+            )
+    else:
+        username = Prompt.ask("Username", default=prev.get("username", "admin"))
+        prev_pw = prev.get("password", "")
+        if prev_pw:
+            console.print("  [dim]Password is already set.[/dim]")
+            if Confirm.ask("  Keep existing password?", default=True):
+                password = prev_pw
+            else:
+                password = Prompt.ask("Password", password=True)
+        else:
+            password = Prompt.ask("Password", password=True)
+
+    verify_ssl = Confirm.ask("Verify SSL certificate?", default=prev.get("verify_ssl", False))
+
+    result = {
+        "provider": "phpipam",
+        "url": ipam_url,
+        "app_id": app_id,
+        "token": token,
+        "username": username,
+        "password": password,
+        "verify_ssl": verify_ssl,
+    }
+
+    # Test connection
+    if Confirm.ask("\nTest phpIPAM connection?", default=True):
+        _test_ipam_connection(console, result)
+
+    return result
+
+
+def _test_ipam_connection(console: Console, ipam_config: dict) -> None:
+    """Test phpIPAM API connectivity."""
+    console.print("[dim]Connecting to phpIPAM...[/dim]")
+    try:
+        from infraforge.ipam_client import IPAMClient, IPAMError
+
+        # Build a minimal Config-like object for the client
+        from infraforge.config import Config, IPAMConfig
+        cfg = Config()
+        cfg.ipam = IPAMConfig(
+            provider=ipam_config.get("provider", "phpipam"),
+            url=ipam_config.get("url", ""),
+            app_id=ipam_config.get("app_id", ""),
+            token=ipam_config.get("token", ""),
+            username=ipam_config.get("username", ""),
+            password=ipam_config.get("password", ""),
+            verify_ssl=ipam_config.get("verify_ssl", False),
+        )
+
+        client = IPAMClient(cfg)
+        if client.check_health():
+            console.print(f"[green]✓[/green] Connected to phpIPAM at {ipam_config['url']}")
+            # Show summary
+            try:
+                sections = client.get_sections()
+                vlans = client.get_vlans()
+                console.print(f"  Sections: {len(sections)}  |  VLANs: {len(vlans)}")
+            except IPAMError:
+                pass
+        else:
+            console.print(f"[red]✗[/red] Cannot reach phpIPAM at {ipam_config['url']}")
+            console.print("[yellow]Check the URL, app ID, and credentials.[/yellow]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] phpIPAM test failed: {e}")
+
+
+def _configure_ipam_docker(console: Console, prev: dict) -> dict:
+    """Deploy a new phpIPAM instance with Docker."""
+    console.print()
+    console.print(
+        "[dim]A local Docker instance will be deployed automatically.[/dim]\n"
     )
 
     # ── Check prerequisites ──
@@ -397,7 +586,6 @@ def _configure_ipam(console: Console, prev: dict | None = None) -> dict:
         return _empty_ipam_config()
 
     # ── Port ──
-    # Try to detect existing port from docker .env
     prev_port = "8443"
     env_path = DOCKER_DIR / ".env"
     if env_path.exists():
