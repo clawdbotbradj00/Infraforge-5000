@@ -26,6 +26,7 @@ class DashboardScreen(Screen):
         Binding("5", "manage_ipam", "5:IPAM", show=True),
         Binding("6", "create_vm", "6:New VM", show=True),
         Binding("7", "manage_ansible", "7:Ansible", show=True),
+        Binding("8", "ai_settings", "8:AI", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
@@ -69,6 +70,7 @@ class DashboardScreen(Screen):
                 ListItem(Label("  [5]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
                 ListItem(Label("  [6]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
                 ListItem(Label("  [7]  Ansible           —  Manage playbooks and automation"), id="nav-ansible"),
+                ListItem(Label("  [8]  AI Settings       —  Configure AI assistant and model"), id="nav-ai-settings"),
                 id="nav-menu",
             )
         yield Footer()
@@ -219,6 +221,8 @@ class DashboardScreen(Screen):
             self.action_create_vm()
         elif item_id == "nav-ansible":
             self.action_manage_ansible()
+        elif item_id == "nav-ai-settings":
+            self.action_ai_settings()
 
     def action_view_vms(self):
         from infraforge.screens.vm_list import VMListScreen
@@ -247,6 +251,10 @@ class DashboardScreen(Screen):
     def action_manage_ansible(self):
         from infraforge.screens.ansible_screen import AnsibleScreen
         self.app.push_screen(AnsibleScreen())
+
+    def action_ai_settings(self):
+        from infraforge.screens.ai_settings_screen import AISettingsScreen
+        self.app.push_screen(AISettingsScreen())
 
     @work(thread=True)
     def _check_for_update(self):

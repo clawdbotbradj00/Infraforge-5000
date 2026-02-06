@@ -12,6 +12,7 @@ from infraforge import __version__
 from infraforge.config import Config
 from infraforge.preferences import Preferences
 from infraforge.proxmox_client import ProxmoxClient, ProxmoxConnectionError
+from infraforge.ai_client import AIClient
 
 
 class ConnectingScreen(Screen):
@@ -252,6 +253,7 @@ class InfraForgeApp(App):
         Binding("question_mark", "help_screen", "Help", show=True),
         Binding("d", "dashboard", "Dashboard", show=True),
         Binding("T", "cycle_theme", "Theme", show=True, priority=True),
+        Binding("slash", "open_ai_chat", "AI Chat", show=True),
     ]
 
     def __init__(self, config: Config):
@@ -259,6 +261,7 @@ class InfraForgeApp(App):
         self.config = config
         self.proxmox = ProxmoxClient(config)
         self.preferences = Preferences.load()
+        self.ai_client: AIClient | None = None
         self._connected = False
 
     def on_mount(self):
@@ -300,6 +303,8 @@ class InfraForgeApp(App):
     def _on_connected(self):
         """Called when Proxmox connection succeeds."""
         self.pop_screen()  # Remove connecting screen
+        if self.config.ai.api_key:
+            self.ai_client = AIClient(self.config)
         from infraforge.screens.dashboard import DashboardScreen
         self.push_screen(DashboardScreen())
 
@@ -321,3 +326,8 @@ class InfraForgeApp(App):
         """Show help screen."""
         from infraforge.screens.help_screen import HelpScreen
         self.push_screen(HelpScreen())
+
+    def action_open_ai_chat(self) -> None:
+        """Open the AI chat overlay."""
+        from infraforge.screens.ai_chat_modal import AIChatModal
+        self.push_screen(AIChatModal())
