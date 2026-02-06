@@ -68,10 +68,10 @@ class DashboardScreen(Screen):
 
     def _auto_refresh(self):
         """Periodic refresh — only fires when dashboard is the active screen."""
-        if self.is_current:
+        if self.app.screen is self:
             self.load_data()
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True)
     def load_data(self):
         """Load dashboard data from Proxmox."""
         try:
