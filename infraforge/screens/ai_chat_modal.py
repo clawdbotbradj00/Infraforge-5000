@@ -3,7 +3,7 @@
 Provides a full-screen modal overlay for chatting with the AI assistant.
 The modal can be invoked from any screen by pressing ``/`` and supports
 natural-language interaction including tool execution (VM management,
-DNS, IPAM, navigation, etc.) via the Anthropic API.
+DNS, IPAM, navigation, etc.) via the Claude Code CLI.
 """
 
 from __future__ import annotations
@@ -75,6 +75,10 @@ class AIChatModal(ModalScreen):
     }
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._streaming_widget: Static | None = None
+
     def compose(self) -> ComposeResult:
         yield Static(
             "[bold]AI Assistant[/bold]    [dim]Press Esc to close[/dim]",
@@ -109,28 +113,89 @@ class AIChatModal(ModalScreen):
         self.app.pop_screen()
 
     # ------------------------------------------------------------------
-    # AI communication
+    # AI communication — streaming
     # ------------------------------------------------------------------
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="ai-chat")
     def _send_to_ai(self, text: str) -> None:
-        """Send message to AI and handle response including tool calls."""
+        """Send message to AI with streaming response."""
         try:
             ai_client = self.app.ai_client
             if not ai_client or not ai_client.is_configured:
                 self.app.call_from_thread(
                     self._add_error_message,
-                    "Claude Code CLI not found. Install it first: npm install -g @anthropic-ai/claude-code",
+                    "Claude Code CLI not found. Install: "
+                    "npm install -g @anthropic-ai/claude-code",
                 )
                 return
 
-            self._process_response(ai_client, ai_client.chat(text))
+            # Show thinking indicator
+            self.app.call_from_thread(self._show_thinking)
+
+            # Stream response
+            full_text = ""
+            first_chunk = True
+            for chunk in ai_client.chat_stream(text):
+                if first_chunk:
+                    self.app.call_from_thread(self._replace_thinking_with_response)
+                    first_chunk = False
+                full_text += chunk
+                self.app.call_from_thread(self._update_streaming_message, full_text)
+
+            if first_chunk:
+                # No chunks received at all
+                self.app.call_from_thread(self._hide_thinking)
+                if not full_text:
+                    self.app.call_from_thread(
+                        self._add_error_message, "No response received"
+                    )
+                    return
+
+            # Parse for action markers
+            blocks = ai_client.parse_response(full_text)
+            tool_blocks = [b for b in blocks if b["type"] == "tool_use"]
+
+            if tool_blocks:
+                # Update displayed text to strip action markers
+                text_parts = [b["text"] for b in blocks if b["type"] == "text"]
+                clean_text = "\n".join(text_parts).strip()
+                if clean_text:
+                    self.app.call_from_thread(
+                        self._update_streaming_message, clean_text
+                    )
+                else:
+                    self.app.call_from_thread(self._remove_streaming_message)
+
+                # Execute tools
+                tool_results: list[tuple[str, str]] = []
+                for block in tool_blocks:
+                    tool_name = block["name"]
+                    tool_input = block["input"]
+                    self.app.call_from_thread(
+                        self._add_tool_message, tool_name, tool_input
+                    )
+                    self.app.call_from_thread(self._hide_for_action)
+                    result = self._execute_tool(tool_name, tool_input)
+                    self.app.call_from_thread(self._show_after_action)
+                    tool_results.append((tool_name, result))
+
+                # Send results back (non-streaming for continuations)
+                if tool_results:
+                    continuation = ai_client.send_tool_results(tool_results)
+                    self._process_response(ai_client, continuation)
+
+            # Clear streaming reference
+            self._streaming_widget = None
 
         except Exception as e:
+            self.app.call_from_thread(self._hide_thinking)
             self.app.call_from_thread(self._add_error_message, str(e))
 
     def _process_response(self, ai_client, response: list[dict]) -> None:
-        """Walk response blocks, execute tools, and send results back."""
+        """Walk response blocks, execute tools, and send results back.
+
+        Used for non-streaming continuations (tool result follow-ups).
+        """
         tool_results: list[tuple[str, str]] = []
 
         for block in response:
@@ -159,6 +224,49 @@ class AIChatModal(ModalScreen):
         if tool_results:
             continuation = ai_client.send_tool_results(tool_results)
             self._process_response(ai_client, continuation)
+
+    # ------------------------------------------------------------------
+    # Streaming UI helpers
+    # ------------------------------------------------------------------
+
+    def _show_thinking(self) -> None:
+        """Show a thinking indicator in the chat."""
+        history = self.query_one("#ai-chat-history", VerticalScroll)
+        self._streaming_widget = Static(
+            "[bold green]AI:[/bold green]  [dim italic]Thinking...[/dim italic]",
+            classes="ai-msg-ai",
+            markup=True,
+        )
+        history.mount(self._streaming_widget)
+        history.scroll_end(animate=False)
+
+    def _replace_thinking_with_response(self) -> None:
+        """Replace thinking text with empty response, ready for streaming."""
+        if self._streaming_widget:
+            self._streaming_widget.update(
+                "[bold green]AI:[/bold green]  "
+            )
+
+    def _hide_thinking(self) -> None:
+        """Remove thinking indicator without showing a response."""
+        if self._streaming_widget:
+            self._streaming_widget.remove()
+            self._streaming_widget = None
+
+    def _update_streaming_message(self, text: str) -> None:
+        """Update the streaming message widget with accumulated text."""
+        if self._streaming_widget:
+            self._streaming_widget.update(
+                f"[bold green]AI:[/bold green]  {text}"
+            )
+            history = self.query_one("#ai-chat-history", VerticalScroll)
+            history.scroll_end(animate=False)
+
+    def _remove_streaming_message(self) -> None:
+        """Remove the streaming message (e.g., only contained action markers)."""
+        if self._streaming_widget:
+            self._streaming_widget.remove()
+            self._streaming_widget = None
 
     # ------------------------------------------------------------------
     # Tool execution

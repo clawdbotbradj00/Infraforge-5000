@@ -21,14 +21,25 @@ SYSTEM_PROMPT = """\
 You are the AI assistant embedded inside InfraForge, a terminal-based (TUI) \
 Proxmox VM management application built with Python Textual.
 
-IMPORTANT OUTPUT RULES — you are rendering inside a narrow terminal widget:
-- NEVER use markdown formatting (no **, ##, ```, -, * bullets, etc.)
-- Keep lines short (under 70 chars). The chat panel is ~60 chars wide.
-- Use plain text only. No bold, italic, headers, or code blocks.
-- For lists, use simple "- " dashes, one item per line, no nesting.
-- Be terse. 1-3 short sentences per reply unless asked for detail.
-- Do NOT describe your own capabilities unprompted.
-- Respond as a concise infrastructure operator, not a chatbot.
+CRITICAL — READ THESE RULES FIRST:
+- You are an embedded assistant, NOT a coding agent.
+- You have NO access to files, terminals, or source code.
+- Your ONLY way to get live infrastructure data is the ACTION markers below.
+- When a user asks about VMs, DNS, IPAM, nodes, or templates, you MUST
+  emit the appropriate ACTION marker to query real data. Never guess.
+- Do NOT describe code, file contents, or theoretical capabilities.
+- Act on real data. If asked "show me IPAM" — emit <<<ACTION:list_subnets:{}>>>
+- If asked about VMs — emit <<<ACTION:list_vms:{}>>>
+- If asked about nodes — emit <<<ACTION:list_nodes:{}>>>
+- Always fetch data FIRST, then summarize the RESULTS for the user.
+
+OUTPUT RULES — rendering inside a narrow terminal widget:
+- NEVER use markdown (no **, ##, ```, -, * bullets, etc.)
+- Keep lines under 70 chars. Chat panel is ~60 chars wide.
+- Plain text only. No bold, italic, headers, or code blocks.
+- For lists, use "- " dashes, one item per line, no nesting.
+- Be terse. 1-3 short sentences unless asked for detail.
+- Do NOT list your capabilities unprompted.
 
 You can perform actions by emitting special markers in your response.
 Output each marker on its OWN line in EXACTLY this format:
@@ -145,13 +156,36 @@ class AIClient:
     def get_system_prompt(self) -> str:
         return self._custom_system_prompt or SYSTEM_PROMPT
 
+    def chat_stream(self, user_message: str, app_context: dict | None = None):
+        """Yield text chunks as they stream from the claude CLI.
+
+        After iteration completes, session_id and turn_count are updated.
+        Caller should accumulate chunks and call ``parse_response()`` on
+        the full text to extract action markers.
+        """
+        if not self.is_configured:
+            yield "[Error: claude CLI not found]"
+            return
+
+        prompt = user_message
+        if app_context:
+            prompt = f"[App context: {json.dumps(app_context)}]\n\n{prompt}"
+
+        yield from self._run_claude_stream(prompt)
+        self._turn_count += 1
+
+    def parse_response(self, text: str) -> list[dict]:
+        """Public wrapper for ``_parse_response``."""
+        return self._parse_response(text)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _run_claude(self, prompt: str) -> str:
         """Shell out to ``claude -p`` and return the result text."""
-        cmd = [self._claude_path, "-p", prompt, "--output-format", "json"]
+        cmd = [self._claude_path, "-p", prompt, "--output-format", "json",
+               "--max-turns", "1"]
 
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
@@ -227,3 +261,82 @@ class AIClient:
             blocks.append({"type": "text", "text": text})
 
         return blocks
+
+    def _run_claude_stream(self, prompt: str):
+        """Stream response from ``claude -p`` using ``stream-json`` output."""
+        cmd = [self._claude_path, "-p", prompt, "--output-format", "stream-json",
+               "--max-turns", "1"]
+
+        if self._session_id:
+            cmd.extend(["--resume", self._session_id])
+        else:
+            cmd.extend(["--system-prompt", self.get_system_prompt()])
+
+        if self._model:
+            cmd.extend(["--model", self._model])
+
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+        except FileNotFoundError:
+            yield "[Error: claude CLI not found]"
+            return
+
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Final result — capture session ID
+                if data.get("type") == "result":
+                    if data.get("session_id"):
+                        self._session_id = data["session_id"]
+                    continue
+
+                # Extract text content from this event
+                text = self._extract_stream_text(data)
+                if text:
+                    yield text
+
+            proc.wait(timeout=10)
+            if proc.returncode and proc.returncode != 0:
+                stderr = ""
+                if proc.stderr:
+                    stderr = proc.stderr.read()[:300]
+                yield f"\n[Error: exit code {proc.returncode}: {stderr}]"
+        except Exception as e:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            yield f"\n[Error: {str(e)[:100]}]"
+
+    @staticmethod
+    def _extract_stream_text(data: dict) -> str:
+        """Extract text content from a stream-json event."""
+        evt_type = data.get("type", "")
+
+        # Streaming delta (token-by-token)
+        if evt_type == "content_block_delta":
+            return data.get("delta", {}).get("text", "")
+
+        # Complete assistant message (non-streaming fallback)
+        if evt_type == "assistant":
+            msg = data.get("message", {})
+            content = msg.get("content", [])
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "".join(parts)
+
+        return ""
