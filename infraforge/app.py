@@ -7,6 +7,7 @@ from textual.widgets import Header, Footer, Static, LoadingIndicator
 from textual.containers import Container, Center, Middle
 from textual import work
 
+from infraforge import __version__
 from infraforge.config import Config
 from infraforge.preferences import Preferences
 from infraforge.proxmox_client import ProxmoxClient, ProxmoxConnectionError
@@ -63,7 +64,7 @@ class InfraForgeApp(App):
     """InfraForge - Proxmox VM Management TUI."""
 
     TITLE = "InfraForge"
-    SUB_TITLE = "Proxmox VM Manager"
+    SUB_TITLE = f"v{__version__}"
     CSS_PATH = "../styles/app.tcss"
 
     BINDINGS = [

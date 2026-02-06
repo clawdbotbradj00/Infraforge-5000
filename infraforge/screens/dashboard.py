@@ -169,9 +169,12 @@ class DashboardScreen(Screen):
             pass
 
     def _show_update_banner(self, result: dict):
-        banner = self.query_one("#update-banner", Static)
         latest = result.get("latest", "?")
         current = result.get("current", "?")
+        # Update header subtitle to show update notice
+        self.app.sub_title = f"v{current} → v{latest} available!  Run: infraforge update"
+        # Also show the dashboard banner
+        banner = self.query_one("#update-banner", Static)
         banner.update(
             f"  [bold yellow]New version available![/bold yellow]  "
             f"[bold cyan]v{latest}[/bold cyan]  [dim](you have v{current})[/dim]  "
