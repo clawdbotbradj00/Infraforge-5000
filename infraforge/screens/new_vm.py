@@ -37,7 +37,7 @@ class NewVMScreen(Screen):
         super().__init__()
         self._step = 0
         self.spec = NewVMSpec()
-        self._nodes: list[str] = []
+        self._pve_nodes: list[str] = []
         self._templates = []
         self._storages = []
         self._subnets = []  # phpIPAM subnets
@@ -98,7 +98,7 @@ class NewVMScreen(Screen):
         """Pre-load data needed across multiple wizard steps."""
         try:
             nodes = self.app.proxmox.get_node_info()
-            self._nodes = [n.node for n in nodes]
+            self._pve_nodes = [n.node for n in nodes]
 
             templates = (
                 self.app.proxmox.get_vm_templates()
@@ -199,11 +199,11 @@ class NewVMScreen(Screen):
             "  [dim]Options: QEMU (full VM) or LXC (container)[/dim]\n",
             "[bold]Target Node:[/bold]",
         ]
-        if self._nodes:
+        if self._pve_nodes:
             lines.append(
-                f"  Current: [green]{self.spec.node or self._nodes[0]}[/green]"
+                f"  Current: [green]{self.spec.node or self._pve_nodes[0]}[/green]"
             )
-            lines.append(f"  Available: {', '.join(self._nodes)}")
+            lines.append(f"  Available: {', '.join(self._pve_nodes)}")
         else:
             lines.append("  [yellow]Loading nodes...[/yellow]")
 
@@ -514,7 +514,7 @@ class NewVMScreen(Screen):
 
     def _render_review(self) -> str:
         node_display = self.spec.node or (
-            self._nodes[0] if self._nodes else "[red](required)[/red]"
+            self._pve_nodes[0] if self._pve_nodes else "[red](required)[/red]"
         )
         name_display = self.spec.name or "[red](required)[/red]"
         vmid_display = str(self.spec.vmid) if self.spec.vmid else "Auto-assign"
@@ -599,7 +599,7 @@ class NewVMScreen(Screen):
         """Placeholder for VM creation execution -- shows an execution plan preview."""
         content = self.query_one("#wizard-step-content", Static)
 
-        node = self.spec.node or (self._nodes[0] if self._nodes else "node1")
+        node = self.spec.node or (self._pve_nodes[0] if self._pve_nodes else "node1")
         vm_name = self.spec.name or "new-vm"
         template_name = self.spec.template or "base-template"
         ip_config = self.spec.ip_address or "dhcp"
