@@ -483,8 +483,15 @@ check_docker() {
         return 1
     fi
 
-    if ! docker info &>/dev/null 2>&1; then
-        error "Docker daemon is not running."
+    local docker_err
+    docker_err=$(docker info 2>&1)
+    if [[ $? -ne 0 ]]; then
+        if echo "$docker_err" | grep -qi "permission denied"; then
+            error "Permission denied accessing Docker."
+            echo -e "  ${DIM}Fix with: sudo usermod -aG docker \$USER && newgrp docker${NC}"
+        else
+            error "Docker daemon is not running or not accessible."
+        fi
         DOCKER_AVAILABLE=false
         return 1
     fi
@@ -699,8 +706,11 @@ deploy_phpipam_docker() {
     echo
 
     if ! $DOCKER_AVAILABLE; then
-        warn "Docker is not available. Skipping phpIPAM deployment."
-        warn "Install Docker and re-run setup to enable IPAM."
+        echo
+        if prompt_yesno "Connect to an existing phpIPAM server instead?" "y"; then
+            deploy_phpipam_existing
+            return
+        fi
         IPAM_URL=""
         IPAM_APP_ID=""
         IPAM_TOKEN=""

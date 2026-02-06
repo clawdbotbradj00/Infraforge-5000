@@ -585,8 +585,9 @@ def _configure_ipam_docker(console: Console, prev: dict) -> dict:
 
     # ── Check prerequisites ──
     if not _check_docker(console):
-        console.print("[yellow]Skipping phpIPAM — Docker is required.[/yellow]")
-        console.print("[dim]Install Docker and re-run 'infraforge setup' to enable IPAM.[/dim]")
+        console.print()
+        if Confirm.ask("Connect to an existing phpIPAM server instead?", default=True):
+            return _configure_ipam_existing(console, prev)
         return _empty_ipam_config()
 
     # ── Port ──
@@ -677,13 +678,23 @@ def _check_docker(console: Console) -> bool:
         console.print("[red]✗[/red] Docker not found. Please install Docker first.")
         return False
 
-    # Check if Docker daemon is running
+    # Check if Docker daemon is running and accessible
     try:
-        subprocess.run(
-            ["docker", "info"], capture_output=True, check=True, timeout=10,
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, text=True, check=True, timeout=10,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        console.print("[red]✗[/red] Docker daemon is not running.")
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").lower()
+        if "permission denied" in stderr:
+            console.print("[red]✗[/red] Permission denied accessing Docker.")
+            console.print("[dim]Fix with: sudo usermod -aG docker $USER && newgrp docker[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Docker daemon is not running or not accessible.")
+            if e.stderr:
+                console.print(f"[dim]{e.stderr.strip()[:200]}[/dim]")
+        return False
+    except subprocess.TimeoutExpired:
+        console.print("[red]✗[/red] Docker daemon timed out.")
         return False
 
     # Check for compose
