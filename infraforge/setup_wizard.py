@@ -110,14 +110,18 @@ def run_setup_wizard():
         console.print("[dim]DNS: already configured — skipping.[/dim]")
         config["dns"] = existing.get("dns", {})
     else:
-        config["dns"] = _configure_dns(console, existing.get("dns", {}))
+        # If we're in missing-only mode and DNS is missing, skip the
+        # "do you want to configure?" prompt — user already said yes.
+        skip_confirm = missing_only and "dns" in missing
+        config["dns"] = _configure_dns(console, existing.get("dns", {}), skip_confirm=skip_confirm)
 
     # ── phpIPAM ───────────────────────────────────────────────────────
     if missing_only and "ipam" not in missing:
         console.print("[dim]IPAM: already configured — skipping.[/dim]")
         config["ipam"] = existing.get("ipam", {})
     else:
-        config["ipam"] = _configure_ipam(console, existing.get("ipam", {}))
+        skip_confirm = missing_only and "ipam" in missing
+        config["ipam"] = _configure_ipam(console, existing.get("ipam", {}), skip_confirm=skip_confirm)
 
     # ── Defaults ──────────────────────────────────────────────────────
     ex_tf = existing.get("terraform", {})
@@ -233,15 +237,15 @@ def _configure_proxmox(console: Console, prev: dict | None = None) -> dict:
 # DNS Configuration
 # =====================================================================
 
-def _configure_dns(console: Console, prev: dict | None = None) -> dict:
+def _configure_dns(console: Console, prev: dict | None = None, skip_confirm: bool = False) -> dict:
     prev = prev or {}
-    console.print("\n[bold cyan]─── DNS Configuration (Optional) ───[/bold cyan]\n")
+    console.print("\n[bold cyan]─── DNS Configuration ───[/bold cyan]\n")
 
     has_existing = bool(prev.get("provider"))
     if has_existing:
         console.print(f"  [dim]Current provider: {prev['provider']}[/dim]")
 
-    if not Confirm.ask("Configure DNS provider?", default=has_existing):
+    if not skip_confirm and not Confirm.ask("Configure DNS provider?", default=has_existing or skip_confirm):
         return {
             "provider": "", "server": "", "port": 53, "zones": [], "domain": "",
             "tsig_key_name": "", "tsig_key_secret": "", "tsig_algorithm": "hmac-sha256",
@@ -418,7 +422,7 @@ def _test_dns_connection(console: Console, dns_config: dict) -> None:
 # phpIPAM Configuration — Docker deployment
 # =====================================================================
 
-def _configure_ipam(console: Console, prev: dict | None = None) -> dict:
+def _configure_ipam(console: Console, prev: dict | None = None, skip_confirm: bool = False) -> dict:
     prev = prev or {}
     console.print("\n[bold cyan]─── phpIPAM Configuration ───[/bold cyan]\n")
 
@@ -438,7 +442,7 @@ def _configure_ipam(console: Console, prev: dict | None = None) -> dict:
             }
         console.print()
 
-    if not Confirm.ask("Configure phpIPAM for IP address management?", default=True):
+    if not skip_confirm and not Confirm.ask("Configure phpIPAM for IP address management?", default=True):
         return _empty_ipam_config()
 
     console.print()

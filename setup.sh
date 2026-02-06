@@ -316,7 +316,16 @@ configure_dns() {
     [[ -n "$PREV_DNS_PROVIDER" ]] && has_dns="y"
     [[ -n "$PREV_DNS_PROVIDER" ]] && echo -e "  ${DIM}Current provider: ${PREV_DNS_PROVIDER}${NC}"
 
-    if prompt_yesno "Configure DNS provider for automated record management?" "$has_dns"; then
+    # Skip the "do you want to configure?" prompt if we're in missing-only mode
+    # and this section was selected for configuration
+    local do_configure=false
+    if [[ "${SKIP_DNS_CONFIRM:-}" == "true" ]]; then
+        do_configure=true
+    elif prompt_yesno "Configure DNS provider for automated record management?" "$has_dns"; then
+        do_configure=true
+    fi
+
+    if $do_configure; then
         # Map existing provider to default selection
         local default_dns="1"
         case "$PREV_DNS_PROVIDER" in
@@ -529,14 +538,16 @@ deploy_phpipam() {
         echo
     fi
 
-    if ! prompt_yesno "Configure phpIPAM for IP address management?" "y"; then
-        IPAM_URL=""
-        IPAM_APP_ID=""
-        IPAM_TOKEN=""
-        IPAM_USERNAME=""
-        IPAM_PASSWORD=""
-        IPAM_VERIFY_SSL="false"
-        return
+    if [[ "${SKIP_IPAM_CONFIRM:-}" != "true" ]]; then
+        if ! prompt_yesno "Configure phpIPAM for IP address management?" "y"; then
+            IPAM_URL=""
+            IPAM_APP_ID=""
+            IPAM_TOKEN=""
+            IPAM_USERNAME=""
+            IPAM_PASSWORD=""
+            IPAM_VERIFY_SSL="false"
+            return
+        fi
     fi
 
     echo
@@ -1141,7 +1152,9 @@ else
 fi
 
 if should_configure dns; then
+    [[ "$SETUP_MODE" == "missing" ]] && export SKIP_DNS_CONFIRM=true
     configure_dns
+    unset SKIP_DNS_CONFIRM
 else
     echo -e "${DIM}DNS: already configured — skipping.${NC}"
     DNS_PROVIDER="$PREV_DNS_PROVIDER"
@@ -1158,7 +1171,9 @@ fi
 check_docker || true
 
 if should_configure ipam; then
+    [[ "$SETUP_MODE" == "missing" ]] && export SKIP_IPAM_CONFIRM=true
     deploy_phpipam
+    unset SKIP_IPAM_CONFIRM
 else
     echo -e "${DIM}IPAM: already configured — skipping.${NC}"
     IPAM_URL="$PREV_IPAM_URL"
