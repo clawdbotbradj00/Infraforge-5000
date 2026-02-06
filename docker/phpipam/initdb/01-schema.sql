@@ -68,19 +68,7 @@ CREATE TABLE `ipaddresses` (
   KEY `customer_ip` (`customer_id`),
   CONSTRAINT `customer_ip` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-/* insert default values */
-INSERT INTO `ipaddresses` (`id`, `subnetId`, `ip_addr`, `description`, `hostname`, `state`)
-VALUES
-	(1,3,'168427779','Server1','server1.cust1.local',2),
-	(2,3,'168427780','Server2','server2.cust1.local',2),
-	(3,3,'168427781','Server3','server3.cust1.local',3),
-	(4,3,'168427782','Server4','server4.cust1.local',3),
-	(5,3,'168428021','Gateway',NULL,2),
-	(6,4,'168428286','Gateway',NULL,2),
-	(7,4,'168428042','Server1','ser1.client2.local',2),
-	(8,6,'172037636','DHCP range',NULL,4),
-	(9,6,'172037637','DHCP range',NULL,4),
-	(10,6,'172037638','DHCP range',NULL,4);
+/* sample data removed by InfraForge — clean slate for users */
 
 
 # Dump of table logs
@@ -143,11 +131,7 @@ CREATE TABLE `sections` (
   PRIMARY KEY (`name`),
   UNIQUE KEY `id_2` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-/* insert default values */
-INSERT INTO `sections` (`id`, `name`, `description`, `permissions`)
-VALUES
-	(1,'Customers','Section for customers','{\"3\":\"1\",\"2\":\"2\"}'),
-	(2,'IPv6','Section for IPv6 addresses','{\"3\":\"1\",\"2\":\"2\"}');
+/* sample sections removed by InfraForge — clean slate for users */
 
 
 # Dump of table settings
@@ -300,15 +284,7 @@ CREATE TABLE `subnets` (
   KEY `customer_subnets` (`customer_id`),
   CONSTRAINT `customer_subnets` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-/* insert default values */
-INSERT INTO `subnets` (`id`, `subnet`, `mask`, `sectionId`, `description`, `vrfId`, `masterSubnetId`, `allowRequests`, `vlanId`, `showName`, `permissions`, `isFolder`)
-VALUES
-	(1,'336395549904799703390415618052362076160','64',2,'Private subnet 1',0,'0',1,1,1,'{\"3\":\"1\",\"2\":\"2\"}',0),
-	(2,'168427520','16','1','Business customers',0,'0',1,0,1,'{\"3\":\"1\",\"2\":\"2\"}',0),
-	(3,'168427776','24','1','Customer 1',0,'2',1,0,1,'{\"3\":\"1\",\"2\":\"2\"}',0),
-	(4,'168428032','24','1','Customer 2',0,'2',1,0,1,'{\"3\":\"1\",\"2\":\"2\"}',0),
-	(5, '0', '', 1, 'My folder', 0, 0, 0, 0, 0, '{\"3\":\"1\",\"2\":\"2\"}', 1),
-	(6, '172037632', '24', 1, 'DHCP range', 0, 5, 0, 0, 1, '{\"3\":\"1\",\"2\":\"2\"}', 0);
+/* sample subnets removed by InfraForge — clean slate for users */
 
 
 # Dump of table devices
@@ -453,11 +429,7 @@ CREATE TABLE `vlans` (
   KEY `customer_vlans` (`customer_id`),
   CONSTRAINT `customer_vlans` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-/* insert default values */
-INSERT INTO `vlans` (`vlanId`, `name`, `number`, `description`)
-VALUES
-	(1,'IPv6 private 1',2001,'IPv6 private 1 subnets'),
-	(2,'Servers DMZ',4001,'DMZ public');
+/* sample VLANs removed by InfraForge — clean slate for users */
 
 
 # Dump of table vlanDomains
@@ -507,10 +479,7 @@ CREATE TABLE `nameservers` (
   `editDate` TIMESTAMP  NULL  ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-/* insert default values */
-INSERT INTO `nameservers` (`name`, `namesrv1`, `description`, `permissions`)
-VALUES
-	('Google NS', '8.8.8.8;8.8.4.4', 'Google public nameservers', '1;2');
+/* sample nameservers removed by InfraForge — clean slate for users */
 
 
 

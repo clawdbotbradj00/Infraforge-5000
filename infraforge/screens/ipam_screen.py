@@ -638,6 +638,11 @@ class IPAMScreen(Screen):
         total_subnets = len(self._subnets)
         total_vlans = len(self._vlans)
 
+        # Detect empty state — connected but nothing configured yet
+        if total_subnets == 0 and total_vlans == 0 and self._ipam_healthy:
+            self._show_empty_state()
+            return
+
         # Calculate total addresses and utilization
         total_used = 0
         total_max = 0
@@ -668,6 +673,29 @@ class IPAMScreen(Screen):
         ]
 
         overview.update("\n".join(lines))
+
+    def _show_empty_state(self) -> None:
+        """Show getting-started guidance when phpIPAM is connected but empty."""
+        overview = self.query_one("#ipam-overview", Static)
+        ipam_cfg = self.app.config.ipam
+
+        overview.update(
+            f"[bold]phpIPAM:[/bold]  [green]{ipam_cfg.url}[/green]"
+            f"    [bold]Status:[/bold]  [green]Connected[/green]"
+            f"    [bold]App ID:[/bold]  [cyan]{ipam_cfg.app_id or 'infraforge'}[/cyan]\n\n"
+            "[yellow bold]Getting Started[/yellow bold]\n\n"
+            "Your IPAM is connected but has no subnets or VLANs yet.\n"
+            "To begin managing IP addresses, set up your network in the phpIPAM web UI:\n\n"
+            f"  1. Open [link={ipam_cfg.url}][bold cyan]{ipam_cfg.url}[/bold cyan][/link]\n"
+            "  2. [bold]Create a section[/bold] (Administration > Sections) to group your subnets\n"
+            "  3. [bold]Add subnets[/bold] (Subnets > + Add subnet) for your network ranges\n"
+            "  4. [bold]Add VLANs[/bold] (optional: Subnets > VLANs > + Add VLAN)\n"
+            "  5. Come back here and press [bold]r[/bold] to refresh\n\n"
+            "[dim]Subnets, addresses, and VLANs will appear here once configured.[/dim]"
+        )
+        self._set_status(
+            "[green]Connected[/green] | No subnets configured yet - see instructions above"
+        )
 
     def _update_controls(self) -> None:
         """Update the sort/filter/count labels for the active view."""
