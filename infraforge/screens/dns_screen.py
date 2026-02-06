@@ -55,6 +55,32 @@ RTYPE_COLORS = {
     "SOA": "bright_black",
 }
 
+RTYPE_HINTS = {
+    "A": "Maps a hostname to an IPv4 address.",
+    "AAAA": "Maps a hostname to an IPv6 address.",
+    "CNAME": "Alias that points one name to another.",
+    "PTR": "Reverse lookup — maps an IP back to a hostname.",
+    "TXT": "Arbitrary text; used for SPF, DKIM, domain verification.",
+    "MX": "Specifies the mail server for a domain.",
+    "SRV": "Locates servers for specific services (e.g. SIP, LDAP).",
+    "NS": "Delegates a zone to an authoritative name server.",
+    "SOA": "Start of Authority — defines zone metadata and serial.",
+    "CAA": "Restricts which CAs can issue certificates for the domain.",
+    "DNAME": "Alias for an entire subtree of the domain name space.",
+    "NAPTR": "Rewrite rules for ENUM/SIP URI lookups.",
+    "LOC": "Geographic location of a host (latitude/longitude).",
+    "SSHFP": "SSH host key fingerprint for DANE verification.",
+    "TLSA": "TLS certificate association for DANE.",
+    "HINFO": "Host hardware and OS info (rarely used).",
+    "RP": "Responsible person for a domain.",
+    "AFSDB": "AFS database server location.",
+    "DS": "DNSSEC delegation signer — links parent to child zone keys.",
+    "DNSKEY": "DNSSEC public key for zone signing.",
+    "RRSIG": "DNSSEC signature over a record set.",
+    "NSEC": "DNSSEC authenticated denial of existence.",
+    "NSEC3": "DNSSEC hashed denial of existence.",
+}
+
 RECORD_TYPES_FOR_INPUT = [
     ("A", "A"),
     ("AAAA", "AAAA"),
@@ -665,6 +691,8 @@ class DNSScreen(Screen):
 
         color = RTYPE_COLORS.get(record.rtype, "white")
 
+        hint = RTYPE_HINTS.get(record.rtype, "")
+
         lines = [
             f"[bold]Name:[/bold]    {record.name}",
             f"[bold]Type:[/bold]    [{color}]{record.rtype}[/{color}]",
@@ -672,6 +700,9 @@ class DNSScreen(Screen):
             f"[bold]TTL:[/bold]     {record.ttl}s",
             f"[bold]Zone:[/bold]    {record.zone}",
         ]
+        if hint:
+            lines.append("")
+            lines.append(f"[dim italic]{hint}[/dim italic]")
         detail.update("\n".join(lines))
 
     def _clear_detail_panel(self) -> None:
