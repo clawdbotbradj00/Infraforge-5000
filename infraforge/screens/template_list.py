@@ -57,15 +57,26 @@ def _sort_templates(templates: list[Template], field: str, reverse: bool) -> lis
     return sorted(templates, key=key_fn, reverse=reverse)
 
 
+_NAME_WIDTH = 44
+
+
+def _truncate(name: str, width: int = _NAME_WIDTH) -> str:
+    """Truncate name to width, adding '..' if it overflows."""
+    if len(name) <= width:
+        return name.ljust(width)
+    return name[: width - 2] + ".."
+
+
 def _make_vm_label(t: Template) -> Text:
     """Build aligned label for a VM template leaf."""
     vmid_col = str(t.vmid or "—").ljust(8)
-    name_col = t.name.ljust(28)
+    name_col = _truncate(t.name)
     node_col = t.node.ljust(14)
     size_col = t.size_display
     label = Text()
     label.append(vmid_col, style="bold")
     label.append(name_col, style="bold bright_white")
+    label.append("\t", style="default")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
     return label
@@ -73,12 +84,13 @@ def _make_vm_label(t: Template) -> Text:
 
 def _make_ct_label(t: Template) -> Text:
     """Build aligned label for a container template leaf."""
-    name_col = t.name.ljust(36)
+    name_col = _truncate(t.name)
     storage_col = t.storage.ljust(14)
     node_col = t.node.ljust(14)
     size_col = t.size_display
     label = Text()
     label.append(name_col, style="bold bright_magenta")
+    label.append("\t", style="default")
     label.append(storage_col, style="yellow")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
@@ -94,12 +106,13 @@ def _make_iso_label(t: Template) -> Text:
         name_style = "bold bright_blue"
     else:
         name_style = "bold"
-    name_col = name.ljust(36)
+    name_col = _truncate(name)
     storage_col = t.storage.ljust(14)
     node_col = t.node.ljust(14)
     size_col = t.size_display
     label = Text()
     label.append(name_col, style=name_style)
+    label.append("\t", style="default")
     label.append(storage_col, style="yellow")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
