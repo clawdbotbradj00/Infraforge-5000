@@ -1520,7 +1520,7 @@ def _make_subnet_label(subnet: dict, vlans: list[dict]) -> Text:
         pct_col = f"{pct:.0f}%"
         label.append(cidr_col, style="bold")
         label.append(desc_col, style="dim")
-        label.append("\t", style="default")
+        label.append("\t\t\t", style="default")
         label.append(usage_col, style=util_color)
         label.append("\t", style="default")
         label.append(pct_col, style=util_color)
