@@ -18,12 +18,20 @@ import subprocess
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are the AI assistant built into InfraForge, a Proxmox VM management TUI.
-You help users manage their virtual infrastructure through natural conversation.
+You are the AI assistant embedded inside InfraForge, a terminal-based (TUI) \
+Proxmox VM management application built with Python Textual.
+
+IMPORTANT OUTPUT RULES — you are rendering inside a narrow terminal widget:
+- NEVER use markdown formatting (no **, ##, ```, -, * bullets, etc.)
+- Keep lines short (under 70 chars). The chat panel is ~60 chars wide.
+- Use plain text only. No bold, italic, headers, or code blocks.
+- For lists, use simple "- " dashes, one item per line, no nesting.
+- Be terse. 1-3 short sentences per reply unless asked for detail.
+- Do NOT describe your own capabilities unprompted.
+- Respond as a concise infrastructure operator, not a chatbot.
 
 You can perform actions by emitting special markers in your response.
-When you need to perform an action, output the marker on its OWN line
-using EXACTLY this format (no spaces around the colons):
+Output each marker on its OWN line in EXACTLY this format:
 
 <<<ACTION:tool_name:{"param":"value"}>>>
 
@@ -31,12 +39,12 @@ Available actions:
 
 NAVIGATION
   <<<ACTION:navigate_to:{"screen":"SCREEN"}>>>
-  SCREEN is one of: dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help
+  SCREEN: dashboard, vm_list, templates, nodes, dns, ipam, ansible, new_vm, help
 
 VM MANAGEMENT
   <<<ACTION:list_vms:{}>>>
   <<<ACTION:vm_action:{"vmid":101,"node":"pve1","action":"start"}>>>
-    action is one of: start, stop, reboot, shutdown
+    action: start, stop, reboot, shutdown
   <<<ACTION:get_vm_detail:{"vmid":101,"node":"pve1"}>>>
 
 NODE INFO
@@ -55,11 +63,10 @@ TEMPLATES
   <<<ACTION:list_templates:{}>>>
 
 Rules:
-- You may include normal text BEFORE or AFTER an action marker.
-- You may emit MULTIPLE action markers in one response.
-- The JSON inside the marker must be valid JSON on a single line.
-- When chatting without performing actions, just reply normally — no markers needed.
-- Be concise and helpful.
+- You may include plain text BEFORE or AFTER action markers.
+- You may emit MULTIPLE markers in one response.
+- JSON inside markers must be valid, single-line JSON.
+- When chatting without actions, just reply in plain text.
 """
 
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
@@ -79,6 +86,7 @@ class AIClient:
         self._session_id: str | None = None
         self._model: str = ""
         self._turn_count: int = 0
+        self._custom_system_prompt: str = ""
         if config and hasattr(config, "ai"):
             self._model = config.ai.model or ""
 
@@ -135,7 +143,7 @@ class AIClient:
         self._turn_count = 0
 
     def get_system_prompt(self) -> str:
-        return SYSTEM_PROMPT
+        return self._custom_system_prompt or SYSTEM_PROMPT
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -148,7 +156,7 @@ class AIClient:
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
         else:
-            cmd.extend(["--system-prompt", SYSTEM_PROMPT])
+            cmd.extend(["--system-prompt", self.get_system_prompt()])
 
         if self._model:
             cmd.extend(["--model", self._model])

@@ -5,9 +5,11 @@ import shutil
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, Button
-from textual.containers import Container, Horizontal
+from textual.widgets import Header, Footer, Static, Button, TextArea
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual import work
+
+from infraforge.ai_client import SYSTEM_PROMPT
 
 
 class AISettingsScreen(Screen):
@@ -20,7 +22,7 @@ class AISettingsScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Container(id="ai-settings-container"):
+        with VerticalScroll(id="ai-settings-container"):
             yield Static("[bold]AI Configuration[/bold]", markup=True, classes="section-title")
             yield Static("", id="ai-settings-status", markup=True)
 
@@ -44,10 +46,23 @@ class AISettingsScreen(Screen):
             with Horizontal(id="ai-settings-actions"):
                 yield Button("Clear Chat History", id="ai-clear-history", variant="warning")
                 yield Button("Test Connection", id="ai-test-connection", variant="success")
+                yield Button("Save Prompt", id="ai-save-prompt", variant="primary")
+
+            yield Static("")
+            yield Static(
+                "[bold]System Prompt[/bold]  [dim](edit below — saved to active session)[/dim]",
+                markup=True,
+            )
+            yield TextArea(SYSTEM_PROMPT, id="ai-prompt-editor", language=None)
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_display()
+        # Load current prompt from live client if available
+        ai_client = getattr(self.app, "ai_client", None)
+        if ai_client:
+            editor = self.query_one("#ai-prompt-editor", TextArea)
+            editor.load_text(ai_client.get_system_prompt())
 
     def _refresh_display(self) -> None:
         claude_path = shutil.which("claude")
@@ -93,8 +108,25 @@ class AISettingsScreen(Screen):
                 self.query_one("#ai-session-value", Static).update(
                     "  [green]Session reset[/green]"
                 )
+        elif event.button.id == "ai-save-prompt":
+            self._save_prompt()
         elif event.button.id == "ai-test-connection":
             self._test_connection()
+
+    def _save_prompt(self) -> None:
+        """Push the edited prompt into the live AIClient."""
+        ai_client = getattr(self.app, "ai_client", None)
+        if not ai_client:
+            return
+        editor = self.query_one("#ai-prompt-editor", TextArea)
+        new_prompt = editor.text
+        ai_client._custom_system_prompt = new_prompt
+        # Reset session so the new prompt takes effect on next chat
+        ai_client.clear_history()
+        self._refresh_display()
+        self.query_one("#ai-settings-status", Static).update(
+            "[green]Prompt saved[/green]  [dim]Session reset — new prompt active[/dim]"
+        )
 
     @work(thread=True)
     def _test_connection(self) -> None:
