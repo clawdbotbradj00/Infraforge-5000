@@ -60,7 +60,7 @@ class DashboardScreen(Screen):
     def on_mount(self):
         self.load_data()
         self._check_for_update()
-        self.set_interval(30, self._auto_refresh)
+        self.set_interval(10, self._auto_refresh)
 
     def on_screen_resume(self):
         """Refresh data when returning to the dashboard from another screen."""
