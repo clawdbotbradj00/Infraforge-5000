@@ -129,101 +129,98 @@ class AIChatModal(ModalScreen):
                 )
                 return
 
-            # Show thinking indicator
-            self.app.call_from_thread(self._show_thinking)
-
-            # Stream response
-            full_text = ""
-            first_chunk = True
-            for chunk in ai_client.chat_stream(text):
-                if first_chunk:
-                    self.app.call_from_thread(self._replace_thinking_with_response)
-                    first_chunk = False
-                full_text += chunk
-                self.app.call_from_thread(self._update_streaming_message, full_text)
-
-            if first_chunk:
-                # No chunks received at all
-                self.app.call_from_thread(self._hide_thinking)
-                if not full_text:
-                    self.app.call_from_thread(
-                        self._add_error_message, "No response received"
-                    )
-                    return
-
-            # Parse for action markers
-            blocks = ai_client.parse_response(full_text)
-            tool_blocks = [b for b in blocks if b["type"] == "tool_use"]
-
-            if tool_blocks:
-                # Update displayed text to strip action markers
-                text_parts = [b["text"] for b in blocks if b["type"] == "text"]
-                clean_text = "\n".join(text_parts).strip()
-                if clean_text:
-                    self.app.call_from_thread(
-                        self._update_streaming_message, clean_text
-                    )
-                else:
-                    self.app.call_from_thread(self._remove_streaming_message)
-
-                # Execute tools
-                tool_results: list[tuple[str, str]] = []
-                for block in tool_blocks:
-                    tool_name = block["name"]
-                    tool_input = block["input"]
-                    self.app.call_from_thread(
-                        self._add_tool_message, tool_name, tool_input
-                    )
-                    self.app.call_from_thread(self._hide_for_action)
-                    result = self._execute_tool(tool_name, tool_input)
-                    self.app.call_from_thread(self._show_after_action)
-                    tool_results.append((tool_name, result))
-
-                # Send results back (non-streaming for continuations)
-                if tool_results:
-                    continuation = ai_client.send_tool_results(tool_results)
-                    self._process_response(ai_client, continuation)
-
-            # Clear streaming reference
-            self._streaming_widget = None
+            self._stream_and_handle(ai_client, text)
 
         except Exception as e:
             self.app.call_from_thread(self._hide_thinking)
             self.app.call_from_thread(self._add_error_message, str(e))
 
-    def _process_response(self, ai_client, response: list[dict]) -> None:
-        """Walk response blocks, execute tools, and send results back.
+    def _stream_and_handle(self, ai_client, message: str, depth: int = 0) -> None:
+        """Stream a message to AI, execute tools, send results back.
 
-        Used for non-streaming continuations (tool result follow-ups).
+        This is the core loop — every round (initial message and tool-result
+        continuations) is streamed so the user always sees live feedback.
+        Recurses when tool calls produce results that need a follow-up.
         """
-        tool_results: list[tuple[str, str]] = []
+        if depth > 5:
+            self.app.call_from_thread(
+                self._add_error_message, "Too many tool rounds — stopping"
+            )
+            return
 
-        for block in response:
-            if block["type"] == "text":
-                self.app.call_from_thread(self._add_ai_message, block["text"])
-            elif block["type"] == "tool_use":
-                tool_name = block["name"]
-                tool_input = block["input"]
+        # Show thinking indicator
+        self.app.call_from_thread(self._show_thinking)
 
+        # Stream response
+        full_text = ""
+        first_chunk = True
+        for chunk in ai_client.chat_stream(message):
+            if first_chunk:
+                self.app.call_from_thread(self._replace_thinking_with_response)
+                first_chunk = False
+            full_text += chunk
+            self.app.call_from_thread(self._update_streaming_message, full_text)
+
+        if first_chunk:
+            # No chunks received at all
+            self.app.call_from_thread(self._hide_thinking)
+            if not full_text:
                 self.app.call_from_thread(
-                    self._add_tool_message, tool_name, tool_input
+                    self._add_error_message, "No response received"
                 )
+                return
+
+        # Parse for action markers
+        blocks = ai_client.parse_response(full_text)
+        tool_blocks = [b for b in blocks if b["type"] == "tool_use"]
+
+        if not tool_blocks:
+            # Pure text response — we're done
+            self._streaming_widget = None
+            return
+
+        # Strip action markers from displayed text
+        text_parts = [b["text"] for b in blocks if b["type"] == "text"]
+        clean_text = "\n".join(text_parts).strip()
+        if clean_text:
+            self.app.call_from_thread(
+                self._update_streaming_message, clean_text
+            )
+        else:
+            self.app.call_from_thread(self._remove_streaming_message)
+
+        # Done with this streaming widget — tools will add their own messages
+        self._streaming_widget = None
+
+        # Execute tools
+        tool_results: list[tuple[str, str]] = []
+        for block in tool_blocks:
+            tool_name = block["name"]
+            tool_input = block["input"]
+
+            self.app.call_from_thread(
+                self._add_tool_message, tool_name, tool_input
+            )
+
+            # Only hide modal for navigation (not data queries)
+            is_nav = tool_name == "navigate_to"
+            if is_nav:
                 self.app.call_from_thread(self._hide_for_action)
 
-                result = self._execute_tool(tool_name, tool_input)
+            result = self._execute_tool(tool_name, tool_input)
 
+            if is_nav:
                 self.app.call_from_thread(self._show_after_action)
-                tool_results.append((tool_name, result))
 
-            elif block["type"] == "error":
-                self.app.call_from_thread(
-                    self._add_error_message, block["text"]
-                )
+            tool_results.append((tool_name, result))
 
-        # If tools were executed, send results back and process continuation
+        # Send tool results back — stream the continuation too
         if tool_results:
-            continuation = ai_client.send_tool_results(tool_results)
-            self._process_response(ai_client, continuation)
+            parts = []
+            for name, result in tool_results:
+                parts.append(f"[Tool result for {name}]: {result}")
+            continuation_msg = "\n".join(parts)
+            self._stream_and_handle(ai_client, continuation_msg, depth + 1)
 
     # ------------------------------------------------------------------
     # Streaming UI helpers
