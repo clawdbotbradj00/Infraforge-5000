@@ -60,6 +60,20 @@ class ConnectionErrorScreen(Screen):
         self.app.exit()
 
 
+_THEME_CYCLE = [
+    "textual-dark",
+    "dracula",
+    "nord",
+    "tokyo-night",
+    "monokai",
+    "gruvbox",
+    "catppuccin-mocha",
+    "solarized-dark",
+    "solarized-light",
+    "catppuccin-latte",
+]
+
+
 class InfraForgeApp(App):
     """InfraForge - Proxmox VM Management TUI."""
 
@@ -71,6 +85,7 @@ class InfraForgeApp(App):
         Binding("q", "quit", "Quit", show=True, priority=True),
         Binding("question_mark", "help_screen", "Help", show=True),
         Binding("d", "dashboard", "Dashboard", show=True),
+        Binding("T", "cycle_theme", "Theme", show=True, priority=True),
     ]
 
     def __init__(self, config: Config):
@@ -81,8 +96,25 @@ class InfraForgeApp(App):
         self._connected = False
 
     def on_mount(self):
+        # Restore saved theme
+        saved = self.preferences.theme
+        if saved and saved in [t for t in self.available_themes]:
+            self.theme = saved
         self.push_screen(ConnectingScreen())
         self.connect_to_proxmox()
+
+    def action_cycle_theme(self) -> None:
+        """Cycle through curated color themes."""
+        current = self.theme
+        try:
+            idx = _THEME_CYCLE.index(current)
+            next_theme = _THEME_CYCLE[(idx + 1) % len(_THEME_CYCLE)]
+        except ValueError:
+            next_theme = _THEME_CYCLE[0]
+        self.theme = next_theme
+        self.preferences.theme = next_theme
+        self.preferences.save()
+        self.notify(f"Theme: {next_theme}", timeout=2)
 
     @work(thread=True)
     def connect_to_proxmox(self):

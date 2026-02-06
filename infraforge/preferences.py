@@ -40,6 +40,7 @@ class TemplateListPrefs:
 class Preferences:
     vm_list: VMListPrefs = field(default_factory=VMListPrefs)
     template_list: TemplateListPrefs = field(default_factory=TemplateListPrefs)
+    theme: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> Preferences:
@@ -85,4 +86,6 @@ class Preferences:
                         sort_reverse=bool(tab_data.get("sort_reverse", False)),
                         group_mode=str(tab_data.get("group_mode", "none")),
                     ))
+        if data.get("theme"):
+            prefs.theme = str(data["theme"])
         return prefs
