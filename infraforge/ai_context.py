@@ -118,45 +118,96 @@ def _fetch_templates(app: "InfraForgeApp") -> str:
 
 
 def _fetch_ipam(app: "InfraForgeApp") -> str:
-    """Fetch and format IPAM subnets and addresses."""
+    """Fetch and format IPAM sections, subnets, VLANs and addresses."""
     # Check if IPAM is configured
     ipam_cfg = getattr(app.config, "ipam", None)
     if ipam_cfg is None or not getattr(ipam_cfg, "url", ""):
-        return "=== IPAM SUBNETS ===\n  Not configured\n"
+        return "=== IPAM ===\n  Not configured\n"
 
     try:
         from infraforge.ipam_client import IPAMClient
     except ImportError:
-        return "=== IPAM SUBNETS ===\n  Not configured (ipam_client not available)\n"
+        return "=== IPAM ===\n  Not configured (ipam_client not available)\n"
 
     try:
         client = IPAMClient(app.config)
+    except Exception as exc:
+        return f"=== IPAM ===\n  Error: {exc}\n"
+
+    parts: list[str] = []
+
+    # ── Sections (needed for create_subnet) ──
+    try:
+        sections = client.get_sections()
+    except Exception:
+        sections = []
+
+    sect_lines: list[str] = ["=== IPAM SECTIONS ==="]
+    if sections:
+        sect_lines.append(f"  {'ID':<5}{'Name':<25}{'Description'}")
+        for s in sections:
+            sid = s.get("id", "?")
+            sname = s.get("name", "?")
+            sdesc = s.get("description", "")
+            sect_lines.append(f"  {sid:<5}{sname:<25}{sdesc}")
+    else:
+        sect_lines.append("  (none)")
+    sect_lines.append("")
+    parts.append("\n".join(sect_lines))
+
+    # ── VLANs ──
+    try:
+        vlans = client.get_vlans()
+    except Exception:
+        vlans = []
+
+    if vlans:
+        vlan_lines: list[str] = ["=== IPAM VLANS ==="]
+        vlan_lines.append(f"  {'ID':<5}{'Number':<8}{'Name':<20}{'Description'}")
+        for v in vlans[:50]:
+            vid = v.get("vlanId", "?")
+            vnum = v.get("number", "?")
+            vname = v.get("name", "")
+            vdesc = v.get("description", "")
+            vlan_lines.append(f"  {vid:<5}{vnum:<8}{vname:<20}{vdesc}")
+        if len(vlans) > 50:
+            vlan_lines.append(f"  ... and {len(vlans) - 50} more VLANs")
+        vlan_lines.append("")
+        parts.append("\n".join(vlan_lines))
+
+    # ── Subnets + addresses ──
+    try:
         subnets = client.get_subnets()
     except Exception as exc:
-        return f"=== IPAM SUBNETS ===\n  Error: {exc}\n"
+        parts.append(f"=== IPAM SUBNETS ===\n  Error: {exc}\n")
+        return "\n".join(parts)
 
-    lines: list[str] = []
-    lines.append("=== IPAM SUBNETS ===")
+    sub_lines: list[str] = ["=== IPAM SUBNETS ==="]
 
     if not subnets:
-        lines.append("  (none)")
-        lines.append("")
-        return "\n".join(lines)
+        sub_lines.append("  (none)")
+        sub_lines.append("")
+        parts.append("\n".join(sub_lines))
+        return "\n".join(parts)
 
     for subnet in subnets:
         subnet_addr = subnet.get("subnet", "?")
         mask = subnet.get("mask", "?")
+        subnet_id = subnet.get("id", "?")
+        section_id = subnet.get("sectionId", "?")
         description = subnet.get("description", "")
         usage = subnet.get("usage", {})
         used = usage.get("used", "?")
         maxhosts = usage.get("maxhosts", "?")
 
         desc_part = f' "{description}"' if description else ""
-        lines.append(f"  {subnet_addr}/{mask}{desc_part} ({used}/{maxhosts} used)")
+        sub_lines.append(
+            f"  id={subnet_id} section={section_id} "
+            f"{subnet_addr}/{mask}{desc_part} ({used}/{maxhosts} used)"
+        )
 
         # Fetch addresses for this subnet (limit to 30)
-        subnet_id = subnet.get("id")
-        if subnet_id is not None:
+        if subnet_id and subnet_id != "?":
             try:
                 addresses = client.get_subnet_addresses(str(subnet_id))
                 for addr in addresses[:30]:
@@ -164,14 +215,15 @@ def _fetch_ipam(app: "InfraForgeApp") -> str:
                     hostname = addr.get("hostname", "")
                     tag = addr.get("tag", "")
                     tag_str = tag if isinstance(tag, str) else str(tag)
-                    lines.append(f"    {ip:<17}{hostname:<20}{tag_str}")
+                    sub_lines.append(f"    {ip:<17}{hostname:<20}{tag_str}")
                 if len(addresses) > 30:
-                    lines.append(f"    ... and {len(addresses) - 30} more addresses")
+                    sub_lines.append(f"    ... and {len(addresses) - 30} more addresses")
             except Exception:
-                lines.append("    (could not fetch addresses)")
+                sub_lines.append("    (could not fetch addresses)")
 
-    lines.append("")
-    return "\n".join(lines)
+    sub_lines.append("")
+    parts.append("\n".join(sub_lines))
+    return "\n".join(parts)
 
 
 def _fetch_dns(app: "InfraForgeApp") -> str:

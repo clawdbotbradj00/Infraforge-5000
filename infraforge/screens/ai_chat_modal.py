@@ -281,59 +281,117 @@ class AIChatModal(ModalScreen):
                 self.app.call_from_thread(self._navigate_to, screen)
                 return f"Navigated to {screen}"
 
-            elif name == "vm_action":
-                vmid = inputs["vmid"]
-                node = inputs["node"]
-                action = inputs["action"]
-                self.app.proxmox.vm_action(node, vmid, action)
-                return f"Successfully executed {action} on VM {vmid}"
+            # ── DNS mutations ──────────────────────────────────────
+            elif name in ("create_dns_record", "update_dns_record", "delete_dns_record"):
+                return self._exec_dns(name, inputs)
 
-            elif name == "add_dns_record":
-                zone = inputs["zone"]
-                from infraforge.dns_client import DNSClient
-
-                dns_cfg = self.app.config.dns
-                client = DNSClient(
-                    dns_cfg.server,
-                    dns_cfg.port,
-                    dns_cfg.tsig_key_name,
-                    dns_cfg.tsig_key_secret,
-                    dns_cfg.tsig_algorithm,
-                )
-                client.add_record(
-                    zone,
-                    inputs["name"],
-                    inputs["rtype"],
-                    inputs["value"],
-                    inputs.get("ttl", 3600),
-                )
-                return (
-                    f"Added {inputs['rtype']} record: "
-                    f"{inputs['name']}.{zone} -> {inputs['value']}"
-                )
-
-            elif name == "delete_dns_record":
-                zone = inputs["zone"]
-                from infraforge.dns_client import DNSClient
-
-                dns_cfg = self.app.config.dns
-                client = DNSClient(
-                    dns_cfg.server,
-                    dns_cfg.port,
-                    dns_cfg.tsig_key_name,
-                    dns_cfg.tsig_key_secret,
-                    dns_cfg.tsig_algorithm,
-                )
-                client.delete_record(zone, inputs["name"], inputs["rtype"])
-                return (
-                    f"Deleted {inputs['rtype']} record: {inputs['name']}.{zone}"
-                )
+            # ── IPAM mutations ─────────────────────────────────────
+            elif name in (
+                "create_ipam_section",
+                "create_ipam_subnet",
+                "create_ipam_address",
+                "create_ipam_vlan",
+            ):
+                return self._exec_ipam(name, inputs)
 
             else:
                 return f"Unknown tool: {name}"
 
         except Exception as e:
             return f"Error: {str(e)}"
+
+    # ------------------------------------------------------------------
+    # DNS tool execution
+    # ------------------------------------------------------------------
+
+    def _exec_dns(self, name: str, inputs: dict) -> str:
+        """Handle DNS mutation tools."""
+        from infraforge.dns_client import DNSClient
+
+        dns_cfg = self.app.config.dns
+        client = DNSClient(
+            dns_cfg.server,
+            dns_cfg.port,
+            dns_cfg.tsig_key_name,
+            dns_cfg.tsig_key_secret,
+            dns_cfg.tsig_algorithm,
+        )
+
+        zone = inputs["zone"]
+        rec_name = inputs.get("name", "")
+        rtype = inputs.get("rtype")
+        value = inputs.get("value")
+        ttl = inputs.get("ttl", 3600)
+
+        if name == "create_dns_record":
+            client.create_record(rec_name, rtype, value, ttl=ttl, zone=zone)
+            return f"Created {rtype} record: {rec_name}.{zone} -> {value}"
+
+        elif name == "update_dns_record":
+            client.update_record(rec_name, rtype, value, ttl=ttl, zone=zone)
+            return f"Updated {rtype} record: {rec_name}.{zone} -> {value}"
+
+        elif name == "delete_dns_record":
+            client.delete_record(rec_name, rtype=rtype, value=value, zone=zone)
+            parts = [f"Deleted records for {rec_name}.{zone}"]
+            if rtype:
+                parts[0] = f"Deleted {rtype} record: {rec_name}.{zone}"
+            return parts[0]
+
+        return "Unknown DNS action"
+
+    # ------------------------------------------------------------------
+    # IPAM tool execution
+    # ------------------------------------------------------------------
+
+    def _exec_ipam(self, name: str, inputs: dict) -> str:
+        """Handle IPAM mutation tools."""
+        from infraforge.ipam_client import IPAMClient
+
+        client = IPAMClient(self.app.config)
+
+        if name == "create_ipam_section":
+            result = client.create_section(
+                inputs["name"],
+                description=inputs.get("description", ""),
+            )
+            sect_id = result.get("id", "?")
+            return f"Created IPAM section '{inputs['name']}' (id={sect_id})"
+
+        elif name == "create_ipam_subnet":
+            result = client.create_subnet(
+                subnet=inputs["subnet"],
+                mask=int(inputs["mask"]),
+                section_id=inputs["section_id"],
+                description=inputs.get("description", ""),
+                vlan_id=inputs.get("vlan_id"),
+            )
+            sub_id = result.get("id", "?")
+            return (
+                f"Created subnet {inputs['subnet']}/{inputs['mask']} "
+                f"in section {inputs['section_id']} (subnet_id={sub_id})"
+            )
+
+        elif name == "create_ipam_address":
+            result = client.create_address(
+                ip=inputs["ip"],
+                subnet_id=inputs["subnet_id"],
+                hostname=inputs.get("hostname", ""),
+                description=inputs.get("description", ""),
+                tag=inputs.get("tag", 2),
+            )
+            return f"Created IP reservation {inputs['ip']} in subnet {inputs['subnet_id']}"
+
+        elif name == "create_ipam_vlan":
+            result = client.create_vlan(
+                number=int(inputs["number"]),
+                name=inputs.get("name", ""),
+                description=inputs.get("description", ""),
+            )
+            vlan_id = result.get("id", "?")
+            return f"Created VLAN {inputs['number']} (id={vlan_id})"
+
+        return "Unknown IPAM action"
 
     # ------------------------------------------------------------------
     # Navigation helper

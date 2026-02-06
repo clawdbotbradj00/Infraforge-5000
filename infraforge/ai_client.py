@@ -38,13 +38,30 @@ You can perform ACTIONS by emitting markers on their own line:
 
 Available actions (mutations and navigation only):
 
-VM CONTROL
-  <<<ACTION:vm_action:{"vmid":101,"node":"pve1","action":"start"}>>>
-    action: start, stop, reboot, shutdown
+DNS MANAGEMENT
+  Create a record (adds to existing records, does not replace):
+  <<<ACTION:create_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
 
-DNS CHANGES
-  <<<ACTION:add_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5","ttl":3600}>>>
-  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A"}>>>
+  Update a record (replaces all existing records of name+type):
+  <<<ACTION:update_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.6","ttl":3600}>>>
+
+  Delete a record:
+  <<<ACTION:delete_dns_record:{"zone":"example.com","name":"web","rtype":"A","value":"10.0.0.5"}>>>
+    rtype and value are optional. If omitted, deletes all records for that name.
+
+IPAM MANAGEMENT
+  Create a section (top-level container for subnets):
+  <<<ACTION:create_ipam_section:{"name":"Production","description":"Prod networks"}>>>
+
+  Create a subnet (section_id from the IPAM SECTIONS in state data):
+  <<<ACTION:create_ipam_subnet:{"subnet":"10.0.7.0","mask":24,"section_id":1,"description":"Server LAN","vlan_id":null}>>>
+
+  Create an IP address reservation:
+  <<<ACTION:create_ipam_address:{"ip":"10.0.7.50","subnet_id":3,"hostname":"webserver","description":"Primary web","tag":2}>>>
+    tag: 1=Offline, 2=Used, 3=Reserved, 4=DHCP
+
+  Create a VLAN:
+  <<<ACTION:create_ipam_vlan:{"number":100,"name":"servers","description":"Server VLAN"}>>>
 
 NAVIGATION
   <<<ACTION:navigate_to:{"screen":"SCREEN"}>>>
@@ -55,6 +72,7 @@ Rules for actions:
 - JSON must be valid, single-line.
 - Only emit action markers when the user asks you to DO something.
 - For questions about data, just answer from the provided state.
+- Use IDs from the infrastructure state data (section_id, subnet_id, etc).
 """
 
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
