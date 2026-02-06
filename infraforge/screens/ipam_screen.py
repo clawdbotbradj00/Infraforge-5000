@@ -1,88 +1,15 @@
 """phpIPAM management screen for InfraForge.
 
-Provides a full IPAM management interface with three views (Subnets,
-Addresses, VLANs), sort/filter controls, and CRUD operations for
-IP address reservation, subnet scanning, and VLAN management.
-
-CSS additions needed in styles/app.tcss:
-------------------------------------------------------------------------
-#ipam-container {
-    padding: 1 2;
-}
-
-#ipam-overview {
-    margin: 0 0 1 0;
-    border: round $primary-background;
-    padding: 1 2;
-}
-
-#ipam-tab-bar {
-    layout: horizontal;
-    height: 3;
-    margin: 0 0 0 0;
-    border: round $primary-background;
-    padding: 0 1;
-}
-
-.ipam-tab-btn {
-    width: auto;
-    padding: 1 2;
-    color: $text-muted;
-    text-style: italic;
-}
-
-.ipam-tab-btn.-active {
-    color: $accent;
-    text-style: bold;
-    background: $primary-background;
-}
-
-#ipam-controls {
-    layout: horizontal;
-    height: 3;
-    margin: 0 0 0 0;
-    border: round $primary-background;
-    padding: 0 1;
-}
-
-#ipam-filter-label {
-    width: auto;
-    padding: 1 1;
-    color: $text;
-}
-
-#ipam-sort-label {
-    width: auto;
-    padding: 1 1;
-    color: $text;
-    margin: 0 0 0 2;
-}
-
-#ipam-count-label {
-    width: 1fr;
-    padding: 1 1;
-    color: $text-muted;
-    text-align: right;
-}
-
-#ipam-table {
-    height: 1fr;
-    margin: 1 0 0 0;
-}
-
-#ipam-status-bar {
-    height: 1;
-    margin: 1 0 0 0;
-    background: $primary-background;
-    color: $text-muted;
-    padding: 0 1;
-}
-------------------------------------------------------------------------
+Provides a hierarchical Tree view of subnets and addresses with a detail
+panel, plus a flat DataTable for VLANs.  Subnets are expandable nodes
+that lazy-load their addresses on first expand.  Sorting and filtering
+are context-aware based on the highlighted node type.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -96,7 +23,9 @@ from textual.widgets import (
     Button,
     Select,
     Label,
+    Tree,
 )
+from textual.widgets._tree import TreeNode
 from textual.containers import Container, Horizontal, Vertical
 from textual import work, on
 
@@ -107,27 +36,28 @@ from rich.text import Text
 # Constants
 # ---------------------------------------------------------------------------
 
-# View tabs
-VIEW_SUBNETS = "subnets"
-VIEW_ADDRESSES = "addresses"
+VIEW_TREE = "tree"
 VIEW_VLANS = "vlans"
-VIEWS = [VIEW_SUBNETS, VIEW_ADDRESSES, VIEW_VLANS]
-VIEW_LABELS = ["Subnets", "Addresses", "VLANs"]
+VIEWS = [VIEW_TREE, VIEW_VLANS]
+VIEW_LABELS = ["Subnets & Addresses", "VLANs"]
 
-# Sort fields per view
+# Sort fields for subnets (in tree view)
 SUBNET_SORT_FIELDS = ["subnet", "description", "vlan", "usage"]
 SUBNET_SORT_LABELS = ["Subnet", "Description", "VLAN", "Usage %"]
 
+# Sort fields for addresses (within expanded subnets)
 ADDRESS_SORT_FIELDS = ["ip", "hostname", "status", "description", "last_seen"]
 ADDRESS_SORT_LABELS = ["IP", "Hostname", "Status", "Description", "Last Seen"]
 
+# Sort fields for VLANs
 VLAN_SORT_FIELDS = ["number", "name", "description"]
 VLAN_SORT_LABELS = ["Number", "Name", "Description"]
 
-# Filter modes per view
+# Filter modes for subnets
 SUBNET_FILTER_MODES = ["all", "low", "medium", "high"]
 SUBNET_FILTER_LABELS = ["All", "Low (<60%)", "Medium (60-80%)", "High (>80%)"]
 
+# Filter modes for addresses
 ADDRESS_FILTER_MODES = ["all", "active", "reserved", "offline", "dhcp"]
 ADDRESS_FILTER_LABELS = ["All", "Active", "Reserved", "Offline", "DHCP"]
 
@@ -150,7 +80,6 @@ STATUS_COLORS = {
     "Unknown": "bright_black",
 }
 
-# phpIPAM tag values for create_address
 TAG_VALUES = {
     "Offline": 1,
     "Active": 2,
@@ -167,15 +96,24 @@ TAG_OPTIONS_FOR_INPUT = [
 
 
 # ---------------------------------------------------------------------------
+# Tree data model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class IPAMNodeData:
+    """Data attached to each node in the IPAM tree."""
+    kind: Literal["subnet", "address", "placeholder"]
+    record: dict = field(default_factory=dict)
+    subnet_id: str = ""
+    addresses_loaded: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Modal: Address input screen (reserve / edit)
 # ---------------------------------------------------------------------------
 
 class AddressInputScreen(ModalScreen[Optional[dict]]):
-    """Modal screen for reserving or editing an IP address.
-
-    On dismiss, returns a dict with keys: ip, hostname, description, tag
-    or None if cancelled.
-    """
+    """Modal screen for reserving or editing an IP address."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=True),
@@ -341,34 +279,31 @@ class IPAMScreen(Screen):
         Binding("a", "add_item", "Add", show=True),
         Binding("e", "edit_item", "Edit", show=True),
         Binding("d", "delete_item", "Delete", show=True),
-        Binding("enter", "select_row", "Select", show=False),
         Binding("x", "scan_subnet", "Scan", show=True),
     ]
 
     def __init__(self) -> None:
         super().__init__()
-        # View state
-        self._active_view: str = VIEW_SUBNETS
+        self._active_view: str = VIEW_TREE
         self._loading: bool = False
         self._ipam_healthy: bool = False
 
         # Data stores
         self._subnets: list[dict] = []
-        self._addresses: list[dict] = []
         self._vlans: list[dict] = []
+        self._address_cache: dict[str, list[dict]] = {}
 
-        # Current subnet context for address view
-        self._selected_subnet: dict | None = None
-
-        # Sort / filter state per view
+        # Sort / filter state — subnets
         self._subnet_sort_index: int = 0
         self._subnet_sort_reverse: bool = False
         self._subnet_filter_index: int = 0
 
+        # Sort / filter state — addresses
         self._address_sort_index: int = 0
         self._address_sort_reverse: bool = False
         self._address_filter_index: int = 0
 
+        # Sort / filter state — VLANs
         self._vlan_sort_index: int = 0
         self._vlan_sort_reverse: bool = False
         self._vlan_filter_index: int = 0
@@ -396,7 +331,18 @@ class IPAMScreen(Screen):
                 yield Static("Sort: Subnet", id="ipam-sort-label")
                 yield Static("", id="ipam-count-label")
 
-            # Data table
+            # Tree view (subnets & addresses)
+            with Horizontal(id="ipam-main-content"):
+                yield Tree("IPAM", id="ipam-tree")
+                with Container(id="ipam-detail-panel"):
+                    yield Static("[bold]Details[/bold]", id="ipam-detail-title", markup=True)
+                    yield Static(
+                        "[dim]Select an item to view details.[/dim]",
+                        id="ipam-detail-content",
+                        markup=True,
+                    )
+
+            # Data table (VLANs only)
             yield DataTable(id="ipam-table", cursor_type="row")
 
             # Status bar
@@ -406,9 +352,13 @@ class IPAMScreen(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#ipam-table", DataTable)
         table.zebra_stripes = True
+        table.display = False  # Hidden initially (tree view is default)
+
+        tree = self.query_one("#ipam-tree", Tree)
+        tree.show_root = False
+        tree.guide_depth = 3
 
         self._render_tab_bar()
-        self._setup_table_columns()
 
         # Check if IPAM is configured
         ipam_cfg = self.app.config.ipam
@@ -422,7 +372,6 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def _render_tab_bar(self) -> None:
-        """Rebuild the tab selector bar."""
         bar = self.query_one("#ipam-tab-bar", Horizontal)
         bar.remove_children()
 
@@ -438,28 +387,11 @@ class IPAMScreen(Screen):
             bar.mount(btn)
 
     # ------------------------------------------------------------------
-    # Table column setup
-    # ------------------------------------------------------------------
-
-    def _setup_table_columns(self) -> None:
-        """Set up DataTable columns for the active view."""
-        table = self.query_one("#ipam-table", DataTable)
-        table.clear(columns=True)
-
-        if self._active_view == VIEW_SUBNETS:
-            table.add_columns("Subnet", "Description", "VLAN", "Usage %", "Used", "Total")
-        elif self._active_view == VIEW_ADDRESSES:
-            table.add_columns("IP Address", "Hostname", "Status", "Description", "Last Seen")
-        elif self._active_view == VIEW_VLANS:
-            table.add_columns("Number", "Name", "Description", "ID")
-
-    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
     @work(thread=True)
     def _load_initial_data(self) -> None:
-        """Load overview data and the default view (subnets)."""
         self._loading = True
         self.app.call_from_thread(
             self._set_status, "Connecting to phpIPAM...",
@@ -470,7 +402,6 @@ class IPAMScreen(Screen):
 
             client = IPAMClient(self.app.config)
 
-            # Health check
             healthy = client.check_health()
             self._ipam_healthy = healthy
 
@@ -486,7 +417,6 @@ class IPAMScreen(Screen):
                 self._set_status, "Loading subnets...",
             )
 
-            # Load subnets
             try:
                 subnets = client.get_subnets()
                 self._subnets = subnets if isinstance(subnets, list) else []
@@ -498,7 +428,6 @@ class IPAMScreen(Screen):
                 self._loading = False
                 return
 
-            # Load VLANs in the background too
             try:
                 vlans = client.get_vlans()
                 self._vlans = vlans if isinstance(vlans, list) else []
@@ -506,7 +435,8 @@ class IPAMScreen(Screen):
                 self._vlans = []
 
             self.app.call_from_thread(self._update_overview)
-            self.app.call_from_thread(self._populate_table)
+            self.app.call_from_thread(self._build_subnet_tree)
+            self.app.call_from_thread(self._update_controls)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Connected[/green] | {len(self._subnets)} subnets loaded",
@@ -518,66 +448,7 @@ class IPAMScreen(Screen):
             self._loading = False
 
     @work(thread=True)
-    def _load_subnets(self) -> None:
-        """Reload subnets from phpIPAM."""
-        self._loading = True
-        self.app.call_from_thread(self._set_status, "Loading subnets...")
-
-        try:
-            from infraforge.ipam_client import IPAMClient, IPAMError
-
-            client = IPAMClient(self.app.config)
-            subnets = client.get_subnets()
-            self._subnets = subnets if isinstance(subnets, list) else []
-
-            self.app.call_from_thread(self._update_overview)
-            self.app.call_from_thread(self._populate_table)
-            self.app.call_from_thread(
-                self._set_status,
-                f"[green]Connected[/green] | {len(self._subnets)} subnets loaded",
-            )
-        except Exception as exc:
-            self.app.call_from_thread(
-                self._set_status,
-                f"[red]Failed to load subnets: {exc}[/red]",
-            )
-        finally:
-            self._loading = False
-
-    @work(thread=True)
-    def _load_addresses(self, subnet: dict) -> None:
-        """Load addresses for a specific subnet."""
-        self._loading = True
-        subnet_id = subnet.get("id", "")
-        subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
-        self.app.call_from_thread(
-            self._set_status, f"Loading addresses for {subnet_cidr}...",
-        )
-
-        try:
-            from infraforge.ipam_client import IPAMClient, IPAMError
-
-            client = IPAMClient(self.app.config)
-            addresses = client.get_subnet_addresses(subnet_id)
-            self._addresses = addresses if isinstance(addresses, list) else []
-
-            self.app.call_from_thread(self._populate_table)
-            self.app.call_from_thread(
-                self._set_status,
-                f"[green]Connected[/green] | {subnet_cidr} | "
-                f"{len(self._addresses)} addresses",
-            )
-        except Exception as exc:
-            self.app.call_from_thread(
-                self._set_status,
-                f"[red]Failed to load addresses: {exc}[/red]",
-            )
-        finally:
-            self._loading = False
-
-    @work(thread=True)
     def _load_vlans(self) -> None:
-        """Reload VLANs from phpIPAM."""
         self._loading = True
         self.app.call_from_thread(self._set_status, "Loading VLANs...")
 
@@ -588,7 +459,8 @@ class IPAMScreen(Screen):
             vlans = client.get_vlans()
             self._vlans = vlans if isinstance(vlans, list) else []
 
-            self.app.call_from_thread(self._populate_table)
+            self.app.call_from_thread(self._populate_vlan_table)
+            self.app.call_from_thread(self._update_controls)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Connected[/green] | {len(self._vlans)} VLANs loaded",
@@ -600,6 +472,298 @@ class IPAMScreen(Screen):
             )
         finally:
             self._loading = False
+
+    # ------------------------------------------------------------------
+    # Tree: build from subnet data
+    # ------------------------------------------------------------------
+
+    def _build_subnet_tree(self) -> None:
+        """Build the hierarchical subnet tree, preserving expansion state."""
+        tree = self.query_one("#ipam-tree", Tree)
+
+        # Remember which subnets were expanded
+        expanded_ids: set[str] = set()
+        for node in self._iter_subnet_nodes(tree.root):
+            if node.data and node.data.kind == "subnet" and node.is_expanded:
+                expanded_ids.add(node.data.subnet_id)
+
+        tree.clear()
+
+        filtered = self._get_filtered_subnets()
+
+        # Build parent-child map from masterSubnetId
+        subnet_by_id = {str(s.get("id", "")): s for s in filtered}
+        children_map: dict[str, list[dict]] = {}
+        top_level: list[dict] = []
+
+        for s in filtered:
+            master = str(s.get("masterSubnetId", "0"))
+            if master == "0" or master not in subnet_by_id:
+                top_level.append(s)
+            else:
+                children_map.setdefault(master, []).append(s)
+
+        def add_subnet_node(parent_node: TreeNode, subnet: dict) -> None:
+            subnet_id = str(subnet.get("id", ""))
+            label = _make_subnet_label(subnet, self._vlans)
+            node_data = IPAMNodeData(
+                kind="subnet",
+                record=subnet,
+                subnet_id=subnet_id,
+                addresses_loaded=False,
+            )
+            child_node = parent_node.add(label, data=node_data)
+            # Placeholder so expand arrow appears
+            child_node.add_leaf(
+                Text("Loading addresses...", style="dim"),
+                data=IPAMNodeData(kind="placeholder"),
+            )
+
+            # Recursively add child subnets
+            for child_subnet in children_map.get(subnet_id, []):
+                add_subnet_node(child_node, child_subnet)
+
+            # Re-expand if it was previously expanded
+            if subnet_id in expanded_ids:
+                child_node.expand()
+
+        for subnet in top_level:
+            add_subnet_node(tree.root, subnet)
+
+        self._update_controls()
+
+    def _iter_subnet_nodes(self, root: TreeNode) -> list[TreeNode]:
+        """Collect all subnet-type nodes in the tree."""
+        result = []
+        for child in root.children:
+            if child.data and hasattr(child.data, 'kind') and child.data.kind == "subnet":
+                result.append(child)
+                result.extend(self._iter_subnet_nodes(child))
+        return result
+
+    # ------------------------------------------------------------------
+    # Tree: lazy-load addresses on expand
+    # ------------------------------------------------------------------
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        node = event.node
+        if node.data is None or not hasattr(node.data, 'kind'):
+            return
+        if node.data.kind != "subnet":
+            return
+        if node.data.addresses_loaded:
+            return
+        self._lazy_load_addresses(node)
+
+    @work(thread=True)
+    def _lazy_load_addresses(self, node: TreeNode) -> None:
+        subnet_id = node.data.subnet_id
+        subnet = node.data.record
+        subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
+        self.app.call_from_thread(
+            self._set_status, f"Loading addresses for {subnet_cidr}...",
+        )
+
+        try:
+            from infraforge.ipam_client import IPAMClient, IPAMError
+
+            client = IPAMClient(self.app.config)
+            addresses = client.get_subnet_addresses(subnet_id)
+            if not isinstance(addresses, list):
+                addresses = []
+
+            self._address_cache[subnet_id] = addresses
+            self.app.call_from_thread(self._populate_address_nodes, node, addresses)
+            self.app.call_from_thread(
+                self._set_status,
+                f"[green]Connected[/green] | {subnet_cidr} | "
+                f"{len(addresses)} addresses",
+            )
+        except Exception as exc:
+            self.app.call_from_thread(
+                self._set_status,
+                f"[red]Failed to load addresses: {exc}[/red]",
+            )
+
+    def _populate_address_nodes(
+        self, parent_node: TreeNode, addresses: list[dict],
+    ) -> None:
+        """Remove placeholder and add sorted/filtered address leaf nodes."""
+        parent_node.remove_children()
+
+        sorted_addrs = self._sort_addresses(addresses)
+        filtered_addrs = self._filter_addresses(sorted_addrs)
+
+        for addr in filtered_addrs:
+            label = _make_address_label(addr)
+            data = IPAMNodeData(
+                kind="address",
+                record=addr,
+                subnet_id=parent_node.data.subnet_id,
+            )
+            parent_node.add_leaf(label, data=data)
+
+        if not filtered_addrs:
+            parent_node.add_leaf(
+                Text("(no addresses)", style="dim italic"),
+                data=IPAMNodeData(kind="placeholder"),
+            )
+
+        parent_node.data.addresses_loaded = True
+
+    def _refresh_subnet_addresses(self, subnet_id: str) -> None:
+        """Re-fetch and re-render addresses for a specific subnet node."""
+        tree = self.query_one("#ipam-tree", Tree)
+        for node in self._iter_subnet_nodes(tree.root):
+            if node.data and node.data.subnet_id == subnet_id:
+                node.data.addresses_loaded = False
+                if node.is_expanded:
+                    self._lazy_load_addresses(node)
+                break
+
+    # ------------------------------------------------------------------
+    # Tree: detail panel on highlight
+    # ------------------------------------------------------------------
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        node = event.node
+        if node.data is None or not hasattr(node.data, 'kind'):
+            self._clear_detail_panel()
+            return
+
+        if node.data.kind == "subnet":
+            self._show_subnet_detail(node.data.record)
+        elif node.data.kind == "address":
+            self._show_address_detail(node.data.record, node.data.subnet_id)
+        else:
+            self._clear_detail_panel()
+
+    def _show_subnet_detail(self, subnet: dict) -> None:
+        detail = self.query_one("#ipam-detail-content", Static)
+        title = self.query_one("#ipam-detail-title", Static)
+        title.update("[bold]Subnet Details[/bold]")
+
+        cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
+        desc = subnet.get("description") or "-"
+        vlan_id = str(subnet.get("vlanId") or "0")
+        vlan_display = self._vlan_display(vlan_id)
+        master = str(subnet.get("masterSubnetId", "0"))
+        master_display = "Top-level" if master == "0" else f"Subnet #{master}"
+        section_id = subnet.get("sectionId", "?")
+
+        usage = subnet.get("usage", {})
+        used = _safe_int(usage.get("used", 0))
+        maxhosts = _safe_int(usage.get("maxhosts", 0))
+        pct = (used / maxhosts * 100) if maxhosts > 0 else 0.0
+        util_color = _utilization_color(pct)
+
+        is_folder = str(subnet.get("isFolder", "0")) == "1"
+        ping_scan = str(subnet.get("pingSubnet", "0")) == "1"
+        last_scan = subnet.get("lastScan") or "-"
+
+        lines = [
+            f"[bold]Subnet:[/bold]      {cidr}",
+            f"[bold]Description:[/bold] {desc}",
+            f"[bold]VLAN:[/bold]        {vlan_display}",
+            f"[bold]Section ID:[/bold]  {section_id}",
+            f"[bold]Parent:[/bold]      {master_display}",
+            f"[bold]Is Folder:[/bold]   {'Yes' if is_folder else 'No'}",
+            "",
+            f"[bold]Usage:[/bold]       [{util_color}]{used} / {maxhosts} ({pct:.1f}%)[/{util_color}]",
+            f"[bold]Ping Scan:[/bold]   {'Enabled' if ping_scan else 'Disabled'}",
+            f"[bold]Last Scan:[/bold]   {last_scan}",
+        ]
+        detail.update("\n".join(lines))
+
+    def _show_address_detail(self, addr: dict, subnet_id: str) -> None:
+        detail = self.query_one("#ipam-detail-content", Static)
+        title = self.query_one("#ipam-detail-title", Static)
+        title.update("[bold]Address Details[/bold]")
+
+        ip = addr.get("ip", "?")
+        hostname = addr.get("hostname") or "-"
+        status = _addr_status_label(addr)
+        color = STATUS_COLORS.get(status, "bright_black")
+        desc = addr.get("description") or "-"
+        mac = addr.get("mac") or "-"
+        last_seen = addr.get("lastSeen") or "-"
+        owner = addr.get("owner") or "-"
+        note = addr.get("note") or "-"
+
+        # Find parent subnet CIDR
+        subnet_cidr = f"Subnet #{subnet_id}"
+        for s in self._subnets:
+            if str(s.get("id", "")) == subnet_id:
+                subnet_cidr = f"{s.get('subnet', '?')}/{s.get('mask', '?')}"
+                break
+
+        lines = [
+            f"[bold]IP Address:[/bold]  {ip}",
+            f"[bold]Hostname:[/bold]    {hostname}",
+            f"[bold]Status:[/bold]      [{color}]{status}[/{color}]",
+            f"[bold]Description:[/bold] {desc}",
+            f"[bold]MAC:[/bold]         {mac}",
+            f"[bold]Last Seen:[/bold]   {last_seen}",
+            f"[bold]Owner:[/bold]       {owner}",
+            f"[bold]Note:[/bold]        {note}",
+            "",
+            f"[bold]Subnet:[/bold]      {subnet_cidr}",
+        ]
+        detail.update("\n".join(lines))
+
+    def _clear_detail_panel(self) -> None:
+        self.query_one("#ipam-detail-title", Static).update("[bold]Details[/bold]")
+        self.query_one("#ipam-detail-content", Static).update(
+            "[dim]Select an item to view details.[/dim]"
+        )
+
+    def _vlan_display(self, vlan_id: str) -> str:
+        if not vlan_id or vlan_id == "0":
+            return "-"
+        for v in self._vlans:
+            if str(v.get("id", "")) == vlan_id:
+                vnum = str(v.get("number", ""))
+                vname = v.get("name", "")
+                return f"{vnum}" + (f" ({vname})" if vname else "")
+        return vlan_id
+
+    # ------------------------------------------------------------------
+    # Tree: context helpers
+    # ------------------------------------------------------------------
+
+    def _get_highlighted_node(self) -> TreeNode | None:
+        tree = self.query_one("#ipam-tree", Tree)
+        cursor = tree.cursor_line
+        if cursor < 0:
+            return None
+        try:
+            return tree.get_node_at_line(cursor)
+        except Exception:
+            return None
+
+    def _get_context_subnet(self) -> dict | None:
+        """Return the subnet dict for the highlighted node (or its parent)."""
+        node = self._get_highlighted_node()
+        if node is None or node.data is None or not hasattr(node.data, 'kind'):
+            return None
+        if node.data.kind == "subnet":
+            return node.data.record
+        elif node.data.kind == "address":
+            parent = node.parent
+            while parent:
+                if parent.data and hasattr(parent.data, 'kind') and parent.data.kind == "subnet":
+                    return parent.data.record
+                parent = parent.parent
+        return None
+
+    def _get_context_address(self) -> dict | None:
+        """Return the address dict if an address node is highlighted."""
+        node = self._get_highlighted_node()
+        if node is None or node.data is None or not hasattr(node.data, 'kind'):
+            return None
+        if node.data.kind == "address":
+            return node.data.record
+        return None
 
     # ------------------------------------------------------------------
     # Display update helpers
@@ -640,7 +804,7 @@ class IPAMScreen(Screen):
         total_subnets = len(self._subnets)
         total_vlans = len(self._vlans)
 
-        # Detect empty state — connected but nothing configured yet
+        # Detect empty state
         if total_subnets == 0 and total_vlans == 0 and self._ipam_healthy:
             self._show_empty_state()
             return
@@ -705,20 +869,30 @@ class IPAMScreen(Screen):
         sort_label = self.query_one("#ipam-sort-label", Static)
         count_label = self.query_one("#ipam-count-label", Static)
 
-        if self._active_view == VIEW_SUBNETS:
-            current_filter = SUBNET_FILTER_LABELS[self._subnet_filter_index]
-            current_sort = SUBNET_SORT_LABELS[self._subnet_sort_index]
-            direction = " \u25bc" if self._subnet_sort_reverse else " \u25b2"
-            filtered = self._get_filtered_subnets()
-            total = len(self._subnets)
-            shown = len(filtered)
-        elif self._active_view == VIEW_ADDRESSES:
-            current_filter = ADDRESS_FILTER_LABELS[self._address_filter_index]
-            current_sort = ADDRESS_SORT_LABELS[self._address_sort_index]
-            direction = " \u25bc" if self._address_sort_reverse else " \u25b2"
-            filtered = self._get_filtered_addresses()
-            total = len(self._addresses)
-            shown = len(filtered)
+        if self._active_view == VIEW_TREE:
+            # Determine context from highlighted node
+            node = self._get_highlighted_node()
+            is_address = (
+                node is not None
+                and node.data is not None
+                and hasattr(node.data, 'kind')
+                and node.data.kind == "address"
+            )
+
+            if is_address:
+                current_filter = ADDRESS_FILTER_LABELS[self._address_filter_index]
+                current_sort = ADDRESS_SORT_LABELS[self._address_sort_index]
+                direction = " \u25bc" if self._address_sort_reverse else " \u25b2"
+                total = sum(len(v) for v in self._address_cache.values())
+                shown = total  # approximate
+            else:
+                current_filter = SUBNET_FILTER_LABELS[self._subnet_filter_index]
+                current_sort = SUBNET_SORT_LABELS[self._subnet_sort_index]
+                direction = " \u25bc" if self._subnet_sort_reverse else " \u25b2"
+                total = len(self._subnets)
+                filtered = self._get_filtered_subnets()
+                shown = len(filtered)
+
         else:  # VLANs
             current_filter = VLAN_FILTER_LABELS[self._vlan_filter_index]
             current_sort = VLAN_SORT_LABELS[self._vlan_sort_index]
@@ -742,7 +916,6 @@ class IPAMScreen(Screen):
     def _get_filtered_subnets(self) -> list[dict]:
         subnets = list(self._subnets)
 
-        # Apply usage filter
         mode = SUBNET_FILTER_MODES[self._subnet_filter_index]
         if mode == "low":
             subnets = [s for s in subnets if _subnet_usage_pct(s) < 60]
@@ -754,7 +927,6 @@ class IPAMScreen(Screen):
         elif mode == "high":
             subnets = [s for s in subnets if _subnet_usage_pct(s) > 80]
 
-        # Apply sort
         field = SUBNET_SORT_FIELDS[self._subnet_sort_index]
         if field == "subnet":
             subnets.sort(
@@ -779,45 +951,44 @@ class IPAMScreen(Screen):
 
         return subnets
 
-    def _get_filtered_addresses(self) -> list[dict]:
-        addresses = list(self._addresses)
-
-        mode = ADDRESS_FILTER_MODES[self._address_filter_index]
-        if mode != "all":
-            target = mode.capitalize()  # "Active", "Reserved", etc.
-            addresses = [
-                a for a in addresses
-                if _addr_status_label(a) == target
-            ]
-
+    def _sort_addresses(self, addresses: list[dict]) -> list[dict]:
+        """Sort addresses based on current address sort state."""
+        result = list(addresses)
         field = ADDRESS_SORT_FIELDS[self._address_sort_index]
         if field == "ip":
-            addresses.sort(
+            result.sort(
                 key=lambda a: _ip_sort_key(a.get("ip", "0.0.0.0")),
                 reverse=self._address_sort_reverse,
             )
         elif field == "hostname":
-            addresses.sort(
+            result.sort(
                 key=lambda a: (a.get("hostname") or "").lower(),
                 reverse=self._address_sort_reverse,
             )
         elif field == "status":
-            addresses.sort(
+            result.sort(
                 key=lambda a: _addr_status_label(a),
                 reverse=self._address_sort_reverse,
             )
         elif field == "description":
-            addresses.sort(
+            result.sort(
                 key=lambda a: (a.get("description") or "").lower(),
                 reverse=self._address_sort_reverse,
             )
         elif field == "last_seen":
-            addresses.sort(
+            result.sort(
                 key=lambda a: a.get("lastSeen") or "",
                 reverse=self._address_sort_reverse,
             )
+        return result
 
-        return addresses
+    def _filter_addresses(self, addresses: list[dict]) -> list[dict]:
+        """Filter addresses based on current address filter state."""
+        mode = ADDRESS_FILTER_MODES[self._address_filter_index]
+        if mode == "all":
+            return addresses
+        target = mode.capitalize()
+        return [a for a in addresses if _addr_status_label(a) == target]
 
     def _get_filtered_vlans(self) -> list[dict]:
         vlans = list(self._vlans)
@@ -842,96 +1013,20 @@ class IPAMScreen(Screen):
         return vlans
 
     # ------------------------------------------------------------------
-    # Table population
+    # VLAN table population (kept from original)
     # ------------------------------------------------------------------
 
-    def _populate_table(self) -> None:
-        """Populate the DataTable based on the active view."""
+    def _setup_vlan_columns(self) -> None:
+        table = self.query_one("#ipam-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Number", "Name", "Description", "ID")
+
+    def _populate_vlan_table(self) -> None:
         table = self.query_one("#ipam-table", DataTable)
         table.clear()
-
         self._update_controls()
 
-        if self._active_view == VIEW_SUBNETS:
-            self._populate_subnets(table)
-        elif self._active_view == VIEW_ADDRESSES:
-            self._populate_addresses(table)
-        elif self._active_view == VIEW_VLANS:
-            self._populate_vlans(table)
-
-    def _populate_subnets(self, table: DataTable) -> None:
-        filtered = self._get_filtered_subnets()
-
-        # Build a VLAN lookup from loaded VLANs
-        vlan_map: dict[str, str] = {}
-        for v in self._vlans:
-            vid = str(v.get("id", ""))
-            vnum = str(v.get("number", ""))
-            vname = v.get("name", "")
-            if vid:
-                vlan_map[vid] = f"{vnum}" + (f" ({vname})" if vname else "")
-
-        for subnet in filtered:
-            subnet_str = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
-            description = subnet.get("description") or ""
-            vlan_id = str(subnet.get("vlanId") or "")
-            vlan_display = vlan_map.get(vlan_id, vlan_id) if vlan_id and vlan_id != "0" else "-"
-
-            usage = subnet.get("usage", {})
-            used = _safe_int(usage.get("used", 0))
-            maxhosts = _safe_int(usage.get("maxhosts", 0))
-
-            if maxhosts > 0:
-                pct = (used / maxhosts) * 100
-            else:
-                pct = 0.0
-
-            util_color = _utilization_color(pct)
-
-            subnet_text = Text(subnet_str, style="bold")
-            desc_text = Text(description)
-            vlan_text = Text(vlan_display)
-
-            pct_text = Text(f"{pct:.1f}%")
-            pct_text.stylize(util_color)
-
-            used_text = Text(str(used))
-            total_text = Text(str(maxhosts))
-
-            table.add_row(
-                subnet_text, desc_text, vlan_text,
-                pct_text, used_text, total_text,
-                key=f"subnet_{subnet.get('id', '')}",
-            )
-
-    def _populate_addresses(self, table: DataTable) -> None:
-        filtered = self._get_filtered_addresses()
-
-        for addr in filtered:
-            ip = addr.get("ip", "?")
-            hostname = addr.get("hostname") or ""
-            status = _addr_status_label(addr)
-            description = addr.get("description") or ""
-            last_seen = addr.get("lastSeen") or "-"
-
-            color = STATUS_COLORS.get(status, "bright_black")
-
-            ip_text = Text(ip, style="bold")
-            hostname_text = Text(hostname)
-            status_text = Text(status)
-            status_text.stylize(color)
-            desc_text = Text(description)
-            seen_text = Text(last_seen, style="dim")
-
-            table.add_row(
-                ip_text, hostname_text, status_text,
-                desc_text, seen_text,
-                key=f"addr_{addr.get('id', '')}",
-            )
-
-    def _populate_vlans(self, table: DataTable) -> None:
         filtered = self._get_filtered_vlans()
-
         for vlan in filtered:
             number = str(vlan.get("number", "?"))
             name = vlan.get("name") or ""
@@ -948,50 +1043,7 @@ class IPAMScreen(Screen):
                 key=f"vlan_{vlan_id}",
             )
 
-    # ------------------------------------------------------------------
-    # Row selection helpers
-    # ------------------------------------------------------------------
-
-    def _get_selected_subnet(self) -> dict | None:
-        """Return the subnet dict for the currently selected table row."""
-        table = self.query_one("#ipam-table", DataTable)
-        try:
-            cursor_key = str(table.coordinate_to_cell_key(
-                table.cursor_coordinate,
-            ).row_key)
-        except Exception:
-            return None
-
-        if not cursor_key.startswith("subnet_"):
-            return None
-
-        subnet_id = cursor_key[len("subnet_"):]
-        for s in self._subnets:
-            if str(s.get("id", "")) == subnet_id:
-                return s
-        return None
-
-    def _get_selected_address(self) -> dict | None:
-        """Return the address dict for the currently selected table row."""
-        table = self.query_one("#ipam-table", DataTable)
-        try:
-            cursor_key = str(table.coordinate_to_cell_key(
-                table.cursor_coordinate,
-            ).row_key)
-        except Exception:
-            return None
-
-        if not cursor_key.startswith("addr_"):
-            return None
-
-        addr_id = cursor_key[len("addr_"):]
-        for a in self._addresses:
-            if str(a.get("id", "")) == addr_id:
-                return a
-        return None
-
     def _get_selected_vlan(self) -> dict | None:
-        """Return the VLAN dict for the currently selected table row."""
         table = self.query_one("#ipam-table", DataTable)
         try:
             cursor_key = str(table.coordinate_to_cell_key(
@@ -1014,53 +1066,36 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_go_back(self) -> None:
-        """Go back: if in address view, return to subnets; else pop screen."""
-        if self._active_view == VIEW_ADDRESSES:
-            self._selected_subnet = None
-            self._addresses = []
-            self._active_view = VIEW_SUBNETS
-            self._render_tab_bar()
-            self._setup_table_columns()
-            self._populate_table()
-            self._set_status(
-                f"[green]Connected[/green] | {len(self._subnets)} subnets",
-            )
-        else:
-            self.app.pop_screen()
+        self.app.pop_screen()
 
     # ------------------------------------------------------------------
     # Actions: Tab switching
     # ------------------------------------------------------------------
 
     def _switch_to_view(self, view: str) -> None:
-        """Switch to a different view tab."""
-        if view == self._active_view:
-            return
-        if view not in VIEWS:
+        if view == self._active_view or view not in VIEWS:
             return
 
         self._active_view = view
         self._render_tab_bar()
-        self._setup_table_columns()
 
-        if view == VIEW_SUBNETS:
-            self._selected_subnet = None
-            self._addresses = []
-            self._populate_table()
-        elif view == VIEW_ADDRESSES:
-            if self._selected_subnet:
-                self._load_addresses(self._selected_subnet)
-            else:
-                # No subnet selected -- show empty with hint
-                self._populate_table()
-                self._set_status(
-                    "[yellow]Select a subnet first (switch to Subnets tab and press Enter).[/yellow]"
-                )
+        main_content = self.query_one("#ipam-main-content", Horizontal)
+        table = self.query_one("#ipam-table", DataTable)
+
+        if view == VIEW_TREE:
+            main_content.display = True
+            table.display = False
+            self._build_subnet_tree()
         elif view == VIEW_VLANS:
+            main_content.display = False
+            table.display = True
+            self._setup_vlan_columns()
             if not self._vlans:
                 self._load_vlans()
             else:
-                self._populate_table()
+                self._populate_vlan_table()
+
+        self._update_controls()
 
     def action_next_tab(self) -> None:
         current_idx = VIEWS.index(self._active_view)
@@ -1077,24 +1112,38 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_cycle_sort(self) -> None:
-        if self._active_view == VIEW_SUBNETS:
-            fields = SUBNET_SORT_FIELDS
-            if self._subnet_sort_index == len(fields) - 1 and not self._subnet_sort_reverse:
-                self._subnet_sort_reverse = True
-            elif self._subnet_sort_reverse:
-                self._subnet_sort_reverse = False
-                self._subnet_sort_index = (self._subnet_sort_index + 1) % len(fields)
+        if self._active_view == VIEW_TREE:
+            node = self._get_highlighted_node()
+            is_address = (
+                node is not None
+                and node.data is not None
+                and hasattr(node.data, 'kind')
+                and node.data.kind == "address"
+            )
+
+            if is_address:
+                # Cycle address sort
+                fields = ADDRESS_SORT_FIELDS
+                if self._address_sort_index == len(fields) - 1 and not self._address_sort_reverse:
+                    self._address_sort_reverse = True
+                elif self._address_sort_reverse:
+                    self._address_sort_reverse = False
+                    self._address_sort_index = (self._address_sort_index + 1) % len(fields)
+                else:
+                    self._address_sort_index = (self._address_sort_index + 1) % len(fields)
+                self._re_sort_all_expanded_addresses()
             else:
-                self._subnet_sort_index = (self._subnet_sort_index + 1) % len(fields)
-        elif self._active_view == VIEW_ADDRESSES:
-            fields = ADDRESS_SORT_FIELDS
-            if self._address_sort_index == len(fields) - 1 and not self._address_sort_reverse:
-                self._address_sort_reverse = True
-            elif self._address_sort_reverse:
-                self._address_sort_reverse = False
-                self._address_sort_index = (self._address_sort_index + 1) % len(fields)
-            else:
-                self._address_sort_index = (self._address_sort_index + 1) % len(fields)
+                # Cycle subnet sort
+                fields = SUBNET_SORT_FIELDS
+                if self._subnet_sort_index == len(fields) - 1 and not self._subnet_sort_reverse:
+                    self._subnet_sort_reverse = True
+                elif self._subnet_sort_reverse:
+                    self._subnet_sort_reverse = False
+                    self._subnet_sort_index = (self._subnet_sort_index + 1) % len(fields)
+                else:
+                    self._subnet_sort_index = (self._subnet_sort_index + 1) % len(fields)
+                self._build_subnet_tree()
+
         elif self._active_view == VIEW_VLANS:
             fields = VLAN_SORT_FIELDS
             if self._vlan_sort_index == len(fields) - 1 and not self._vlan_sort_reverse:
@@ -1104,113 +1153,78 @@ class IPAMScreen(Screen):
                 self._vlan_sort_index = (self._vlan_sort_index + 1) % len(fields)
             else:
                 self._vlan_sort_index = (self._vlan_sort_index + 1) % len(fields)
+            self._populate_vlan_table()
 
-        self._populate_table()
+        self._update_controls()
+
+    def _re_sort_all_expanded_addresses(self) -> None:
+        """Re-sort address children of all expanded subnet nodes."""
+        tree = self.query_one("#ipam-tree", Tree)
+        for node in self._iter_subnet_nodes(tree.root):
+            if node.data and node.data.addresses_loaded and node.is_expanded:
+                addresses = self._address_cache.get(node.data.subnet_id, [])
+                self._populate_address_nodes(node, addresses)
 
     def action_cycle_filter(self) -> None:
-        if self._active_view == VIEW_SUBNETS:
-            self._subnet_filter_index = (
-                (self._subnet_filter_index + 1) % len(SUBNET_FILTER_MODES)
+        if self._active_view == VIEW_TREE:
+            node = self._get_highlighted_node()
+            is_address = (
+                node is not None
+                and node.data is not None
+                and hasattr(node.data, 'kind')
+                and node.data.kind == "address"
             )
-        elif self._active_view == VIEW_ADDRESSES:
-            self._address_filter_index = (
-                (self._address_filter_index + 1) % len(ADDRESS_FILTER_MODES)
-            )
+
+            if is_address:
+                self._address_filter_index = (
+                    (self._address_filter_index + 1) % len(ADDRESS_FILTER_MODES)
+                )
+                self._re_sort_all_expanded_addresses()
+            else:
+                self._subnet_filter_index = (
+                    (self._subnet_filter_index + 1) % len(SUBNET_FILTER_MODES)
+                )
+                self._build_subnet_tree()
+
         elif self._active_view == VIEW_VLANS:
             self._vlan_filter_index = (
                 (self._vlan_filter_index + 1) % len(VLAN_FILTER_MODES)
             )
-        self._populate_table()
+            self._populate_vlan_table()
+
+        self._update_controls()
 
     def action_refresh(self) -> None:
         if self._loading:
             return
         self._set_status("[dim]Refreshing...[/dim]")
+        self._address_cache.clear()
 
-        if self._active_view == VIEW_SUBNETS:
-            self._load_subnets()
-        elif self._active_view == VIEW_ADDRESSES:
-            if self._selected_subnet:
-                self._load_addresses(self._selected_subnet)
+        if self._active_view == VIEW_TREE:
+            self._load_initial_data()
         elif self._active_view == VIEW_VLANS:
             self._load_vlans()
-
-    # ------------------------------------------------------------------
-    # Actions: Row selection (Enter)
-    # ------------------------------------------------------------------
-
-    def action_select_row(self) -> None:
-        """Handle Enter key -- drill into subnet or show address details."""
-        if self._active_view == VIEW_SUBNETS:
-            subnet = self._get_selected_subnet()
-            if subnet is None:
-                return
-            # Switch to address view for this subnet
-            self._selected_subnet = subnet
-            self._active_view = VIEW_ADDRESSES
-            self._render_tab_bar()
-            self._setup_table_columns()
-            self._load_addresses(subnet)
-
-        elif self._active_view == VIEW_ADDRESSES:
-            addr = self._get_selected_address()
-            if addr is None:
-                return
-            # Show details in status bar
-            status = _addr_status_label(addr)
-            color = STATUS_COLORS.get(status, "bright_black")
-            self._set_status(
-                f"[bold]{addr.get('ip', '?')}[/bold]  "
-                f"[{color}]{status}[/{color}]  "
-                f"Host: {addr.get('hostname') or '-'}  "
-                f"Desc: {addr.get('description') or '-'}  "
-                f"MAC: {addr.get('mac') or '-'}  "
-                f"Last Seen: {addr.get('lastSeen') or '-'}"
-            )
-
-        elif self._active_view == VIEW_VLANS:
-            vlan = self._get_selected_vlan()
-            if vlan is None:
-                return
-            self._set_status(
-                f"VLAN [bold]{vlan.get('number', '?')}[/bold]  "
-                f"Name: {vlan.get('name') or '-'}  "
-                f"Desc: {vlan.get('description') or '-'}  "
-                f"ID: {vlan.get('id', '?')}"
-            )
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle Enter key on a table row via the DataTable event."""
-        self.action_select_row()
 
     # ------------------------------------------------------------------
     # Actions: CRUD -- Add
     # ------------------------------------------------------------------
 
     def action_add_item(self) -> None:
-        """Add a new item in the current view."""
-        if self._active_view == VIEW_ADDRESSES:
-            self._add_address()
-        elif self._active_view == VIEW_SUBNETS:
-            self._set_status(
-                "[yellow]Subnet creation is not yet available from this screen. "
-                "Use the phpIPAM web UI.[/yellow]"
-            )
+        if self._active_view == VIEW_TREE:
+            subnet = self._get_context_subnet()
+            if subnet is None:
+                self._set_status(
+                    "[yellow]Highlight a subnet to add an address.[/yellow]"
+                )
+                return
+            self._add_address(subnet)
         elif self._active_view == VIEW_VLANS:
             self._set_status(
                 "[yellow]VLAN creation is not yet available from this screen. "
                 "Use the phpIPAM web UI.[/yellow]"
             )
 
-    def _add_address(self) -> None:
-        """Open the address input modal to reserve an IP."""
-        if not self._selected_subnet:
-            self._set_status(
-                "[yellow]Select a subnet first (press Escape and Enter on a subnet).[/yellow]"
-            )
-            return
-
-        subnet = self._selected_subnet
+    def _add_address(self, subnet: dict) -> None:
         subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
 
         def _on_result(result: Optional[dict]) -> None:
@@ -1224,14 +1238,12 @@ class IPAMScreen(Screen):
                 result["tag"],
             )
 
-        # Try to suggest the first free IP
         self._suggest_and_open_address_modal(subnet, subnet_cidr, _on_result)
 
     @work(thread=True)
     def _suggest_and_open_address_modal(
         self, subnet: dict, subnet_cidr: str, callback,
     ) -> None:
-        """Fetch the first free IP and open the address modal."""
         suggested_ip = ""
         try:
             from infraforge.ipam_client import IPAMClient, IPAMError
@@ -1260,7 +1272,7 @@ class IPAMScreen(Screen):
         description: str,
         tag_label: str,
     ) -> None:
-        """Reserve an IP address in phpIPAM."""
+        subnet_id = str(subnet.get("id", ""))
         self.app.call_from_thread(
             self._set_status,
             f"Reserving {ip} in subnet...",
@@ -1272,21 +1284,17 @@ class IPAMScreen(Screen):
             tag_value = TAG_VALUES.get(tag_label, 2)
             client.create_address(
                 ip=ip,
-                subnet_id=subnet.get("id", ""),
+                subnet_id=subnet_id,
                 hostname=hostname,
                 description=description,
                 tag=tag_value,
             )
 
-            # Reload addresses
-            addresses = client.get_subnet_addresses(subnet.get("id", ""))
-            self._addresses = addresses if isinstance(addresses, list) else []
-
-            self.app.call_from_thread(self._populate_table)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Reserved {ip} ({tag_label})[/green]",
             )
+            self.app.call_from_thread(self._refresh_subnet_addresses, subnet_id)
         except Exception as exc:
             self.app.call_from_thread(
                 self._set_status,
@@ -1298,26 +1306,22 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_edit_item(self) -> None:
-        """Edit the selected item."""
-        if self._active_view == VIEW_ADDRESSES:
+        if self._active_view == VIEW_TREE:
             self._edit_address()
         else:
-            self._set_status("[yellow]Edit is only available in the Addresses view.[/yellow]")
+            self._set_status("[yellow]Edit is only available for addresses in the tree view.[/yellow]")
 
     def _edit_address(self) -> None:
-        """Open modal to edit an existing address (hostname/description/status)."""
-        addr = self._get_selected_address()
+        addr = self._get_context_address()
         if addr is None:
-            self._set_status("[yellow]No address selected.[/yellow]")
+            self._set_status("[yellow]Highlight an address to edit.[/yellow]")
             return
 
         current_status = _addr_status_label(addr)
+        subnet = self._get_context_subnet()
         subnet_cidr = ""
-        if self._selected_subnet:
-            subnet_cidr = (
-                f"{self._selected_subnet.get('subnet', '?')}"
-                f"/{self._selected_subnet.get('mask', '?')}"
-            )
+        if subnet:
+            subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
 
         def _on_result(result: Optional[dict]) -> None:
             if result is None:
@@ -1339,8 +1343,8 @@ class IPAMScreen(Screen):
 
     @work(thread=True)
     def _do_edit_address(self, addr: dict, result: dict) -> None:
-        """Update an address in phpIPAM."""
         addr_id = addr.get("id", "")
+        subnet_id = str(addr.get("subnetId", ""))
         self.app.call_from_thread(
             self._set_status,
             f"Updating {addr.get('ip', '?')}...",
@@ -1357,18 +1361,11 @@ class IPAMScreen(Screen):
             }
             client._patch(f"/addresses/{addr_id}/", payload)
 
-            # Reload addresses
-            if self._selected_subnet:
-                addresses = client.get_subnet_addresses(
-                    self._selected_subnet.get("id", ""),
-                )
-                self._addresses = addresses if isinstance(addresses, list) else []
-
-            self.app.call_from_thread(self._populate_table)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Updated {addr.get('ip', '?')}[/green]",
             )
+            self.app.call_from_thread(self._refresh_subnet_addresses, subnet_id)
         except Exception as exc:
             self.app.call_from_thread(
                 self._set_status,
@@ -1380,19 +1377,17 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_delete_item(self) -> None:
-        """Delete/release the selected item."""
-        if self._active_view == VIEW_ADDRESSES:
+        if self._active_view == VIEW_TREE:
             self._release_address()
         else:
             self._set_status(
-                "[yellow]Delete is only available in the Addresses view (release an IP).[/yellow]"
+                "[yellow]Delete is only available for addresses in the tree view.[/yellow]"
             )
 
     def _release_address(self) -> None:
-        """Release (delete) an IP address with confirmation."""
-        addr = self._get_selected_address()
+        addr = self._get_context_address()
         if addr is None:
-            self._set_status("[yellow]No address selected.[/yellow]")
+            self._set_status("[yellow]Highlight an address to release.[/yellow]")
             return
 
         ip = addr.get("ip", "?")
@@ -1416,8 +1411,8 @@ class IPAMScreen(Screen):
 
     @work(thread=True)
     def _do_release_address(self, addr: dict) -> None:
-        """Delete an address from phpIPAM."""
         addr_id = addr.get("id", "")
+        subnet_id = str(addr.get("subnetId", ""))
         ip = addr.get("ip", "?")
         self.app.call_from_thread(
             self._set_status, f"Releasing {ip}...",
@@ -1428,18 +1423,11 @@ class IPAMScreen(Screen):
             client = IPAMClient(self.app.config)
             client._delete(f"/addresses/{addr_id}/")
 
-            # Reload addresses
-            if self._selected_subnet:
-                addresses = client.get_subnet_addresses(
-                    self._selected_subnet.get("id", ""),
-                )
-                self._addresses = addresses if isinstance(addresses, list) else []
-
-            self.app.call_from_thread(self._populate_table)
             self.app.call_from_thread(
                 self._set_status,
                 f"[green]Released {ip}[/green]",
             )
+            self.app.call_from_thread(self._refresh_subnet_addresses, subnet_id)
         except Exception as exc:
             self.app.call_from_thread(
                 self._set_status,
@@ -1451,19 +1439,15 @@ class IPAMScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_scan_subnet(self) -> None:
-        """Trigger subnet scanning on the selected subnet."""
-        if self._active_view == VIEW_SUBNETS:
-            subnet = self._get_selected_subnet()
-        elif self._active_view == VIEW_ADDRESSES and self._selected_subnet:
-            subnet = self._selected_subnet
-        else:
+        if self._active_view != VIEW_TREE:
             self._set_status(
-                "[yellow]Select a subnet to scan (Subnets or Addresses view).[/yellow]"
+                "[yellow]Switch to Subnets & Addresses view to scan.[/yellow]"
             )
             return
 
+        subnet = self._get_context_subnet()
         if subnet is None:
-            self._set_status("[yellow]No subnet selected.[/yellow]")
+            self._set_status("[yellow]Highlight a subnet to scan.[/yellow]")
             return
 
         subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
@@ -1485,7 +1469,6 @@ class IPAMScreen(Screen):
 
     @work(thread=True)
     def _do_enable_scan(self, subnet: dict) -> None:
-        """Enable scanning on a subnet via the IPAM API."""
         subnet_id = subnet.get("id", "")
         subnet_cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
         self.app.call_from_thread(
@@ -1511,11 +1494,55 @@ class IPAMScreen(Screen):
 
 
 # ---------------------------------------------------------------------------
+# Label builders
+# ---------------------------------------------------------------------------
+
+def _make_subnet_label(subnet: dict, vlans: list[dict]) -> Text:
+    """Build a Rich Text label for a subnet tree node."""
+    cidr = f"{subnet.get('subnet', '?')}/{subnet.get('mask', '?')}"
+    desc = subnet.get("description") or ""
+    is_folder = str(subnet.get("isFolder", "0")) == "1"
+
+    usage = subnet.get("usage", {})
+    used = _safe_int(usage.get("used", 0))
+    maxhosts = _safe_int(usage.get("maxhosts", 0))
+    pct = (used / maxhosts * 100) if maxhosts > 0 else 0.0
+    util_color = _utilization_color(pct)
+
+    label = Text()
+    if is_folder:
+        label.append("\U0001f4c1 ", style="dim")  # folder icon
+        label.append(desc or cidr, style="bold")
+    else:
+        label.append(cidr, style="bold")
+        if desc:
+            label.append(f"  {desc}", style="dim")
+        label.append(f"  [{used}/{maxhosts}]", style=util_color)
+        label.append(f"  {pct:.0f}%", style=util_color)
+
+    return label
+
+
+def _make_address_label(addr: dict) -> Text:
+    """Build a Rich Text label for an address leaf node."""
+    ip = addr.get("ip", "?")
+    hostname = addr.get("hostname") or ""
+    status = _addr_status_label(addr)
+    color = STATUS_COLORS.get(status, "bright_black")
+
+    label = Text()
+    label.append(ip, style="bold")
+    if hostname:
+        label.append(f"  {hostname}")
+    label.append(f"  [{status}]", style=color)
+    return label
+
+
+# ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 
 def _safe_int(value) -> int:
-    """Safely convert a value to int, returning 0 on failure."""
     try:
         return int(value)
     except (ValueError, TypeError):
@@ -1523,7 +1550,6 @@ def _safe_int(value) -> int:
 
 
 def _subnet_usage_pct(subnet: dict) -> float:
-    """Calculate usage percentage for a subnet."""
     usage = subnet.get("usage", {})
     used = _safe_int(usage.get("used", 0))
     maxhosts = _safe_int(usage.get("maxhosts", 0))
@@ -1533,7 +1559,6 @@ def _subnet_usage_pct(subnet: dict) -> float:
 
 
 def _utilization_color(pct: float) -> str:
-    """Return a Rich color name based on utilization percentage."""
     if pct > 80:
         return "red"
     elif pct > 60:
@@ -1542,13 +1567,11 @@ def _utilization_color(pct: float) -> str:
 
 
 def _addr_status_label(addr: dict) -> str:
-    """Return a human-readable status label for an address dict."""
     tag = str(addr.get("tag", ""))
     return TAG_STATUS_MAP.get(tag, "Unknown")
 
 
 def _ip_sort_key(ip_str: str) -> tuple:
-    """Convert an IP address string to a sortable tuple of ints."""
     try:
         parts = ip_str.split(".")
         return tuple(int(p) for p in parts)

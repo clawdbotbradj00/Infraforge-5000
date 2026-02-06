@@ -421,6 +421,31 @@ DataTable > .datatable--hover {
     text-align: right;
 }
 
+#ipam-main-content {
+    layout: horizontal;
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+#ipam-tree {
+    width: 2fr;
+    margin: 0 1 0 0;
+    border: round $primary-background;
+}
+
+#ipam-detail-panel {
+    width: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#ipam-detail-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
+}
+
 #ipam-table {
     height: 1fr;
     margin: 1 0 0 0;
