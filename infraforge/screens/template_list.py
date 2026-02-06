@@ -144,8 +144,8 @@ class TemplateListScreen(Screen):
             yield Static("Templates & Images", classes="section-title")
             yield Static("", id="template-banner", markup=True)
             with Horizontal(id="template-controls"):
-                yield Static("", id="template-sort-label")
-                yield Static("", id="template-count-label")
+                yield Static("", id="template-sort-label", markup=True)
+                yield Static("", id="template-count-label", markup=True)
             with Horizontal(id="template-main-content"):
                 yield Tree("Templates", id="template-tree")
                 with Container(id="template-detail-panel"):
