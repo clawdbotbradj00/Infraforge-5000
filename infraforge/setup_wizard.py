@@ -268,6 +268,24 @@ def _configure_dns(console: Console, prev: dict | None = None) -> dict:
             "api_key": "",
         }
 
+        # If no zones were added, try to auto-discover from the domain
+        if not dns_zones and dns_domain:
+            console.print(f"\n[dim]No zones added — testing if [bold]{dns_domain}[/bold] is a valid zone...[/dim]")
+            try:
+                from infraforge.dns_client import DNSClient
+                client = DNSClient(dns_server, int(dns_port), tsig_name, tsig_secret, tsig_algo)
+                soa = client.check_zone(dns_domain)
+                if soa:
+                    console.print(f"  [green]✓[/green] Found zone: {dns_domain}  (serial: {soa.get('serial', '?')})")
+                    if Confirm.ask(f"  Add [bold]{dns_domain}[/bold] as a managed zone?", default=True):
+                        dns_zones.append(dns_domain)
+                        result["zones"] = dns_zones
+                else:
+                    console.print(f"  [yellow]Domain {dns_domain} is not a zone on this server.[/yellow]")
+                    console.print("  [dim]You can add zones later in the DNS Management screen (press z).[/dim]")
+            except Exception:
+                console.print("  [dim]Could not test — you can add zones later in the DNS Management screen.[/dim]")
+
         # Test DNS connectivity
         if Confirm.ask("\nTest DNS connection?", default=True):
             _test_dns_connection(console, result)

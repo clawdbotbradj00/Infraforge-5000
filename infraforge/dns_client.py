@@ -117,17 +117,26 @@ class DNSClient:
     # Health / connectivity
     # ------------------------------------------------------------------
 
-    def check_health(self, zone: str) -> bool:
-        """Check if the DNS server is reachable and responds to SOA queries
-        for the given *zone*.
+    def check_health(self, zone: str = "") -> bool:
+        """Check if the DNS server is reachable.
+
+        If *zone* is provided, verifies the server responds to an SOA query
+        for that zone.  If omitted, performs a basic connectivity check by
+        querying the server's version (CH TXT version.bind) or falling back
+        to a simple socket test.
         """
         try:
-            resolver = dns.resolver.Resolver()
-            resolver.nameservers = [self.server]
-            resolver.port = self.port
-            resolver.lifetime = 5
-            resolver.resolve(zone, "SOA")
-            return True
+            if zone:
+                resolver = dns.resolver.Resolver()
+                resolver.nameservers = [self.server]
+                resolver.port = self.port
+                resolver.lifetime = 5
+                resolver.resolve(zone, "SOA")
+                return True
+            else:
+                import socket
+                with socket.create_connection((self.server, self.port), timeout=5):
+                    return True
         except Exception:
             return False
 

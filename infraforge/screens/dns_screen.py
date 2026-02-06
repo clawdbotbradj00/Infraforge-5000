@@ -408,7 +408,11 @@ class DNSScreen(Screen):
         if self._zones:
             self.load_zone_data()
         else:
-            self._show_not_configured()
+            dns_cfg = self.app.config.dns
+            if dns_cfg.provider == "bind9" and dns_cfg.server:
+                self._show_no_zones()
+            else:
+                self._show_not_configured()
 
     # ------------------------------------------------------------------
     # Zone management helpers
@@ -534,6 +538,19 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
     # Display update helpers
     # ------------------------------------------------------------------
+
+    def _show_no_zones(self) -> None:
+        """DNS is configured but no zones are added yet."""
+        dns_cfg = self.app.config.dns
+        zone_info = self.query_one("#dns-zone-info", Static)
+        zone_info.update(
+            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
+            f"[bold]Provider:[/bold]   [green]{dns_cfg.provider}[/green]\n"
+            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
+            "[yellow]No zones configured yet.[/yellow]\n\n"
+            "Press [bold cyan]z[/bold cyan] to add a zone from your DNS server."
+        )
+        self._set_status("[dim]Press z to add a zone.[/dim]")
 
     def _show_not_configured(self) -> None:
         zone_info = self.query_one("#dns-zone-info", Static)
