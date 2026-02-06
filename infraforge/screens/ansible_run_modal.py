@@ -30,6 +30,7 @@ from textual.timer import Timer
 from textual.widgets import Button, Input, Static
 from textual import work
 
+from infraforge.ansible_parser import PlaybookProgress, HostStatus as ExecHostStatus
 from infraforge.ansible_runner import (
     PlaybookInfo,
     PlaybookRunner,
@@ -43,6 +44,20 @@ from infraforge.host_enrichment import HostInfo, enrich_hosts, check_nmap_availa
 
 if TYPE_CHECKING:
     pass
+
+
+def _state_display(state: str) -> tuple[str, str]:
+    """Return ``(icon, color)`` for an execution host state."""
+    return {
+        "waiting":      ("[dim]\u00b7[/dim]", "dim"),
+        "running":      ("[cyan]\u22ef[/cyan]", "cyan"),
+        "ok":           ("[green]\u2713[/green]", "green"),
+        "changed":      ("[yellow]\u2713[/yellow]", "yellow"),
+        "failed":       ("[red bold]\u2717[/red bold]", "red bold"),
+        "unreachable":  ("[red]\u2717[/red]", "red"),
+        "skipped":      ("[dim]-[/dim]", "dim"),
+        "done":         ("[green]\u2713[/green]", "green"),
+    }.get(state, ("[dim]?[/dim]", "dim"))
 
 
 class AnsibleRunModal(ModalScreen):
@@ -112,6 +127,20 @@ class AnsibleRunModal(ModalScreen):
         width: 100%;
     }
 
+    .exec-host-line {
+        height: auto;
+        min-height: 1;
+        max-height: 2;
+        padding: 0 1;
+    }
+
+    #exec-raw {
+        margin-top: 1;
+        padding: 0 1;
+        max-height: 6;
+        color: $text-muted;
+    }
+
     #run-console-input {
         dock: bottom;
         margin: 0;
@@ -156,6 +185,9 @@ class AnsibleRunModal(ModalScreen):
         self._log_path: Path | None = None
         self._runner: PlaybookRunner | None = None
         self._aborted: bool = False
+        self._progress: PlaybookProgress | None = None
+        self._raw_lines: list[str] = []       # last N raw output lines
+        self._task_estimate: int = 0          # from PlaybookInfo.task_count
         # IPAM
         self._subnets: list[dict] = []
         self._ipam_loaded: bool = False
@@ -377,8 +409,11 @@ class AnsibleRunModal(ModalScreen):
             if self._runner and self._runner.is_running:
                 text = event.input.value
                 self._runner.send_input(text + "\n")
-                # Echo what the user typed into the output area
-                self._append_output(f"> {text}\n", "status")
+                # Echo what the user typed in the raw area
+                self._raw_lines.append(f"> {text}")
+                if len(self._raw_lines) > 5:
+                    self._raw_lines = self._raw_lines[-5:]
+                self._update_raw_output()
                 event.input.value = ""
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -830,26 +865,51 @@ class AnsibleRunModal(ModalScreen):
             f"[bold]Run: {self._playbook.filename}[/bold]  Phase 4/4: Execution"
         )
 
-        # Clear prior content
+        # Clear prior content and stale widgets
         content = self.query_one("#run-phase-content", Static)
         content.update("")
         self._remove_cred_widgets()
         self._remove_cred_lines()
         self._remove_host_toggles()
         self._remove_console_input()
+        self._remove_exec_widgets()
 
         action_btn = self.query_one("#run-action-btn", Button)
         cancel_btn = self.query_one("#run-cancel-btn", Button)
+
+        scroll = self.query_one("#run-content", VerticalScroll)
 
         if self._is_running:
             action_btn.label = "Running..."
             action_btn.disabled = True
             cancel_btn.label = "Abort"
 
-            # Mount interactive console input at the bottom of the scroll area
-            scroll = self.query_one("#run-content", VerticalScroll)
+            # Header shows play/task — updated dynamically
+            content.update("[dim]Starting...[/dim]")
+
+            # Mount per-host status lines
+            included = self._get_included_ips()
+            col_header = (
+                f"[dim]      {'IP':<16}  {'Hostname':<24}"
+                f"{'Status':<14}{'Progress'}[/dim]"
+            )
+            scroll.mount(
+                Static(col_header, markup=True, id="exec-col-header", classes="exec-widget")
+            )
+            for idx, ip in enumerate(included):
+                label = self._format_exec_host_line(idx, ip)
+                scroll.mount(
+                    Static(label, markup=True, id=f"exec-host-{idx}", classes="exec-host-line exec-widget")
+                )
+
+            # Raw output area (last few lines for context)
+            scroll.mount(
+                Static("", markup=True, id="exec-raw", classes="exec-widget")
+            )
+
+            # Console input for interactive prompts
             console_input = Input(
-                placeholder="Type here to send input to the process (Enter to send)",
+                placeholder="Type here if the process needs input (Enter to send)",
                 id="run-console-input",
             )
             scroll.mount(console_input)
@@ -863,6 +923,11 @@ class AnsibleRunModal(ModalScreen):
     def _remove_console_input(self) -> None:
         """Remove the interactive console input widget."""
         for w in self.query("#run-console-input"):
+            w.remove()
+
+    def _remove_exec_widgets(self) -> None:
+        """Remove all execution dashboard widgets."""
+        for w in self.query(".exec-widget"):
             w.remove()
 
     def _remove_cred_widgets(self) -> None:
@@ -1463,6 +1528,145 @@ class AnsibleRunModal(ModalScreen):
             )
 
     # ------------------------------------------------------------------
+    # Execution dashboard display
+    # ------------------------------------------------------------------
+
+    # Column widths for exec host lines
+    _EXEC_COL_IP = 16
+    _EXEC_COL_HOST = 24
+    _EXEC_COL_STATUS = 14
+
+    def _format_exec_host_line(self, idx: int, ip: str) -> str:
+        """Build markup for a single host status line in the execution dashboard."""
+        progress = self._progress
+        host_st = progress.hosts.get(ip) if progress else None
+
+        # IP column
+        ip_padded = ip.ljust(self._EXEC_COL_IP)
+
+        # Hostname from enrichment data
+        info = self._host_info.get(ip)
+        hostname = ""
+        if info:
+            hostname = info.best_hostname
+        if not hostname:
+            hostname = "-"
+        if len(hostname) > self._EXEC_COL_HOST - 2:
+            hostname = hostname[: self._EXEC_COL_HOST - 5] + "..."
+        host_padded = hostname.ljust(self._EXEC_COL_HOST)
+
+        if host_st is None:
+            # No status yet
+            return f"      {ip_padded}  [dim]{host_padded}[/dim][dim]waiting[/dim]"
+
+        # Status with color and icon — use summary_state for "done" hosts
+        state = host_st.current_state
+        display_state = host_st.summary_state if state == "done" else state
+        icon, color = _state_display(display_state)
+        status_text = display_state.upper() if display_state in ("failed", "unreachable") else display_state
+        status_padded = status_text.ljust(self._EXEC_COL_STATUS)
+
+        # Progress counters
+        parts: list[str] = []
+        if host_st.ok:
+            parts.append(f"[green]ok:{host_st.ok}[/green]")
+        if host_st.changed:
+            parts.append(f"[yellow]changed:{host_st.changed}[/yellow]")
+        if host_st.failed:
+            parts.append(f"[red]failed:{host_st.failed}[/red]")
+        if host_st.skipped:
+            parts.append(f"[dim]skip:{host_st.skipped}[/dim]")
+        if host_st.unreachable:
+            parts.append(f"[red]unreach:{host_st.unreachable}[/red]")
+        progress_text = " ".join(parts) if parts else ""
+
+        # Error message (inline, truncated)
+        error = ""
+        if host_st.error_msg:
+            err_text = host_st.error_msg
+            if len(err_text) > 50:
+                err_text = err_text[:47] + "..."
+            error = f'  [red italic]"{err_text}"[/red italic]'
+
+        return (
+            f"  {icon}  {ip_padded}  "
+            f"[dim]{host_padded}[/dim]"
+            f"[{color}]{status_padded}[/{color}]"
+            f"{progress_text}{error}"
+        )
+
+    def _process_output(self, text: str) -> None:
+        """Parse PTY output and update the structured execution dashboard."""
+        if not self._progress:
+            return
+
+        needs_refresh = False
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Keep last N raw lines for the console area
+            self._raw_lines.append(stripped)
+            if len(self._raw_lines) > 5:
+                self._raw_lines = self._raw_lines[-5:]
+            # Feed to parser
+            if self._progress.feed_line(stripped):
+                needs_refresh = True
+
+        if needs_refresh:
+            self._refresh_execution_display()
+        else:
+            # At minimum update the raw output area
+            self._update_raw_output()
+
+    def _refresh_execution_display(self) -> None:
+        """Refresh the entire execution dashboard from current state."""
+        progress = self._progress
+        if not progress:
+            return
+
+        # Update header (play + task)
+        header_parts = []
+        if progress.current_play:
+            header_parts.append(f"[bold]Play:[/bold] {progress.current_play}")
+        if progress.current_task:
+            task_str = f"[bold]Task:[/bold] {progress.current_task}"
+            if self._task_estimate > 0:
+                task_str += f"  [dim]({progress.task_index} of ~{self._task_estimate})[/dim]"
+            else:
+                task_str += f"  [dim](#{progress.task_index})[/dim]"
+            header_parts.append(task_str)
+        elif progress.in_recap:
+            header_parts.append("[bold]Play Recap[/bold]")
+
+        if header_parts:
+            self._update_phase_content("\n".join(header_parts))
+
+        # Update per-host lines
+        included = self._get_included_ips()
+        for idx, ip in enumerate(included):
+            try:
+                line = self.query_one(f"#exec-host-{idx}", Static)
+                line.update(self._format_exec_host_line(idx, ip))
+            except Exception:
+                pass
+
+        # Update raw output area
+        self._update_raw_output()
+
+    def _update_raw_output(self) -> None:
+        """Update the raw console output area with recent lines."""
+        try:
+            raw_widget = self.query_one("#exec-raw", Static)
+            if self._raw_lines:
+                escaped = [self._esc(ln) for ln in self._raw_lines[-5:]]
+                raw_widget.update(
+                    "[dim]" + "\n".join(escaped) + "[/dim]"
+                )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
     # Phase 2 -> 3: Start execution
     # ------------------------------------------------------------------
 
@@ -1471,6 +1675,15 @@ class AnsibleRunModal(ModalScreen):
         self._is_running = True
         self._aborted = False
         self._run_start = time.monotonic()
+        self._raw_lines = []
+        self._task_estimate = self._playbook.task_count
+
+        # Initialize progress tracker with all included hosts
+        included = self._get_included_ips()
+        self._progress = PlaybookProgress(
+            hosts={ip: ExecHostStatus(ip=ip) for ip in included}
+        )
+
         self._render_phase()
         self._start_run_timer()
         self._execute_playbook()
@@ -1505,13 +1718,11 @@ class AnsibleRunModal(ModalScreen):
 
         try:
             cmd_str = runner.start()
-            self.app.call_from_thread(
-                self._append_output, f"$ {cmd_str}\n", "status"
-            )
+            self._raw_lines.append(f"$ {cmd_str}")
+            self.app.call_from_thread(self._update_raw_output)
         except FileNotFoundError as e:
-            self.app.call_from_thread(
-                self._append_output, f"{e}\n", "status"
-            )
+            self._raw_lines.append(str(e))
+            self.app.call_from_thread(self._update_raw_output)
             self._is_running = False
             self.app.call_from_thread(self._on_execution_done)
             return
@@ -1520,21 +1731,17 @@ class AnsibleRunModal(ModalScreen):
         while True:
             text = runner.read_output(timeout=0.2)
             if text:
-                self.app.call_from_thread(
-                    self._append_output, text, "stdout"
-                )
+                self.app.call_from_thread(self._process_output, text)
             if self._aborted:
                 runner.kill()
                 break
             if not runner.is_running:
-                # Drain any remaining output
+                # Drain remaining output
                 for _ in range(10):
                     leftover = runner.read_output(timeout=0.05)
                     if not leftover:
                         break
-                    self.app.call_from_thread(
-                        self._append_output, leftover, "stdout"
-                    )
+                    self.app.call_from_thread(self._process_output, leftover)
                 break
 
         self._exit_code = runner.exit_code
@@ -1550,48 +1757,51 @@ class AnsibleRunModal(ModalScreen):
         self._runner = None
         self.app.call_from_thread(self._on_execution_done)
 
-    def _append_output(self, text: str, stream_type: str) -> None:
-        scroll = self.query_one("#run-content", VerticalScroll)
-        css_class = "run-output-line"
 
-        # PTY output arrives in chunks — split into lines for display.
-        # Partial lines (no trailing newline) are displayed as-is so
-        # interactive prompts show immediately.
-        lines = text.split("\n")
-        for i, line in enumerate(lines):
-            # Skip empty trailing element from split
-            if i == len(lines) - 1 and not line:
-                continue
-            if stream_type == "status":
-                markup = f"[bold cyan]{self._esc(line)}[/bold cyan]"
-            else:
-                markup = self._esc(line)
-            widget = Static(markup, classes=css_class, markup=True)
-            # Insert before the console input (if present) so input stays at bottom
-            try:
-                console_input = self.query_one("#run-console-input", Input)
-                scroll.mount(widget, before=console_input)
-            except Exception:
-                scroll.mount(widget)
-
-        scroll.scroll_end(animate=False)
 
     def _on_execution_done(self) -> None:
         self._stop_run_timer()
         self._remove_console_input()
         elapsed = time.monotonic() - self._run_start
-
-        # Show exit code in output area
         ec = self._exit_code
-        if ec is not None and not self._aborted:
-            color = "green" if ec == 0 else "red"
-            self._append_output(
-                f"\nCompleted with exit code {ec}\n", "status"
+
+        # Refresh host lines one final time with "done" state
+        if self._progress:
+            self._refresh_execution_display()
+
+        # Update header to summary
+        summary_parts = []
+        if self._progress:
+            ok_count = sum(
+                1 for h in self._progress.hosts.values()
+                if h.summary_state in ("ok", "changed")
             )
-            if self._log_path:
-                self._append_output(
-                    f"Log saved to {self._log_path}\n", "status"
-                )
+            fail_count = sum(
+                1 for h in self._progress.hosts.values()
+                if h.summary_state == "failed"
+            )
+            unreach_count = sum(
+                1 for h in self._progress.hosts.values()
+                if h.summary_state == "unreachable"
+            )
+            parts = []
+            if ok_count:
+                parts.append(f"[green]{ok_count} succeeded[/green]")
+            if fail_count:
+                parts.append(f"[red]{fail_count} failed[/red]")
+            if unreach_count:
+                parts.append(f"[red]{unreach_count} unreachable[/red]")
+            summary_parts.append("[bold]Summary:[/bold]  " + ", ".join(parts))
+        if ec is not None and not self._aborted:
+            ec_color = "green" if ec == 0 else "red"
+            summary_parts.append(f"[{ec_color}]Exit code: {ec}[/{ec_color}]")
+        if self._log_path:
+            summary_parts.append(f"[dim]Log: {self._log_path}[/dim]")
+        if self._progress and self._progress.warnings:
+            wc = len(self._progress.warnings)
+            summary_parts.append(f"[yellow]{wc} warning(s)[/yellow]")
+        if summary_parts:
+            self._update_phase_content("\n".join(summary_parts))
 
         action_btn = self.query_one("#run-action-btn", Button)
         action_btn.label = "Close"
@@ -1630,7 +1840,8 @@ class AnsibleRunModal(ModalScreen):
         if self._runner:
             self._runner.kill()
         self._remove_console_input()
-        self._append_output("\n--- Aborted by user ---\n", "status")
+        self._raw_lines.append("--- Aborted by user ---")
+        self._update_raw_output()
 
     # ------------------------------------------------------------------
     # IPAM integration
