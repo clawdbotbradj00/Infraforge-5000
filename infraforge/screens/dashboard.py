@@ -39,6 +39,7 @@ class DashboardScreen(Screen):
         yield Header()
         with Container(id="dashboard-container"):
             yield Static("", id="update-banner", markup=True, classes="hidden")
+            yield Static("", id="ai-setup-banner", markup=True, classes="hidden")
             yield Static("Dashboard", classes="section-title")
             with Horizontal(id="stats-row"):
                 with Container(classes="stat-card"):
@@ -75,6 +76,7 @@ class DashboardScreen(Screen):
     def on_mount(self):
         self._start_auto_refresh()
         self._check_for_update()
+        self._check_ai_config()
 
     def on_screen_resume(self):
         """Refresh data when returning to the dashboard from another screen."""
@@ -254,6 +256,21 @@ class DashboardScreen(Screen):
             result = check_for_update()
             if result:
                 self.app.call_from_thread(self._show_update_banner, result)
+        except Exception:
+            pass
+
+    def _check_ai_config(self):
+        """Show a hint banner if AI is not configured."""
+        try:
+            ai_key = self.app.config.ai.api_key
+            if not ai_key:
+                banner = self.query_one("#ai-setup-banner", Static)
+                banner.update(
+                    "  [dim]AI features are available![/dim]  "
+                    "Run [bold white on dark_blue] infraforge setup [/bold white on dark_blue] "
+                    "to add your Anthropic API key"
+                )
+                banner.remove_class("hidden")
         except Exception:
             pass
 

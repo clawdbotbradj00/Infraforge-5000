@@ -61,18 +61,70 @@ def _detect_missing(existing: dict) -> list[str]:
 # AI Configuration
 # =====================================================================
 
+def _fetch_anthropic_models(api_key: str) -> list[dict]:
+    """Fetch available models from the Anthropic API.
+
+    Returns a list of dicts with 'id' and 'display_name', sorted with
+    Opus models first, then by display_name.
+    """
+    import json
+    import urllib.request
+    import urllib.error
+
+    url = "https://api.anthropic.com/v1/models?limit=100"
+    req = urllib.request.Request(url, headers={
+        "X-Api-Key": api_key,
+        "anthropic-version": "2023-06-01",
+    })
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, Exception):
+        return []
+
+    models = data.get("data", [])
+
+    # Filter to chat-capable models (skip embedding/legacy)
+    result = []
+    for m in models:
+        mid = m.get("id", "")
+        name = m.get("display_name", mid)
+        # Skip very old models
+        if "claude-1" in mid or "claude-instant" in mid:
+            continue
+        result.append({"id": mid, "display_name": name})
+
+    # Sort: Opus first, then Sonnet, then Haiku, then rest — within each tier, alphabetical
+    def _sort_key(m):
+        mid = m["id"].lower()
+        if "opus" in mid:
+            tier = 0
+        elif "sonnet" in mid:
+            tier = 1
+        elif "haiku" in mid:
+            tier = 2
+        else:
+            tier = 3
+        return (tier, m["display_name"])
+
+    result.sort(key=_sort_key)
+    return result
+
+
 def _configure_ai(console: Console, prev: dict | None = None) -> dict:
     """Configure AI provider settings."""
     prev = prev or {}
     console.print("\n[bold cyan]─── AI Configuration ───[/bold cyan]\n")
     console.print("[dim]An Anthropic API key enables AI-assisted features like[/dim]")
-    console.print("[dim]natural language playbook generation and smart suggestions.[/dim]\n")
+    console.print("[dim]natural language playbook generation, smart suggestions,[/dim]")
+    console.print("[dim]and an AI chat overlay throughout InfraForge.[/dim]\n")
 
     if not Confirm.ask("Configure AI provider?", default=True):
         return prev or {"provider": "", "api_key": "", "model": "claude-sonnet-4-5-20250929"}
 
     provider = "anthropic"
-    console.print(f"  Provider: [bold]{provider}[/bold]")
+    console.print(f"  Provider: [bold]{provider}[/bold]\n")
 
     prev_key = prev.get("api_key", "")
     if prev_key:
@@ -81,16 +133,67 @@ def _configure_ai(console: Console, prev: dict | None = None) -> dict:
         if Confirm.ask("  Keep existing API key?", default=True):
             api_key = prev_key
         else:
+            console.print()
+            console.print("  [bold]To get an API key:[/bold]")
+            console.print("  1. Visit [bold cyan]https://console.anthropic.com/settings/keys[/bold cyan]")
+            console.print("  2. Click [bold]Create Key[/bold] and copy the key starting with [bold]sk-ant-...[/bold]")
+            console.print()
             api_key = Prompt.ask("  Anthropic API Key", password=True)
     else:
+        console.print("  [bold]To get an API key:[/bold]")
+        console.print("  1. Visit [bold cyan]https://console.anthropic.com/settings/keys[/bold cyan]")
+        console.print("  2. Click [bold]Create Key[/bold] and copy the key starting with [bold]sk-ant-...[/bold]")
+        console.print()
         api_key = Prompt.ask("  Anthropic API Key (sk-ant-...)", password=True)
 
-    model = Prompt.ask(
-        "  Model",
-        default=prev.get("model", "claude-sonnet-4-5-20250929"),
-    )
+    if not api_key:
+        console.print("  [yellow]No API key provided — AI features will be disabled.[/yellow]")
+        return {"provider": "", "api_key": "", "model": "claude-sonnet-4-5-20250929"}
 
-    console.print(f"  [green]✓[/green] AI configured: {provider} / {model}")
+    # Poll Anthropic for available models
+    console.print("\n  [dim]Fetching available models from Anthropic...[/dim]")
+    models = _fetch_anthropic_models(api_key)
+
+    if models:
+        console.print(f"  [green]✓[/green] Found {len(models)} models\n")
+
+        # Show numbered list
+        prev_model = prev.get("model", "")
+        default_idx = 1
+        for i, m in enumerate(models, 1):
+            marker = ""
+            if m["id"] == prev_model:
+                marker = " [bold yellow](current)[/bold yellow]"
+                default_idx = i
+            tier_color = "bold magenta" if "opus" in m["id"].lower() else \
+                         "cyan" if "sonnet" in m["id"].lower() else \
+                         "green" if "haiku" in m["id"].lower() else "dim"
+            console.print(f"  [{tier_color}]{i:>3})[/{tier_color}]  {m['display_name']}  [dim]({m['id']})[/dim]{marker}")
+
+        console.print()
+        choice = Prompt.ask(
+            "  Select model number",
+            default=str(default_idx),
+        )
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(models):
+                model = models[idx]["id"]
+            else:
+                console.print("  [yellow]Invalid selection, using default.[/yellow]")
+                model = models[0]["id"]
+        except ValueError:
+            console.print("  [yellow]Invalid input, using default.[/yellow]")
+            model = models[0]["id"]
+    else:
+        console.print("  [yellow]Could not fetch models (check your API key / network).[/yellow]")
+        console.print("  [dim]Falling back to manual entry.[/dim]\n")
+        model = Prompt.ask(
+            "  Model ID",
+            default=prev.get("model", "claude-sonnet-4-5-20250929"),
+        )
+
+    console.print(f"\n  [green]✓[/green] AI configured: [bold]{provider}[/bold] / [bold]{model}[/bold]")
     return {
         "provider": provider,
         "api_key": api_key,
@@ -124,6 +227,8 @@ def run_setup_wizard():
             configured.append(f"DNS ([green]{existing['dns'].get('provider', '?')}[/green])")
         if "ipam" not in missing:
             configured.append(f"IPAM ([green]{existing['ipam'].get('url', '?')}[/green])")
+        if "ai" not in missing:
+            configured.append(f"AI ([green]{existing['ai'].get('model', '?')}[/green])")
 
         if configured:
             console.print("[bold]Already configured:[/bold]")
