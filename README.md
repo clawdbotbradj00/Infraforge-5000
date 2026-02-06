@@ -1,11 +1,5 @@
 <div align="center">
 
-# InfraForge
-
-**A powerful terminal UI for managing Proxmox VE infrastructure**
-
-Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible playbook execution, and an AI copilot powered by Claude.
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![GitHub release](https://img.shields.io/github/v/release/clawdbotbradj00/InfraForge?include_prereleases&sort=semver)](https://github.com/clawdbotbradj00/InfraForge/releases)
@@ -19,6 +13,14 @@ Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible 
 [![BIND9 DNS](https://img.shields.io/badge/BIND9-DNS_Automation-4A8CC2?logo=internetexplorer&logoColor=white)](https://www.isc.org/bind/)
 [![Ansible](https://img.shields.io/badge/Ansible-Playbook_Runner-EE0000?logo=ansible&logoColor=white)](https://www.ansible.com/)
 [![Claude AI](https://img.shields.io/badge/Claude-AI_Copilot-D4A574?logo=anthropic&logoColor=white)](https://claude.ai/)
+
+<img src="assets/logo.png" alt="InfraForge Logo" width="400">
+
+# InfraForge
+
+**A powerful terminal UI for managing Proxmox VE infrastructure**
+
+Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible playbook execution, and an AI copilot powered by Claude.
 
 </div>
 
