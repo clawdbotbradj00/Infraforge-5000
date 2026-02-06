@@ -17,7 +17,6 @@ Phase 3 — Execution
 
 from __future__ import annotations
 
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,11 +32,11 @@ from textual import work
 
 from infraforge.ansible_runner import (
     PlaybookInfo,
+    PlaybookRunner,
     build_credential_args,
     generate_inventory,
     parse_ip_ranges,
     ping_sweep,
-    run_playbook,
 )
 from infraforge.credential_manager import CredentialManager, CredentialProfile
 from infraforge.host_enrichment import HostInfo, enrich_hosts, check_nmap_available
@@ -112,6 +111,16 @@ class AnsibleRunModal(ModalScreen):
     .run-output-line {
         width: 100%;
     }
+
+    #run-console-input {
+        dock: bottom;
+        margin: 0;
+        border-top: solid $accent;
+    }
+
+    #run-console-input:focus {
+        border-top: solid $success;
+    }
     """
 
     def __init__(self, playbook: PlaybookInfo) -> None:
@@ -145,7 +154,7 @@ class AnsibleRunModal(ModalScreen):
         self._run_timer: Timer | None = None
         self._exit_code: int | None = None
         self._log_path: Path | None = None
-        self._process: subprocess.Popen | None = None
+        self._runner: PlaybookRunner | None = None
         self._aborted: bool = False
         # IPAM
         self._subnets: list[dict] = []
@@ -360,9 +369,17 @@ class AnsibleRunModal(ModalScreen):
                 pass
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Enter pressed in an Input — start scan if in Phase 0."""
+        """Enter pressed in an Input — handle per-phase."""
         if self._phase == 0 and event.input.id == "run-ip-input":
             self._start_scan()
+        elif self._phase == 3 and event.input.id == "run-console-input":
+            # Send user input to the running subprocess via PTY
+            if self._runner and self._runner.is_running:
+                text = event.input.value
+                self._runner.send_input(text + "\n")
+                # Echo what the user typed into the output area
+                self._append_output(f"> {text}\n", "status")
+                event.input.value = ""
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -819,6 +836,7 @@ class AnsibleRunModal(ModalScreen):
         self._remove_cred_widgets()
         self._remove_cred_lines()
         self._remove_host_toggles()
+        self._remove_console_input()
 
         action_btn = self.query_one("#run-action-btn", Button)
         cancel_btn = self.query_one("#run-cancel-btn", Button)
@@ -827,11 +845,25 @@ class AnsibleRunModal(ModalScreen):
             action_btn.label = "Running..."
             action_btn.disabled = True
             cancel_btn.label = "Abort"
+
+            # Mount interactive console input at the bottom of the scroll area
+            scroll = self.query_one("#run-content", VerticalScroll)
+            console_input = Input(
+                placeholder="Type here to send input to the process (Enter to send)",
+                id="run-console-input",
+            )
+            scroll.mount(console_input)
+            console_input.focus()
         else:
             action_btn.label = "Close"
             action_btn.variant = "default"
             action_btn.disabled = False
             cancel_btn.label = "Close"
+
+    def _remove_console_input(self) -> None:
+        """Remove the interactive console input widget."""
+        for w in self.query("#run-console-input"):
+            w.remove()
 
     def _remove_cred_widgets(self) -> None:
         """Remove all credential-phase widgets from the DOM."""
@@ -1461,23 +1493,52 @@ class AnsibleRunModal(ModalScreen):
         if self._selected_credential:
             cred_args, cred_env = build_credential_args(self._selected_credential)
 
+        # Create interactive runner with PTY
+        runner = PlaybookRunner(
+            self._playbook.path,
+            inv_path,
+            self._log_path,
+            credential_args=cred_args,
+            credential_env=cred_env,
+        )
+        self._runner = runner
+
         try:
-            for line, stream_type in run_playbook(
-                self._playbook.path,
-                inv_path,
-                self._log_path,
-                credential_args=cred_args,
-                credential_env=cred_env,
-            ):
-                if self._aborted:
-                    break
-                self.app.call_from_thread(
-                    self._append_output, line, stream_type
-                )
-        except Exception as e:
+            cmd_str = runner.start()
             self.app.call_from_thread(
-                self._append_output, f"Error: {e}\n", "status"
+                self._append_output, f"$ {cmd_str}\n", "status"
             )
+        except FileNotFoundError as e:
+            self.app.call_from_thread(
+                self._append_output, f"{e}\n", "status"
+            )
+            self._is_running = False
+            self.app.call_from_thread(self._on_execution_done)
+            return
+
+        # Read loop — pull output from the PTY until the process exits
+        while True:
+            text = runner.read_output(timeout=0.2)
+            if text:
+                self.app.call_from_thread(
+                    self._append_output, text, "stdout"
+                )
+            if self._aborted:
+                runner.kill()
+                break
+            if not runner.is_running:
+                # Drain any remaining output
+                for _ in range(10):
+                    leftover = runner.read_output(timeout=0.05)
+                    if not leftover:
+                        break
+                    self.app.call_from_thread(
+                        self._append_output, leftover, "stdout"
+                    )
+                break
+
+        self._exit_code = runner.exit_code
+        runner.cleanup()
 
         # Clean up temp inventory
         try:
@@ -1486,22 +1547,51 @@ class AnsibleRunModal(ModalScreen):
             pass
 
         self._is_running = False
+        self._runner = None
         self.app.call_from_thread(self._on_execution_done)
 
-    def _append_output(self, line: str, stream_type: str) -> None:
+    def _append_output(self, text: str, stream_type: str) -> None:
         scroll = self.query_one("#run-content", VerticalScroll)
         css_class = "run-output-line"
-        if stream_type == "status":
-            markup = f"[bold cyan]{self._esc(line)}[/bold cyan]"
-        else:
-            markup = self._esc(line.rstrip())
-        widget = Static(markup, classes=css_class, markup=True)
-        scroll.mount(widget)
+
+        # PTY output arrives in chunks — split into lines for display.
+        # Partial lines (no trailing newline) are displayed as-is so
+        # interactive prompts show immediately.
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            # Skip empty trailing element from split
+            if i == len(lines) - 1 and not line:
+                continue
+            if stream_type == "status":
+                markup = f"[bold cyan]{self._esc(line)}[/bold cyan]"
+            else:
+                markup = self._esc(line)
+            widget = Static(markup, classes=css_class, markup=True)
+            # Insert before the console input (if present) so input stays at bottom
+            try:
+                console_input = self.query_one("#run-console-input", Input)
+                scroll.mount(widget, before=console_input)
+            except Exception:
+                scroll.mount(widget)
+
         scroll.scroll_end(animate=False)
 
     def _on_execution_done(self) -> None:
         self._stop_run_timer()
+        self._remove_console_input()
         elapsed = time.monotonic() - self._run_start
+
+        # Show exit code in output area
+        ec = self._exit_code
+        if ec is not None and not self._aborted:
+            color = "green" if ec == 0 else "red"
+            self._append_output(
+                f"\nCompleted with exit code {ec}\n", "status"
+            )
+            if self._log_path:
+                self._append_output(
+                    f"Log saved to {self._log_path}\n", "status"
+                )
 
         action_btn = self.query_one("#run-action-btn", Button)
         action_btn.label = "Close"
@@ -1537,17 +1627,9 @@ class AnsibleRunModal(ModalScreen):
     def _abort_execution(self) -> None:
         self._aborted = True
         self._stop_run_timer()
-        try:
-            import os as _os
-
-            pid = _os.getpid()
-            subprocess.run(
-                ["pkill", "-P", str(pid), "ansible-playbook"],
-                capture_output=True,
-            )
-        except Exception:
-            pass
-
+        if self._runner:
+            self._runner.kill()
+        self._remove_console_input()
         self._append_output("\n--- Aborted by user ---\n", "status")
 
     # ------------------------------------------------------------------

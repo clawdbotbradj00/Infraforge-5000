@@ -6,8 +6,11 @@ All functions are synchronous and designed to be called from Textual
 
 from __future__ import annotations
 
+import glob as glob_mod
 import ipaddress
 import os
+import pty
+import select
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -285,6 +288,9 @@ def build_credential_args(
 
     Returns ``(args_list, env_dict)`` suitable for passing to
     :func:`run_playbook` as *credential_args* and *credential_env*.
+
+    For password auth, credentials are passed via a temporary extra-vars
+    file (``@path``) to keep them out of the process table.
     """
     from infraforge.credential_manager import CredentialProfile  # noqa: F811
 
@@ -299,18 +305,45 @@ def build_credential_args(
             args.extend(["--private-key", profile.private_key_path])
     elif profile.auth_type == "password":
         if profile.password:
-            env["ANSIBLE_SSH_PASS"] = profile.password
+            # Write credentials to a temp file for --extra-vars @file
+            # This avoids exposing passwords in the process table
+            cred_vars: dict[str, str] = {
+                "ansible_ssh_pass": profile.password,
+            }
+            become_pass = profile.become_pass or profile.password
+            if profile.become:
+                cred_vars["ansible_become_pass"] = become_pass
+            cred_file = _write_credential_vars(cred_vars)
+            args.extend(["--extra-vars", f"@{cred_file}"])
 
     if profile.become:
         args.append("--become")
         if profile.become_method:
             args.extend(["--become-method", profile.become_method])
-        if profile.become_pass:
-            env["ANSIBLE_BECOME_PASS"] = profile.become_pass
-        elif profile.auth_type == "password" and profile.password:
-            env["ANSIBLE_BECOME_PASS"] = profile.password
+        # If become_pass was set separately (not via password auth above)
+        if profile.become_pass and profile.auth_type != "password":
+            cred_vars = {"ansible_become_pass": profile.become_pass}
+            cred_file = _write_credential_vars(cred_vars)
+            args.extend(["--extra-vars", f"@{cred_file}"])
 
     return args, env
+
+
+def _write_credential_vars(cred_vars: dict[str, str]) -> Path:
+    """Write credential variables to a secure temp file.
+
+    Returns the path.  Caller (run_playbook) should clean up after use.
+    The file has ``0o600`` permissions.
+    """
+    fd, tmp = tempfile.mkstemp(suffix=".yml", prefix="infraforge_creds_")
+    path = Path(tmp)
+    os.close(fd)
+    path.write_text(yaml.dump(cred_vars, default_flow_style=False))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
 
 
 def run_playbook(
@@ -340,7 +373,11 @@ def run_playbook(
 
     yield (f"$ {' '.join(cmd)}\n", "status")
 
-    run_env = {**os.environ, "ANSIBLE_FORCE_COLOR": "false"}
+    run_env = {
+        **os.environ,
+        "ANSIBLE_FORCE_COLOR": "false",
+        "ANSIBLE_HOST_KEY_CHECKING": "False",
+    }
     if credential_env:
         run_env.update(credential_env)
 
@@ -389,3 +426,188 @@ def run_playbook(
     color = "green" if exit_code == 0 else "red"
     yield (f"\nCompleted with exit code {exit_code}\n", "status")
     yield (f"Log saved to {log_path}\n", "status")
+
+
+# ---------------------------------------------------------------------------
+# Interactive playbook runner (PTY-based)
+# ---------------------------------------------------------------------------
+
+class PlaybookRunner:
+    """Run ``ansible-playbook`` with a pseudo-terminal for interactive I/O.
+
+    Unlike :func:`run_playbook` (a generator), this class gives the caller
+    control over reading output and sending input — ideal for embedding an
+    interactive console inside a TUI.
+    """
+
+    def __init__(
+        self,
+        playbook_path: str | Path,
+        inventory_path: str | Path,
+        log_path: str | Path,
+        extra_args: list[str] | None = None,
+        credential_args: list[str] | None = None,
+        credential_env: dict[str, str] | None = None,
+    ):
+        self._playbook_path = Path(playbook_path)
+        self._inventory_path = Path(inventory_path)
+        self._log_path = Path(log_path)
+        self._extra_args = extra_args or []
+        self._credential_args = credential_args or []
+        self._credential_env = credential_env or {}
+        self._process: subprocess.Popen | None = None
+        self._master_fd: int | None = None
+        self._log_file = None
+        self._exit_code: int | None = None
+
+    # -- state queries -------------------------------------------------------
+
+    @property
+    def is_running(self) -> bool:
+        if self._process is None:
+            return False
+        rc = self._process.poll()
+        if rc is not None:
+            self._exit_code = rc
+        return rc is None
+
+    @property
+    def exit_code(self) -> int | None:
+        if self._process is not None and self._exit_code is None:
+            rc = self._process.poll()
+            if rc is not None:
+                self._exit_code = rc
+        return self._exit_code
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def start(self) -> str:
+        """Start the subprocess with a PTY.  Returns the command string."""
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "ansible-playbook",
+            "-i", str(self._inventory_path),
+            str(self._playbook_path),
+        ]
+        if self._credential_args:
+            cmd.extend(self._credential_args)
+        if self._extra_args:
+            cmd.extend(self._extra_args)
+
+        cmd_str = " ".join(cmd)
+
+        # Create PTY so ansible (and SSH) see a real terminal
+        master_fd, slave_fd = pty.openpty()
+        self._master_fd = master_fd
+
+        run_env = {
+            **os.environ,
+            "ANSIBLE_FORCE_COLOR": "false",
+            "ANSIBLE_HOST_KEY_CHECKING": "False",
+        }
+        run_env.update(self._credential_env)
+
+        self._log_file = open(self._log_path, "w")
+        self._log_file.write(f"# InfraForge Ansible Run\n")
+        self._log_file.write(f"# Command: {cmd_str}\n")
+        self._log_file.write(f"# Started: {datetime.now().isoformat()}\n\n")
+
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=run_env,
+                close_fds=True,
+            )
+        except FileNotFoundError:
+            os.close(slave_fd)
+            os.close(master_fd)
+            self._master_fd = None
+            if self._log_file:
+                self._log_file.write("ansible-playbook not found.\n")
+                self._log_file.close()
+                self._log_file = None
+            raise FileNotFoundError(
+                "ansible-playbook not found. Install Ansible first."
+            )
+
+        # Close slave in parent — child has its own copy
+        os.close(slave_fd)
+        return cmd_str
+
+    def read_output(self, timeout: float = 0.1) -> str:
+        """Read available output from the PTY master fd.
+
+        Returns decoded text (may be empty if nothing ready).  Strips
+        carriage-returns that the PTY inserts.
+        """
+        if self._master_fd is None:
+            return ""
+
+        try:
+            ready, _, _ = select.select([self._master_fd], [], [], timeout)
+            if not ready:
+                return ""
+            data = os.read(self._master_fd, 8192)
+            if not data:
+                return ""
+            text = data.decode("utf-8", errors="replace").replace("\r", "")
+            if self._log_file:
+                self._log_file.write(text)
+                self._log_file.flush()
+            return text
+        except (OSError, ValueError):
+            return ""
+
+    def send_input(self, text: str) -> None:
+        """Write *text* to the subprocess via the PTY (e.g. ``"yes\\n"``)."""
+        if self._master_fd is not None:
+            try:
+                os.write(self._master_fd, text.encode("utf-8"))
+            except OSError:
+                pass
+
+    def kill(self) -> None:
+        """Kill the subprocess."""
+        if self._process is not None:
+            try:
+                self._process.kill()
+                self._process.wait()
+            except Exception:
+                pass
+            self._exit_code = self._process.returncode
+
+    def cleanup(self) -> None:
+        """Close PTY, log file, and remove temp credential files."""
+        # Close master fd
+        if self._master_fd is not None:
+            try:
+                os.close(self._master_fd)
+            except OSError:
+                pass
+            self._master_fd = None
+
+        # Finalize log
+        if self._log_file is not None:
+            ec = self._exit_code if self._exit_code is not None else "?"
+            self._log_file.write(f"\n# Exit code: {ec}\n")
+            self._log_file.close()
+            self._log_file = None
+
+        # Clean up temp credential files written by build_credential_args
+        _cleanup_credential_files()
+
+
+def _cleanup_credential_files() -> None:
+    """Remove any ``infraforge_creds_*.yml`` temp files."""
+    import tempfile as _tmp
+
+    pattern = os.path.join(_tmp.gettempdir(), "infraforge_creds_*.yml")
+    for f in glob_mod.glob(pattern):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
