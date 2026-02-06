@@ -76,7 +76,7 @@ def _make_vm_label(t: Template) -> Text:
     label = Text()
     label.append(vmid_col, style="bold")
     label.append(name_col, style="bold bright_white")
-    label.append("\t", style="default")
+    label.append("    ", style="default")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
     return label
@@ -90,7 +90,7 @@ def _make_ct_label(t: Template) -> Text:
     size_col = t.size_display
     label = Text()
     label.append(name_col, style="bold bright_magenta")
-    label.append("\t", style="default")
+    label.append("    ", style="default")
     label.append(storage_col, style="yellow")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
@@ -112,7 +112,7 @@ def _make_iso_label(t: Template) -> Text:
     size_col = t.size_display
     label = Text()
     label.append(name_col, style=name_style)
-    label.append("\t", style="default")
+    label.append("    ", style="default")
     label.append(storage_col, style="yellow")
     label.append(node_col, style="cyan")
     label.append(size_col, style="green" if t.size > 0 else "dim")
