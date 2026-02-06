@@ -624,8 +624,10 @@ class IPAMScreen(Screen):
 
     def _show_error(self, error: str) -> None:
         overview = self.query_one("#ipam-overview", Static)
-        overview.update(f"[red]Error: {error}[/red]")
-        self._set_status(f"[red]Error: {error}[/red]")
+        from rich.markup import escape
+        safe = escape(str(error))
+        overview.update(f"[red]Error: {safe}[/red]")
+        self._set_status(f"[red]Error: {safe}[/red]")
 
     def _set_status(self, text: str) -> None:
         self.query_one("#ipam-status-bar", Static).update(text)
@@ -686,7 +688,7 @@ class IPAMScreen(Screen):
             "[yellow bold]Getting Started[/yellow bold]\n\n"
             "Your IPAM is connected but has no subnets or VLANs yet.\n"
             "To begin managing IP addresses, set up your network in the phpIPAM web UI:\n\n"
-            f"  1. Open [link={ipam_cfg.url}][bold cyan]{ipam_cfg.url}[/bold cyan][/link]\n"
+            f"  1. Open [bold cyan]{ipam_cfg.url}[/bold cyan]\n"
             "  2. [bold]Create a section[/bold] (Administration > Sections) to group your subnets\n"
             "  3. [bold]Add subnets[/bold] (Subnets > + Add subnet) for your network ranges\n"
             "  4. [bold]Add VLANs[/bold] (optional: Subnets > VLANs > + Add VLAN)\n"
