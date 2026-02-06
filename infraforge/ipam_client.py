@@ -249,6 +249,23 @@ class IPAMClient:
             ips = self.get_available_ips(subnet_id, count=1)
             return ips[0] if ips else ""
 
+    def search_ip(self, ip: str) -> dict | None:
+        """Search for an IP address across all subnets.
+
+        Uses the phpIPAM ``/addresses/search/{ip}/`` endpoint.
+        Returns the address dict (with ``ip``, ``hostname``,
+        ``description``, ``subnetId``, etc.) or ``None`` if not found.
+        """
+        try:
+            result = self._get(f"/addresses/search/{ip}/")
+            if isinstance(result, list) and result:
+                return result[0]
+            if isinstance(result, dict):
+                return result
+        except IPAMError:
+            pass
+        return None
+
     def create_address(
         self,
         ip: str,

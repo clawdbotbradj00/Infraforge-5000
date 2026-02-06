@@ -1,6 +1,6 @@
-"""Ansible Run Modal — target selection, ping sweep, and live execution.
+"""Ansible Run Modal — target selection, ping sweep, credential selection, and live execution.
 
-A full-screen modal overlay with three phases:
+A full-screen modal overlay with four phases:
 
 Phase 0 — Target Selection
     Enter IP ranges manually or import from IPAM subnets.
@@ -8,7 +8,10 @@ Phase 0 — Target Selection
 Phase 1 — Ping Sweep
     Validate which hosts are alive before running.
 
-Phase 2 — Execution
+Phase 2 — Credential Selection
+    Pick or create a credential profile for authentication.
+
+Phase 3 — Execution
     Stream ``ansible-playbook`` output live with elapsed timer.
 """
 
@@ -30,11 +33,14 @@ from textual import work
 
 from infraforge.ansible_runner import (
     PlaybookInfo,
+    build_credential_args,
     generate_inventory,
     parse_ip_ranges,
     ping_sweep,
     run_playbook,
 )
+from infraforge.credential_manager import CredentialManager, CredentialProfile
+from infraforge.host_enrichment import HostInfo, enrich_hosts, check_nmap_available
 
 if TYPE_CHECKING:
     pass
@@ -112,6 +118,7 @@ class AnsibleRunModal(ModalScreen):
         super().__init__()
         self._playbook = playbook
         self._phase: int = 0
+        # Phase 0/1 — target + scan
         self._resolved_ips: list[str] = []
         self._alive_ips: list[str] = []
         self._dead_ips: list[str] = []
@@ -119,6 +126,18 @@ class AnsibleRunModal(ModalScreen):
         self._scan_done: int = 0
         self._scan_alive: int = 0
         self._is_scanning: bool = False
+        self._host_included: dict[str, bool] = {}  # IP -> included toggle
+        self._host_cursor: int = 0                    # keyboard cursor index
+        self._host_info: dict[str, HostInfo] = {}     # IP -> enrichment data
+        self._enriching: bool = False
+        # Phase 2 — credentials
+        self._credential_mgr = CredentialManager()
+        self._credential_profiles: list[CredentialProfile] = []
+        self._selected_credential: CredentialProfile | None = None
+        self._show_new_credential_form: bool = False
+        self._new_cred_auth_type: str = "password"
+        self._generated_pubkey: str = ""
+        # Phase 3 — execution
         self._is_running: bool = False
         self._run_start: float = 0.0
         self._run_timer: Timer | None = None
@@ -126,6 +145,7 @@ class AnsibleRunModal(ModalScreen):
         self._log_path: Path | None = None
         self._process: subprocess.Popen | None = None
         self._aborted: bool = False
+        # IPAM
         self._subnets: list[dict] = []
         self._ipam_loaded: bool = False
 
@@ -160,13 +180,66 @@ class AnsibleRunModal(ModalScreen):
         else:
             self.app.pop_screen()
 
+    def on_key(self, event) -> None:
+        """Handle arrow keys and Enter/Space for host toggle list in Phase 1."""
+        if self._phase != 1 or self._is_scanning or not self._alive_ips:
+            return
+
+        # Don't intercept keys when a Button or Input is focused
+        focused = self.focused
+        if isinstance(focused, (Button, Input)):
+            return
+
+        if event.key == "up":
+            event.prevent_default()
+            event.stop()
+            if self._host_cursor > 0:
+                self._host_cursor -= 1
+                self._refresh_host_lines()
+                self._scroll_to_host_cursor()
+        elif event.key == "down":
+            event.prevent_default()
+            event.stop()
+            if self._host_cursor < len(self._alive_ips) - 1:
+                self._host_cursor += 1
+                self._refresh_host_lines()
+                self._scroll_to_host_cursor()
+        elif event.key in ("enter", "space"):
+            event.prevent_default()
+            event.stop()
+            self._toggle_host(self._host_cursor)
+
+    def on_click(self, event) -> None:
+        """Handle mouse clicks on host lines."""
+        widget = event.widget
+        if widget and hasattr(widget, "id") and widget.id and widget.id.startswith("host-line-"):
+            try:
+                idx = int(widget.id.split("-")[-1])
+                if 0 <= idx < len(self._alive_ips):
+                    self._host_cursor = idx
+                    self._toggle_host(idx)
+            except (ValueError, IndexError):
+                pass
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter pressed in an Input — start scan if in Phase 0."""
+        if self._phase == 0 and event.input.id == "run-ip-input":
+            self._start_scan()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
+        if not btn_id:
+            return
+
+        # --- Bottom action bar ---
         if btn_id == "run-cancel-btn":
             if self._is_running:
                 self._abort_execution()
+            elif self._phase == 2 and not self._show_new_credential_form:
+                self._phase = 1
+                self._is_scanning = False
+                self._render_phase()
             elif self._phase == 1 and not self._is_scanning:
-                # Back to target selection
                 self._phase = 0
                 self._render_phase()
             else:
@@ -176,12 +249,65 @@ class AnsibleRunModal(ModalScreen):
             if self._phase == 0:
                 self._start_scan()
             elif self._phase == 1 and not self._is_scanning:
+                self._transition_to_credentials()
+            elif self._phase == 2:
                 self._start_execution()
-            elif self._phase == 2 and not self._is_running:
+            elif self._phase == 3 and not self._is_running:
                 self.app.pop_screen()
 
+        # --- IPAM ---
         elif btn_id == "run-ipam-btn":
             self._load_ipam_subnets()
+
+        elif btn_id.startswith("run-subnet-"):
+            try:
+                idx = int(btn_id.split("-")[-1])
+                if 0 <= idx < len(self._subnets):
+                    s = self._subnets[idx]
+                    cidr = f"{s.get('subnet', '')}/{s.get('mask', '24')}"
+                    ip_input = self.query_one("#run-ip-input", Input)
+                    ip_input.value = cidr
+                    self._start_scan()
+            except (ValueError, IndexError, Exception):
+                pass
+
+        # --- Credential buttons ---
+        elif btn_id == "run-cred-new-btn":
+            self._show_new_credential_form = True
+            self._generated_pubkey = ""
+            self._render_credential_selection()
+
+        elif btn_id == "run-cred-save-btn":
+            self._save_new_credential()
+
+        elif btn_id == "run-cred-cancel-btn":
+            self._show_new_credential_form = False
+            self._generated_pubkey = ""
+            self._render_credential_selection()
+
+        elif btn_id == "run-cred-genkey-btn":
+            self._generate_ssh_key()
+
+        elif btn_id == "run-cred-delete-btn":
+            self._delete_selected_credential()
+
+        elif btn_id == "cred-auth-type-pw":
+            self._new_cred_auth_type = "password"
+            self._render_credential_selection()
+
+        elif btn_id == "cred-auth-type-key":
+            self._new_cred_auth_type = "ssh_key"
+            self._render_credential_selection()
+
+        elif btn_id.startswith("run-cred-select-"):
+            try:
+                idx = int(btn_id.split("-")[-1])
+                if 0 <= idx < len(self._credential_profiles):
+                    self._selected_credential = self._credential_profiles[idx]
+                    self._render_credential_selection()
+            except (ValueError, IndexError):
+                pass
+
 
     # ------------------------------------------------------------------
     # Phase rendering
@@ -193,61 +319,79 @@ class AnsibleRunModal(ModalScreen):
         elif self._phase == 1:
             self._render_ping_sweep()
         elif self._phase == 2:
+            self._render_credential_selection()
+        elif self._phase == 3:
             self._render_execution()
 
     def _render_target_selection(self) -> None:
         title = self.query_one("#run-title", Static)
-        title.update(f"[bold]Run: {self._playbook.filename}[/bold]  Phase 1/3: Target Selection")
+        title.update(
+            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 1/4: Target Selection"
+        )
+
+        # Clean up any widgets from other phases
+        self._remove_cred_widgets()
+        self._remove_host_toggles()
+        self._remove_subnet_buttons()
 
         content = self.query_one("#run-phase-content", Static)
 
-        # Check if IPAM is configured
         ipam_cfg = getattr(self.app.config, "ipam", None)
         has_ipam = ipam_cfg and getattr(ipam_cfg, "url", "")
 
         lines = [
             "[bold]Define target hosts for this playbook.[/bold]",
             "",
-            "Enter IP addresses, CIDR ranges, or dash ranges separated by commas.",
+            "Enter IP ranges below and press Enter to scan.",
             "[dim]Examples: 10.0.1.0/24, 10.0.5.1-10.0.5.100, 192.168.1.50[/dim]",
             "",
         ]
-        if has_ipam:
-            lines.append("[dim]Or press the IPAM button below to import from phpIPAM subnets.[/dim]")
-            lines.append("")
 
+        if has_ipam and not self._ipam_loaded and not self._subnets:
+            lines.append("[dim]Loading IPAM subnets...[/dim]")
+        elif self._subnets:
+            lines.append("[bold]Quick select a subnet:[/bold]")
+
+        content.update("\n".join(lines))
+
+        # Remove old input / IPAM button / subnet buttons for clean remount
+        scroll = self.query_one("#run-content", VerticalScroll)
+        prev_value = ""
+        for w in self.query("#run-ip-input"):
+            prev_value = w.value
+            w.remove()
+        for w in self.query("#run-ipam-btn"):
+            w.remove()
+        self._remove_subnet_buttons()
+
+        # Mount subnet suggestion buttons (if loaded)
         if self._subnets:
-            lines.append("[bold]IPAM Subnets:[/bold]")
-            for s in self._subnets:
-                sid = s.get("id", "?")
+            for idx, s in enumerate(self._subnets):
                 addr = s.get("subnet", "?")
                 mask = s.get("mask", "?")
                 desc = s.get("description", "")
                 usage = s.get("usage", {})
                 used = usage.get("used", "?")
                 maxh = usage.get("maxhosts", "?")
-                lines.append(
-                    f"  [{sid}] {addr}/{mask}  {desc}  ({used}/{maxh} used)"
+                label = f"{addr}/{mask}"
+                if desc:
+                    label += f"  {desc}"
+                label += f"  ({used}/{maxh})"
+                btn = Button(
+                    label,
+                    variant="default",
+                    id=f"run-subnet-{idx}",
+                    classes="subnet-btn",
                 )
-            lines.append("")
-            lines.append("[dim]Type a subnet ID in the input to import its addresses.[/dim]")
-            lines.append("[dim]Or type IP ranges directly.[/dim]")
+                scroll.mount(btn)
 
-        content.update("\n".join(lines))
-
-        # Mount input if not already there
-        scroll = self.query_one("#run-content", VerticalScroll)
-        existing_inputs = self.query("#run-ip-input")
-        if not existing_inputs:
-            ip_input = Input(
-                placeholder="e.g. 10.0.1.0/24, 10.0.5.1-100",
-                id="run-ip-input",
-            )
-            scroll.mount(ip_input)
-            if has_ipam and not self._ipam_loaded:
-                ipam_btn = Button("Import from IPAM", variant="warning", id="run-ipam-btn")
-                scroll.mount(ipam_btn)
-            ip_input.focus()
+        ip_input = Input(
+            placeholder="e.g. 10.0.1.0/24, 10.0.5.1-100",
+            id="run-ip-input",
+            value=prev_value,
+        )
+        scroll.mount(ip_input)
+        ip_input.focus()
 
         action_btn = self.query_one("#run-action-btn", Button)
         action_btn.label = "Scan Hosts"
@@ -258,19 +402,26 @@ class AnsibleRunModal(ModalScreen):
         cancel_btn.label = "Cancel"
 
         status = self.query_one("#run-status", Static)
-        status.update("[dim]Enter target IPs and press Scan Hosts[/dim]")
+        status.update("[dim]Select a subnet or type IPs, then press Enter[/dim]")
+
+        # Auto-load IPAM subnets in background if not loaded yet
+        if has_ipam and not self._ipam_loaded:
+            self._load_ipam_subnets()
 
     def _render_ping_sweep(self) -> None:
         title = self.query_one("#run-title", Static)
         title.update(
-            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 2/3: Host Validation"
+            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 2/4: Host Validation"
         )
 
-        # Remove input widgets from phase 0
+        # Remove widgets from other phases
         for w in self.query("#run-ip-input"):
             w.remove()
         for w in self.query("#run-ipam-btn"):
             w.remove()
+        self._remove_subnet_buttons()
+        self._remove_cred_widgets()
+        self._remove_host_toggles()
 
         action_btn = self.query_one("#run-action-btn", Button)
         cancel_btn = self.query_one("#run-cancel-btn", Button)
@@ -280,20 +431,235 @@ class AnsibleRunModal(ModalScreen):
             action_btn.disabled = True
             cancel_btn.label = "Cancel"
         else:
-            action_btn.label = "Run Playbook"
-            action_btn.variant = "success"
-            action_btn.disabled = len(self._alive_ips) == 0
-            cancel_btn.label = "Back"
+            # Re-show scan results with host toggles (e.g. when returning from Phase 2)
+            if self._alive_ips:
+                self._show_scan_results_with_toggles()
+            else:
+                action_btn.label = "Next"
+                action_btn.variant = "primary"
+                action_btn.disabled = True
+                cancel_btn.label = "Back"
+
+    def _render_credential_selection(self) -> None:
+        title = self.query_one("#run-title", Static)
+        title.update(
+            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 3/4: Credentials"
+        )
+
+        # Remove widgets from other phases
+        for w in self.query("#run-ip-input"):
+            w.remove()
+        for w in self.query("#run-ipam-btn"):
+            w.remove()
+        self._remove_host_toggles()
+
+        # Remove all credential widgets for clean re-render
+        self._remove_cred_widgets()
+
+        scroll = self.query_one("#run-content", VerticalScroll)
+        content = self.query_one("#run-phase-content", Static)
+
+        lines = [
+            "[bold]Select credentials for playbook execution.[/bold]",
+            "",
+            f"[dim]{len(self._get_included_ips())} hosts will be targeted.[/dim]",
+            "",
+        ]
+
+        if self._credential_profiles:
+            lines.append("[bold]Saved Credential Profiles:[/bold]")
+            lines.append("")
+        else:
+            lines.append("[yellow]No saved credential profiles.[/yellow]")
+            lines.append("[dim]Create one below to continue.[/dim]")
+
+        content.update("\n".join(lines))
+
+        # Mount profile selection buttons
+        if self._credential_profiles:
+            for idx, prof in enumerate(self._credential_profiles):
+                is_selected = (
+                    self._selected_credential is not None
+                    and self._selected_credential.name == prof.name
+                )
+                marker = ">> " if is_selected else "   "
+                auth_label = "Password" if prof.auth_type == "password" else "SSH Key"
+                label = f"{marker}{prof.name}  ({prof.username}, {auth_label})"
+                variant = "primary" if is_selected else "default"
+                btn = Button(
+                    label,
+                    variant=variant,
+                    id=f"run-cred-select-{idx}",
+                    classes="cred-widget cred-profile-btn",
+                )
+                scroll.mount(btn)
+
+            if self._selected_credential:
+                scroll.mount(
+                    Button(
+                        f"Delete '{self._selected_credential.name}'",
+                        variant="error",
+                        id="run-cred-delete-btn",
+                        classes="cred-widget",
+                    )
+                )
+
+        # New credential button / form
+        if not self._show_new_credential_form:
+            scroll.mount(
+                Button(
+                    "+ Add New Credential",
+                    variant="warning",
+                    id="run-cred-new-btn",
+                    classes="cred-widget",
+                )
+            )
+        else:
+            self._mount_new_credential_form(scroll)
+
+        # Update action / cancel buttons
+        action_btn = self.query_one("#run-action-btn", Button)
+        action_btn.label = "Run Playbook"
+        action_btn.variant = "success"
+        action_btn.disabled = self._selected_credential is None
+
+        cancel_btn = self.query_one("#run-cancel-btn", Button)
+        cancel_btn.label = "Back"
+
+        status = self.query_one("#run-status", Static)
+        if self._selected_credential:
+            status.update(
+                f"[dim]Using: {self._selected_credential.name} "
+                f"({self._selected_credential.username}) — "
+                f"press Run Playbook[/dim]"
+            )
+        else:
+            status.update("[dim]Select or create a credential profile[/dim]")
+
+    def _mount_new_credential_form(self, scroll: VerticalScroll) -> None:
+        """Mount inline form widgets for creating a new credential."""
+        scroll.mount(
+            Static(
+                "\n[bold]New Credential Profile[/bold]",
+                markup=True,
+                classes="cred-widget",
+            )
+        )
+        scroll.mount(
+            Input(
+                placeholder="Profile name (e.g. deploy-root)",
+                id="cred-name-input",
+                classes="cred-widget",
+            )
+        )
+        scroll.mount(
+            Input(
+                placeholder="Username (default: root)",
+                id="cred-user-input",
+                classes="cred-widget",
+            )
+        )
+
+        # Auth type toggle
+        scroll.mount(
+            Static(
+                "[bold]Auth Type:[/bold]",
+                markup=True,
+                classes="cred-widget",
+            )
+        )
+        pw_variant = "primary" if self._new_cred_auth_type == "password" else "default"
+        key_variant = "primary" if self._new_cred_auth_type == "ssh_key" else "default"
+        scroll.mount(
+            Button(
+                "Password",
+                variant=pw_variant,
+                id="cred-auth-type-pw",
+                classes="cred-widget",
+            )
+        )
+        scroll.mount(
+            Button(
+                "SSH Key",
+                variant=key_variant,
+                id="cred-auth-type-key",
+                classes="cred-widget",
+            )
+        )
+
+        if self._new_cred_auth_type == "password":
+            scroll.mount(
+                Input(
+                    placeholder="Password",
+                    password=True,
+                    id="cred-pass-input",
+                    classes="cred-widget",
+                )
+            )
+        else:
+            scroll.mount(
+                Input(
+                    placeholder="Private key path (or generate below)",
+                    id="cred-keypath-input",
+                    classes="cred-widget",
+                )
+            )
+            scroll.mount(
+                Input(
+                    placeholder="Key passphrase (optional)",
+                    password=True,
+                    id="cred-passphrase-input",
+                    classes="cred-widget",
+                )
+            )
+            scroll.mount(
+                Button(
+                    "Generate New SSH Key",
+                    variant="warning",
+                    id="run-cred-genkey-btn",
+                    classes="cred-widget",
+                )
+            )
+
+            if self._generated_pubkey:
+                scroll.mount(
+                    Static(
+                        f"\n[bold green]Public key (copy to target hosts):[/bold green]\n"
+                        f"[dim]{self._generated_pubkey}[/dim]",
+                        markup=True,
+                        id="run-cred-pubkey-display",
+                        classes="cred-widget",
+                    )
+                )
+
+        scroll.mount(
+            Button(
+                "Save Profile",
+                variant="success",
+                id="run-cred-save-btn",
+                classes="cred-widget",
+            )
+        )
+        scroll.mount(
+            Button(
+                "Cancel",
+                variant="default",
+                id="run-cred-cancel-btn",
+                classes="cred-widget",
+            )
+        )
 
     def _render_execution(self) -> None:
         title = self.query_one("#run-title", Static)
         title.update(
-            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 3/3: Execution"
+            f"[bold]Run: {self._playbook.filename}[/bold]  Phase 4/4: Execution"
         )
 
         # Clear prior content
         content = self.query_one("#run-phase-content", Static)
         content.update("")
+        self._remove_cred_widgets()
+        self._remove_host_toggles()
 
         action_btn = self.query_one("#run-action-btn", Button)
         cancel_btn = self.query_one("#run-cancel-btn", Button)
@@ -308,8 +674,13 @@ class AnsibleRunModal(ModalScreen):
             action_btn.disabled = False
             cancel_btn.label = "Close"
 
+    def _remove_cred_widgets(self) -> None:
+        """Remove all credential-phase widgets from the DOM."""
+        for w in self.query(".cred-widget"):
+            w.remove()
+
     # ------------------------------------------------------------------
-    # Phase 0 → 1: Start scan
+    # Phase 0 -> 1: Start scan
     # ------------------------------------------------------------------
 
     def _start_scan(self) -> None:
@@ -396,6 +767,17 @@ class AnsibleRunModal(ModalScreen):
         )
 
     def _show_scan_results(self) -> None:
+        """Called after a fresh scan completes — initializes all hosts as included."""
+        # Initialize all alive hosts as included
+        self._host_included = {ip: True for ip in self._alive_ips}
+        self._host_info = {ip: HostInfo(ip=ip) for ip in self._alive_ips}
+        self._show_scan_results_with_toggles()
+        # Start background enrichment (DNS, IPAM, nmap)
+        if self._alive_ips:
+            self._start_enrichment()
+
+    def _show_scan_results_with_toggles(self) -> None:
+        """Render scan results with a navigable host list."""
         dead_count = len(self._dead_ips)
         alive_count = len(self._alive_ips)
 
@@ -408,37 +790,407 @@ class AnsibleRunModal(ModalScreen):
         ]
 
         if alive_count:
-            lines.append("[bold]Alive hosts:[/bold]")
-            for ip in self._alive_ips:
-                lines.append(f"  [green]{ip}[/green]")
+            lines.append(
+                "[bold]Alive hosts:[/bold]  "
+                "[dim]arrow keys to navigate, Enter to toggle[/dim]"
+            )
+            lines.append(
+                f"[dim]      {'IP':<16}  {'Hostname':<28}{'Description':<22}{'OS'}[/dim]"
+            )
             lines.append("")
         else:
-            lines.append("[bold red]No alive hosts found. Cannot run playbook.[/bold red]")
+            lines.append(
+                "[bold red]No alive hosts found. Cannot run playbook.[/bold red]"
+            )
 
         self._update_phase_content("\n".join(lines))
 
-        action_btn = self.query_one("#run-action-btn", Button)
-        action_btn.label = "Run Playbook"
-        action_btn.variant = "success"
-        action_btn.disabled = alive_count == 0
+        # Mount host lines as simple Static widgets
+        if alive_count:
+            self._remove_host_toggles()
+            scroll = self.query_one("#run-content", VerticalScroll)
+            for idx, ip in enumerate(self._alive_ips):
+                label = self._format_host_line(idx, ip)
+                line = Static(
+                    label,
+                    markup=True,
+                    id=f"host-line-{idx}",
+                    classes="host-line",
+                )
+                scroll.mount(line)
 
         cancel_btn = self.query_one("#run-cancel-btn", Button)
         cancel_btn.label = "Back"
 
+        self._update_host_count()
+
+    # Column widths for host line alignment
+    _COL_IP = 16
+    _COL_HOST = 28
+    _COL_DESC = 22
+    _COL_OS = 20
+
+    def _format_host_line(self, idx: int, ip: str) -> str:
+        """Build the markup for a single host line with enrichment data."""
+        included = self._host_included.get(ip, True)
+        is_cursor = idx == self._host_cursor
+        cursor = ">" if is_cursor else " "
+
+        if included:
+            mark = "[green]\\[+][/green]"
+        else:
+            mark = "[red]\\[x][/red]"
+
+        # Pad IP *before* adding markup so columns align
+        ip_padded = ip.ljust(self._COL_IP)
+        if included:
+            ip_col = f"[bold]{ip_padded}[/bold]" if is_cursor else ip_padded
+        else:
+            ip_col = f"[bold dim]{ip_padded}[/bold dim]" if is_cursor else f"[dim]{ip_padded}[/dim]"
+
+        # Enrichment columns
+        info = self._host_info.get(ip)
+        if info is None:
+            return f" {cursor}  {mark}  {ip_col}"
+
+        # Source indicator + hostname
+        hostname = info.best_hostname
+        is_autodiscovered = self._is_autodiscovered(info)
+        if hostname:
+            if len(hostname) > self._COL_HOST - 2:
+                hostname = hostname[: self._COL_HOST - 5] + "..."
+            if is_autodiscovered:
+                # Globe icon for autodiscovered hosts
+                host_display = f"[bright_blue]\U0001f310[/bright_blue] {hostname}"
+                # Pad based on raw text length (globe counts as 1 char visually ~2 wide)
+                pad = self._COL_HOST - len(hostname) - 2
+            else:
+                host_display = f"  {hostname}"
+                pad = self._COL_HOST - len(hostname) - 2
+            host_col = f"[cyan]{host_display}[/cyan]{' ' * max(pad, 1)}"
+        elif info.dns_status == "running" or info.ipam_status == "running":
+            placeholder = "resolving..."
+            pad = self._COL_HOST - len(placeholder)
+            host_col = f"[dim italic]  {placeholder}[/dim italic]{' ' * max(pad, 1)}"
+        else:
+            host_col = " " * self._COL_HOST
+
+        # Description (skip "autodiscovered" text, use globe icon instead)
+        desc_text = info.ipam_description or ""
+        if "autodiscover" in desc_text.lower():
+            desc_text = ""
+        if desc_text:
+            if len(desc_text) > self._COL_DESC - 2:
+                desc_text = desc_text[: self._COL_DESC - 5] + "..."
+            desc_padded = desc_text.ljust(self._COL_DESC)
+            desc_col = f"[dim]{desc_padded}[/dim]"
+        else:
+            desc_col = " " * self._COL_DESC
+
+        # OS guess
+        os_text = info.os_guess or ""
+        if os_text:
+            if len(os_text) > self._COL_OS:
+                os_text = os_text[: self._COL_OS - 3] + "..."
+            os_col = f"[yellow]{os_text}[/yellow]"
+        elif info.nmap_status == "running":
+            os_col = "[dim italic]scanning...[/dim italic]"
+        else:
+            os_col = ""
+
+        return f" {cursor}  {mark}  {ip_col}{host_col}{desc_col}{os_col}"
+
+    @staticmethod
+    def _is_autodiscovered(info: HostInfo) -> bool:
+        """Check if the host was found via automatic discovery (DNS/IPAM)."""
+        return bool(info.dns_hostname or info.ipam_hostname)
+
+    def _toggle_host(self, idx: int) -> None:
+        """Toggle inclusion of the host at the given index."""
+        if 0 <= idx < len(self._alive_ips):
+            ip = self._alive_ips[idx]
+            self._host_included[ip] = not self._host_included.get(ip, True)
+            # Update just this one line
+            try:
+                line = self.query_one(f"#host-line-{idx}", Static)
+                line.update(self._format_host_line(idx, ip))
+            except Exception:
+                pass
+            self._update_host_count()
+
+    def _refresh_host_lines(self) -> None:
+        """Refresh all host line labels (for cursor movement)."""
+        for idx, ip in enumerate(self._alive_ips):
+            try:
+                line = self.query_one(f"#host-line-{idx}", Static)
+                line.update(self._format_host_line(idx, ip))
+            except Exception:
+                pass
+
+    def _scroll_to_host_cursor(self) -> None:
+        """Scroll the host list so the cursor line is visible."""
+        try:
+            line = self.query_one(f"#host-line-{self._host_cursor}", Static)
+            line.scroll_visible()
+        except Exception:
+            pass
+
+    def _update_host_count(self) -> None:
+        """Update the Next button and status bar with the current included count."""
+        included_count = sum(1 for v in self._host_included.values() if v)
+        total_alive = len(self._alive_ips)
+
+        action_btn = self.query_one("#run-action-btn", Button)
+        action_btn.label = f"Next ({included_count} hosts)"
+        action_btn.disabled = included_count == 0
+
         status = self.query_one("#run-status", Static)
-        if alive_count:
+        if included_count:
             status.update(
-                f"[dim]{alive_count} hosts ready — press Run Playbook[/dim]"
+                f"[dim]{included_count}/{total_alive} selected — "
+                f"Enter to toggle, Tab to proceed[/dim]"
             )
         else:
-            status.update("[dim]No alive hosts — press Back to try again[/dim]")
+            status.update(
+                "[dim]No hosts selected — Enter to include hosts[/dim]"
+            )
+
+    def _remove_host_toggles(self) -> None:
+        """Remove all host line widgets from the DOM."""
+        for w in self.query(".host-line"):
+            w.remove()
+
+    def _remove_subnet_buttons(self) -> None:
+        """Remove all subnet suggestion buttons from the DOM."""
+        for w in self.query(".subnet-btn"):
+            w.remove()
 
     # ------------------------------------------------------------------
-    # Phase 1 → 2: Start execution
+    # Host enrichment (DNS, IPAM, nmap)
+    # ------------------------------------------------------------------
+
+    @work(thread=True, exclusive=True, group="ansible-enrich")
+    def _start_enrichment(self) -> None:
+        """Run host enrichment in a background thread."""
+        self._enriching = True
+        self.app.call_from_thread(
+            self._set_status, "[dim]Enriching host data (DNS, IPAM, nmap)...[/dim]"
+        )
+
+        # Instantiate clients based on config availability
+        dns_client = None
+        ipam_client = None
+
+        dns_cfg = getattr(self.app.config, "dns", None)
+        if dns_cfg and getattr(dns_cfg, "server", ""):
+            try:
+                from infraforge.dns_client import DNSClient
+                dns_client = DNSClient.from_config(self.app.config)
+            except Exception:
+                pass
+
+        ipam_cfg = getattr(self.app.config, "ipam", None)
+        if ipam_cfg and getattr(ipam_cfg, "url", ""):
+            try:
+                from infraforge.ipam_client import IPAMClient
+                ipam_client = IPAMClient(self.app.config)
+            except Exception:
+                pass
+
+        # Check nmap availability
+        nmap_found, sudo_works = check_nmap_available()
+
+        def on_enrichment_update(ip: str, info: HostInfo) -> None:
+            self._host_info[ip] = info
+            self.app.call_from_thread(self._update_host_line_by_ip, ip)
+
+        enrich_hosts(
+            ips=self._alive_ips,
+            dns_client=dns_client,
+            ipam_client=ipam_client,
+            enable_nmap=nmap_found,
+            sudo_works=sudo_works,
+            callback=on_enrichment_update,
+        )
+
+        self._enriching = False
+        self.app.call_from_thread(self._on_enrichment_done)
+
+    def _update_host_line_by_ip(self, ip: str) -> None:
+        """Update a single host line widget after enrichment data arrives."""
+        try:
+            idx = self._alive_ips.index(ip)
+            line = self.query_one(f"#host-line-{idx}", Static)
+            line.update(self._format_host_line(idx, ip))
+        except (ValueError, Exception):
+            pass
+
+    def _on_enrichment_done(self) -> None:
+        """Called when all enrichment completes."""
+        sources = []
+        has_dns = any(i.dns_hostname for i in self._host_info.values())
+        has_ipam = any(
+            i.ipam_hostname or i.ipam_description for i in self._host_info.values()
+        )
+        has_os = any(i.os_guess for i in self._host_info.values())
+        if has_dns:
+            sources.append("DNS")
+        if has_ipam:
+            sources.append("IPAM")
+        if has_os:
+            sources.append("OS")
+        if sources:
+            label = ", ".join(sources)
+            self._set_status(
+                f"[dim]Enriched with {label} data  |  "
+                f"Enter to toggle, Tab to proceed[/dim]"
+            )
+        else:
+            self._update_host_count()
+
+    # ------------------------------------------------------------------
+    # Phase 1 -> 2: Transition to credentials
+    # ------------------------------------------------------------------
+
+    def _get_included_ips(self) -> list[str]:
+        """Return only the alive IPs that are toggled on."""
+        return [ip for ip in self._alive_ips if self._host_included.get(ip, True)]
+
+    def _transition_to_credentials(self) -> None:
+        self._phase = 2
+        self._credential_profiles = self._credential_mgr.load_profiles()
+        if self._credential_profiles and self._selected_credential is None:
+            self._selected_credential = self._credential_profiles[0]
+        self._show_new_credential_form = False
+        self._render_phase()
+
+    # ------------------------------------------------------------------
+    # Phase 2: Credential CRUD
+    # ------------------------------------------------------------------
+
+    def _save_new_credential(self) -> None:
+        """Collect form inputs and save a new credential profile."""
+        try:
+            name_input = self.query_one("#cred-name-input", Input)
+            user_input = self.query_one("#cred-user-input", Input)
+        except Exception:
+            self._set_status("[bold red]Form not ready[/bold red]")
+            return
+
+        name = name_input.value.strip()
+        username = user_input.value.strip() or "root"
+
+        if not name:
+            self._set_status("[bold red]Profile name is required[/bold red]")
+            return
+
+        if self._credential_mgr.get_profile(name):
+            self._set_status(
+                f"[bold red]Profile '{name}' already exists[/bold red]"
+            )
+            return
+
+        profile = CredentialProfile(
+            name=name,
+            auth_type=self._new_cred_auth_type,
+            username=username,
+        )
+
+        if self._new_cred_auth_type == "password":
+            try:
+                pass_input = self.query_one("#cred-pass-input", Input)
+                profile.password = pass_input.value
+            except Exception:
+                pass
+        else:
+            try:
+                keypath_input = self.query_one("#cred-keypath-input", Input)
+                profile.private_key_path = keypath_input.value.strip()
+            except Exception:
+                pass
+            try:
+                passphrase_input = self.query_one("#cred-passphrase-input", Input)
+                profile.passphrase = passphrase_input.value
+            except Exception:
+                pass
+
+        if self._new_cred_auth_type == "ssh_key" and not profile.private_key_path:
+            self._set_status(
+                "[bold red]SSH key path is required (or generate one)[/bold red]"
+            )
+            return
+
+        self._credential_mgr.add_profile(profile)
+        self._credential_profiles = self._credential_mgr.load_profiles()
+        self._selected_credential = profile
+        self._show_new_credential_form = False
+        self._generated_pubkey = ""
+        self._render_credential_selection()
+        self._set_status(f"[green]Saved credential profile '{name}'[/green]")
+
+    @work(thread=True, exclusive=True, group="ansible-keygen")
+    def _generate_ssh_key(self) -> None:
+        """Generate an SSH key pair in a background thread."""
+        try:
+            name_input = self.query_one("#cred-name-input", Input)
+            name = name_input.value.strip() or "infraforge"
+        except Exception:
+            name = "infraforge"
+
+        passphrase = ""
+        try:
+            passphrase_input = self.query_one("#cred-passphrase-input", Input)
+            passphrase = passphrase_input.value
+        except Exception:
+            pass
+
+        self.app.call_from_thread(
+            self._set_status, "[dim]Generating SSH key (4096 bits)...[/dim]"
+        )
+
+        try:
+            key_path, pubkey = self._credential_mgr.generate_ssh_key(
+                name=name, passphrase=passphrase,
+            )
+            self._generated_pubkey = pubkey
+
+            def _update_ui() -> None:
+                try:
+                    keypath_input = self.query_one("#cred-keypath-input", Input)
+                    keypath_input.value = str(key_path)
+                except Exception:
+                    pass
+                self._render_credential_selection()
+                self._set_status(f"[green]Generated SSH key: {key_path}[/green]")
+
+            self.app.call_from_thread(_update_ui)
+        except Exception as e:
+            self.app.call_from_thread(
+                self._set_status,
+                f"[bold red]Key generation failed: {e}[/bold red]",
+            )
+
+    def _delete_selected_credential(self) -> None:
+        if self._selected_credential:
+            name = self._selected_credential.name
+            self._credential_mgr.delete_profile(name)
+            self._credential_profiles = self._credential_mgr.load_profiles()
+            self._selected_credential = (
+                self._credential_profiles[0]
+                if self._credential_profiles
+                else None
+            )
+            self._render_credential_selection()
+            self._set_status(
+                f"[yellow]Deleted credential profile '{name}'[/yellow]"
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 2 -> 3: Start execution
     # ------------------------------------------------------------------
 
     def _start_execution(self) -> None:
-        self._phase = 2
+        self._phase = 3
         self._is_running = True
         self._aborted = False
         self._run_start = time.monotonic()
@@ -449,7 +1201,7 @@ class AnsibleRunModal(ModalScreen):
     @work(thread=True, exclusive=True, group="ansible-run")
     def _execute_playbook(self) -> None:
         # Generate temp inventory
-        inv_path = generate_inventory(self._alive_ips)
+        inv_path = generate_inventory(self._get_included_ips())
 
         # Compute log path
         playbook_dir = self._playbook.path.parent
@@ -458,10 +1210,19 @@ class AnsibleRunModal(ModalScreen):
         log_name = f"{self._playbook.path.stem}_{ts}.log"
         self._log_path = log_dir / log_name
 
-        exit_code = -1
+        # Build credential arguments
+        cred_args: list[str] = []
+        cred_env: dict[str, str] = {}
+        if self._selected_credential:
+            cred_args, cred_env = build_credential_args(self._selected_credential)
+
         try:
             for line, stream_type in run_playbook(
-                self._playbook.path, inv_path, self._log_path
+                self._playbook.path,
+                inv_path,
+                self._log_path,
+                credential_args=cred_args,
+                credential_env=cred_env,
             ):
                 if self._aborted:
                     break
@@ -507,7 +1268,9 @@ class AnsibleRunModal(ModalScreen):
 
         status = self.query_one("#run-status", Static)
         if self._aborted:
-            status.update(f"[bold yellow]Aborted after {elapsed:.0f}s[/bold yellow]")
+            status.update(
+                f"[bold yellow]Aborted after {elapsed:.0f}s[/bold yellow]"
+            )
         else:
             status.update(
                 f"[dim]Finished in {elapsed:.0f}s  |  "
@@ -529,16 +1292,11 @@ class AnsibleRunModal(ModalScreen):
     def _abort_execution(self) -> None:
         self._aborted = True
         self._stop_run_timer()
-        # The run_playbook generator uses Popen internally;
-        # we need to signal it to stop. Since we set _aborted,
-        # the loop in _execute_playbook will break.
-        # For faster abort, try to find and kill the ansible-playbook process
         try:
-            import signal
             import os as _os
-            # Kill any child ansible-playbook processes
+
             pid = _os.getpid()
-            result = subprocess.run(
+            subprocess.run(
                 ["pkill", "-P", str(pid), "ansible-playbook"],
                 capture_output=True,
             )
@@ -558,6 +1316,7 @@ class AnsibleRunModal(ModalScreen):
         )
         try:
             from infraforge.ipam_client import IPAMClient
+
             client = IPAMClient(self.app.config)
             subnets = client.get_subnets()
             self._subnets = subnets
@@ -565,7 +1324,7 @@ class AnsibleRunModal(ModalScreen):
             self.app.call_from_thread(self._render_target_selection)
             self.app.call_from_thread(
                 self._set_status,
-                f"Loaded {len(subnets)} subnets from IPAM"
+                f"Loaded {len(subnets)} subnets from IPAM",
             )
         except Exception as e:
             self.app.call_from_thread(
@@ -580,6 +1339,7 @@ class AnsibleRunModal(ModalScreen):
     def _load_ipam_addresses(self, subnet_id: str) -> None:
         try:
             from infraforge.ipam_client import IPAMClient
+
             client = IPAMClient(self.app.config)
             addresses = client.get_subnet_addresses(subnet_id)
             ips = [a.get("ip", "") for a in addresses if a.get("ip")]
@@ -595,7 +1355,7 @@ class AnsibleRunModal(ModalScreen):
             else:
                 self.app.call_from_thread(
                     self._set_status,
-                    f"[red]No addresses found in subnet {subnet_id}[/red]"
+                    f"[red]No addresses found in subnet {subnet_id}[/red]",
                 )
         except Exception as e:
             self.app.call_from_thread(
@@ -604,6 +1364,7 @@ class AnsibleRunModal(ModalScreen):
 
     def _run_ping_sweep_direct(self) -> None:
         """Run ping sweep directly (already in a worker thread)."""
+
         def on_result(ip: str, alive: bool) -> None:
             self._scan_done += 1
             if alive:
@@ -611,7 +1372,9 @@ class AnsibleRunModal(ModalScreen):
             self.app.call_from_thread(self._update_scan_progress)
 
         alive, dead = ping_sweep(
-            self._resolved_ips, workers=50, callback=on_result,
+            self._resolved_ips,
+            workers=50,
+            callback=on_result,
         )
         self._alive_ips = alive
         self._dead_ips = dead

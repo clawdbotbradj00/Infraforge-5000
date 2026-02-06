@@ -435,6 +435,33 @@ class DNSClient:
         except Exception as e:
             raise DNSError(f"DNS lookup failed for {fqdn} {rtype}: {e}")
 
+    def reverse_lookup(self, ip: str) -> str:
+        """Perform a PTR lookup for *ip* and return the hostname, or ``""``.
+
+        Uses the configured DNS server with a shorter timeout suitable
+        for best-effort enrichment.  Returns the first PTR record found,
+        stripped of the trailing dot.
+        """
+        try:
+            rev_name = dns.reversename.from_address(ip)
+        except Exception:
+            return ""
+
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = [self.server]
+        resolver.port = self.port
+        resolver.lifetime = 5
+
+        try:
+            answers = resolver.resolve(rev_name, "PTR")
+            for rdata in answers:
+                return str(rdata).rstrip(".")
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            return ""
+        except Exception:
+            return ""
+        return ""
+
     def record_exists(self, name: str, rtype: str = "A", zone: str = "") -> bool:
         """Check if a DNS record exists."""
         return len(self.lookup_record(name, rtype, zone)) > 0

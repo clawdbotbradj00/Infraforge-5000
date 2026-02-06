@@ -229,6 +229,10 @@ class AnsibleScreen(Screen):
         else:
             self._clear_detail()
 
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        """Enter pressed on a tree node — run the playbook."""
+        self.action_run_playbook()
+
     def _show_playbook_detail(self, pb: PlaybookInfo) -> None:
         detail = self.query_one("#ansible-detail-content", Static)
         title = self.query_one("#ansible-detail-title", Static)

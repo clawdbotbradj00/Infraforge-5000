@@ -278,11 +278,48 @@ def generate_inventory(hosts: list[str]) -> Path:
 # Playbook execution
 # ---------------------------------------------------------------------------
 
+def build_credential_args(
+    profile: "CredentialProfile",
+) -> tuple[list[str], dict[str, str]]:
+    """Convert a :class:`CredentialProfile` into CLI args and env vars.
+
+    Returns ``(args_list, env_dict)`` suitable for passing to
+    :func:`run_playbook` as *credential_args* and *credential_env*.
+    """
+    from infraforge.credential_manager import CredentialProfile  # noqa: F811
+
+    args: list[str] = []
+    env: dict[str, str] = {}
+
+    if profile.username:
+        args.extend(["-u", profile.username])
+
+    if profile.auth_type == "ssh_key":
+        if profile.private_key_path:
+            args.extend(["--private-key", profile.private_key_path])
+    elif profile.auth_type == "password":
+        if profile.password:
+            env["ANSIBLE_SSH_PASS"] = profile.password
+
+    if profile.become:
+        args.append("--become")
+        if profile.become_method:
+            args.extend(["--become-method", profile.become_method])
+        if profile.become_pass:
+            env["ANSIBLE_BECOME_PASS"] = profile.become_pass
+        elif profile.auth_type == "password" and profile.password:
+            env["ANSIBLE_BECOME_PASS"] = profile.password
+
+    return args, env
+
+
 def run_playbook(
     playbook_path: str | Path,
     inventory_path: str | Path,
     log_path: str | Path,
     extra_args: list[str] | None = None,
+    credential_args: list[str] | None = None,
+    credential_env: dict[str, str] | None = None,
 ) -> Generator[tuple[str, str], None, None]:
     """Execute ``ansible-playbook`` and yield output lines.
 
@@ -296,10 +333,16 @@ def run_playbook(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = ["ansible-playbook", "-i", str(inventory_path), str(playbook_path)]
+    if credential_args:
+        cmd.extend(credential_args)
     if extra_args:
         cmd.extend(extra_args)
 
     yield (f"$ {' '.join(cmd)}\n", "status")
+
+    run_env = {**os.environ, "ANSIBLE_FORCE_COLOR": "false"}
+    if credential_env:
+        run_env.update(credential_env)
 
     with open(log_path, "w") as log_file:
         log_file.write(f"# InfraForge Ansible Run\n")
@@ -313,7 +356,7 @@ def run_playbook(
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env={**os.environ, "ANSIBLE_FORCE_COLOR": "false"},
+                env=run_env,
             )
         except FileNotFoundError:
             msg = "ansible-playbook not found. Install Ansible first.\n"

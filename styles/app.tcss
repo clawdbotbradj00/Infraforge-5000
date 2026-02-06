@@ -831,3 +831,83 @@ AIChatModal {
     margin: 0 0 1 0;
     border: round $primary-background;
 }
+
+/* ── Credential Selection (Ansible Run Modal) ── */
+
+/* ── Subnet Suggestion Buttons (Ansible Target Selection) ── */
+
+.subnet-btn {
+    width: 100%;
+    height: 3;
+    content-align: left middle;
+    text-align: left;
+    margin: 0 0 0 0;
+}
+
+.subnet-btn:hover {
+    background: $boost;
+}
+
+/* ── Host List (Ansible Ping Sweep Results) ── */
+
+.host-line {
+    width: 100%;
+    height: auto;
+    min-height: 1;
+    max-height: 2;
+    padding: 0 1;
+}
+
+/* ── Credential Selection (Ansible Run Modal) ── */
+
+.cred-profile-btn {
+    width: 100%;
+    height: 3;
+    content-align: left middle;
+    text-align: left;
+}
+
+.cred-profile-btn:hover {
+    background: $boost;
+}
+
+#run-cred-new-btn {
+    margin: 1 0 0 0;
+}
+
+#run-cred-save-btn {
+    margin: 1 1 0 0;
+}
+
+#run-cred-cancel-btn {
+    margin: 1 0 0 0;
+}
+
+#run-cred-delete-btn {
+    margin: 1 0 0 0;
+}
+
+#run-cred-genkey-btn {
+    margin: 1 0 0 0;
+}
+
+#run-cred-pubkey-display {
+    margin: 1 0;
+    padding: 1 2;
+    border: round $primary-background;
+    background: $surface;
+}
+
+#cred-name-input,
+#cred-user-input,
+#cred-pass-input,
+#cred-keypath-input,
+#cred-passphrase-input {
+    margin: 0 0 1 0;
+}
+
+#cred-auth-type-pw,
+#cred-auth-type-key {
+    width: auto;
+    margin: 0 1 0 0;
+}
