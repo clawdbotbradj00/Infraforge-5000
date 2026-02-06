@@ -79,7 +79,7 @@ class DashboardScreen(Screen):
 
             with ThreadPoolExecutor(max_workers=2) as pool:
                 fut_vms = pool.submit(self.app.proxmox.get_all_vms_and_templates)
-                fut_nodes = pool.submit(self.app.proxmox.get_node_info)
+                fut_nodes = pool.submit(self.app.proxmox.get_node_info, True)
 
                 vms, templates = fut_vms.result()
                 nodes = fut_nodes.result()

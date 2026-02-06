@@ -80,10 +80,10 @@ class ProxmoxClient:
     # Node helpers (cached)
     # ------------------------------------------------------------------
 
-    def _get_nodes_raw(self) -> list[dict]:
+    def _get_nodes_raw(self, force: bool = False) -> list[dict]:
         """Get raw node list, cached for _NODE_CACHE_TTL seconds."""
         now = time.monotonic()
-        if self._node_cache is None or (now - self._node_cache_ts) > _NODE_CACHE_TTL:
+        if force or self._node_cache is None or (now - self._node_cache_ts) > _NODE_CACHE_TTL:
             self._node_cache = self.api.nodes.get()
             self._node_cache_ts = now
         return self._node_cache
@@ -95,7 +95,7 @@ class ProxmoxClient:
         """Get raw node data."""
         return self._get_nodes_raw()
 
-    def get_node_info(self) -> list[NodeInfo]:
+    def get_node_info(self, force: bool = False) -> list[NodeInfo]:
         """Get info about all cluster nodes."""
         return [
             NodeInfo(
@@ -110,7 +110,7 @@ class ProxmoxClient:
                 uptime=int(n.get("uptime", 0)),
                 ssl_fingerprint=n.get("ssl_fingerprint", ""),
             )
-            for n in self._get_nodes_raw()
+            for n in self._get_nodes_raw(force=force)
         ]
 
     # ------------------------------------------------------------------
