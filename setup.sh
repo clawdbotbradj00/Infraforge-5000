@@ -496,20 +496,30 @@ check_docker() {
         return 1
     fi
 
-    # Check for compose
+    # Check for compose — strongly prefer v2 plugin over legacy v1
     if docker compose version &>/dev/null 2>&1; then
         COMPOSE_CMD="docker compose"
-        success "Docker and docker compose found"
+        success "Docker and docker compose v2 found"
         DOCKER_AVAILABLE=true
         return 0
     elif command -v docker-compose &>/dev/null; then
-        COMPOSE_CMD="docker-compose"
-        success "Docker and docker-compose found"
-        DOCKER_AVAILABLE=true
-        return 0
+        # Legacy docker-compose v1 (Python) is often broken with newer requests/urllib3
+        warn "Only legacy docker-compose v1 found (may be broken with newer Python packages)."
+        echo -e "  ${DIM}Install docker compose v2 plugin for reliability:${NC}"
+        echo -e "  ${DIM}  sudo mkdir -p /usr/local/lib/docker/cli-plugins${NC}"
+        echo -e "  ${DIM}  sudo curl -SL \"https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64\" \\\\${NC}"
+        echo -e "  ${DIM}    -o /usr/local/lib/docker/cli-plugins/docker-compose${NC}"
+        echo -e "  ${DIM}  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose${NC}"
+        if prompt_yesno "Try with legacy docker-compose anyway?" "n"; then
+            COMPOSE_CMD="docker-compose"
+            DOCKER_AVAILABLE=true
+            return 0
+        fi
+        DOCKER_AVAILABLE=false
+        return 1
     fi
 
-    error "docker compose (or docker-compose) not found."
+    error "docker compose not found."
     DOCKER_AVAILABLE=false
     return 1
 }

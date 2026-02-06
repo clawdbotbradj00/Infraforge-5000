@@ -697,33 +697,54 @@ def _check_docker(console: Console) -> bool:
         console.print("[red]✗[/red] Docker daemon timed out.")
         return False
 
-    # Check for compose
+    # Check for compose — strongly prefer v2 plugin over legacy v1
     try:
         subprocess.run(
             ["docker", "compose", "version"], capture_output=True, check=True,
         )
-        console.print("[green]✓[/green] Docker and docker compose found")
+        console.print("[green]✓[/green] Docker and docker compose v2 found")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
     if shutil.which("docker-compose"):
-        console.print("[green]✓[/green] Docker and docker-compose found")
-        return True
+        # Legacy docker-compose v1 (Python) is often broken with newer requests/urllib3
+        console.print("[yellow]![/yellow] Only legacy docker-compose v1 found (may be broken).")
+        console.print(
+            "[dim]Install docker compose v2 plugin for reliability:\n"
+            "  sudo mkdir -p /usr/local/lib/docker/cli-plugins\n"
+            '  sudo curl -SL "https://github.com/docker/compose/releases/latest/'
+            'download/docker-compose-linux-x86_64" \\\n'
+            "    -o /usr/local/lib/docker/cli-plugins/docker-compose\n"
+            "  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose[/dim]"
+        )
+        if Confirm.ask("Try with legacy docker-compose anyway?", default=False):
+            return True
+        return False
 
-    console.print("[red]✗[/red] docker compose (or docker-compose) not found.")
+    console.print("[red]✗[/red] docker compose not found.")
+    console.print(
+        "[dim]Install the docker compose plugin:\n"
+        "  sudo mkdir -p /usr/local/lib/docker/cli-plugins\n"
+        '  sudo curl -SL "https://github.com/docker/compose/releases/latest/'
+        'download/docker-compose-linux-x86_64" \\\n'
+        "    -o /usr/local/lib/docker/cli-plugins/docker-compose\n"
+        "  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose[/dim]"
+    )
     return False
 
 
 def _get_compose_cmd() -> list[str]:
-    """Return the compose command as a list."""
+    """Return the compose command as a list. Prefers v2 plugin."""
     try:
         subprocess.run(
             ["docker", "compose", "version"], capture_output=True, check=True,
         )
         return ["docker", "compose"]
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return ["docker-compose"]
+        if shutil.which("docker-compose"):
+            return ["docker-compose"]
+        return ["docker", "compose"]  # Fall back; will fail with clear error
 
 
 def _wait_for_phpipam(url: str, timeout: int = 120) -> bool:
