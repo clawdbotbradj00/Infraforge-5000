@@ -12,11 +12,13 @@ open/close cycles.  Press Ctrl+N to start a fresh conversation.
 from __future__ import annotations
 
 import json
+import time
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Static, Input
 from textual import work
 
@@ -91,6 +93,10 @@ class AIChatModal(ModalScreen):
     def __init__(self) -> None:
         super().__init__()
         self._streaming_widget: Static | None = None
+        self._is_generating: bool = False
+        self._gen_start: float = 0.0
+        self._gen_timer: Timer | None = None
+        self._last_stream_text: str = ""
 
     # ------------------------------------------------------------------
     # Persistent history helpers (stored on app)
@@ -160,8 +166,30 @@ class AIChatModal(ModalScreen):
     # ------------------------------------------------------------------
 
     def action_close_chat(self) -> None:
-        """Close the modal and return to the underlying screen."""
-        self.app.pop_screen()
+        """If generating, cancel. Otherwise close the modal."""
+        if self._is_generating:
+            self._cancel_generation()
+        else:
+            self.app.pop_screen()
+
+    def _cancel_generation(self) -> None:
+        """Abort the active AI generation."""
+        ai_client = getattr(self.app, "ai_client", None)
+        if ai_client:
+            ai_client.abort()
+        self._stop_gen_timer()
+        self._is_generating = False
+        # Clean up the streaming widget
+        if self._streaming_widget:
+            elapsed = time.monotonic() - self._gen_start
+            self._streaming_widget.update(
+                f"[bold yellow]Cancelled[/bold yellow]  "
+                f"[dim]after {elapsed:.0f}s[/dim]"
+            )
+            markup = f"[bold yellow]Cancelled[/bold yellow]  [dim]after {elapsed:.0f}s[/dim]"
+            self._append_history(_msg("system", "Cancelled", markup=markup, css_class="ai-msg-tool"))
+            self._streaming_widget = None
+        self._update_title_idle()
 
     def action_new_chat(self) -> None:
         """Clear chat history and start a fresh conversation."""
@@ -231,6 +259,10 @@ class AIChatModal(ModalScreen):
             full_text += chunk
             self.app.call_from_thread(self._update_streaming_message, full_text)
 
+        # Bail out if generation was cancelled (UI already cleaned up)
+        if getattr(ai_client, '_aborted', False):
+            return
+
         if first_chunk:
             # No chunks received at all
             self.app.call_from_thread(self._hide_thinking)
@@ -299,7 +331,10 @@ class AIChatModal(ModalScreen):
     # ------------------------------------------------------------------
 
     def _show_thinking(self) -> None:
-        """Show a thinking indicator in the chat."""
+        """Show a thinking indicator in the chat and start elapsed timer."""
+        self._is_generating = True
+        self._gen_start = time.monotonic()
+        self._last_stream_text = ""
         history = self.query_one("#ai-chat-history", VerticalScroll)
         self._streaming_widget = Static(
             "[bold green]AI:[/bold green]  [dim italic]Thinking...[/dim italic]",
@@ -308,6 +343,8 @@ class AIChatModal(ModalScreen):
         )
         history.mount(self._streaming_widget)
         history.scroll_end(animate=False)
+        self._start_gen_timer()
+        self._update_title_generating()
 
     def _replace_thinking_with_response(self) -> None:
         """Replace thinking text with empty response, ready for streaming."""
@@ -321,9 +358,13 @@ class AIChatModal(ModalScreen):
         if self._streaming_widget:
             self._streaming_widget.remove()
             self._streaming_widget = None
+        self._stop_gen_timer()
+        self._is_generating = False
+        self._update_title_idle()
 
     def _update_streaming_message(self, text: str) -> None:
         """Update the streaming message widget with accumulated text."""
+        self._last_stream_text = text
         if self._streaming_widget:
             self._streaming_widget.update(
                 f"[bold green]AI:[/bold green]  {self._esc(text)}"
@@ -335,12 +376,63 @@ class AIChatModal(ModalScreen):
         """Save the final streaming message text to persistent history."""
         markup = f"[bold green]AI:[/bold green]  {self._esc(text)}"
         self._append_history(_msg("ai", text, markup=markup, css_class="ai-msg-ai"))
+        self._stop_gen_timer()
+        self._is_generating = False
+        self._update_title_idle()
 
     def _remove_streaming_message(self) -> None:
         """Remove the streaming message (e.g., only contained action markers)."""
         if self._streaming_widget:
             self._streaming_widget.remove()
             self._streaming_widget = None
+
+    # ------------------------------------------------------------------
+    # Elapsed timer + title bar status
+    # ------------------------------------------------------------------
+
+    def _start_gen_timer(self) -> None:
+        """Start a 1-second interval timer that updates the title bar."""
+        self._stop_gen_timer()
+        self._gen_timer = self.set_interval(1.0, self._tick_gen_timer)
+
+    def _stop_gen_timer(self) -> None:
+        """Stop the elapsed timer."""
+        if self._gen_timer:
+            self._gen_timer.stop()
+            self._gen_timer = None
+
+    def _tick_gen_timer(self) -> None:
+        """Called every second while generating — update title with elapsed."""
+        if not self._is_generating:
+            self._stop_gen_timer()
+            return
+        elapsed = int(time.monotonic() - self._gen_start)
+        title = self.query_one("#ai-chat-title", Static)
+        title.update(
+            f"[bold]AI Assistant[/bold]  "
+            f"[bold yellow]Generating... {elapsed}s[/bold yellow]  "
+            f"[dim]Esc[/dim] cancel"
+        )
+
+    def _update_title_generating(self) -> None:
+        """Set the title bar to generating state."""
+        title = self.query_one("#ai-chat-title", Static)
+        title.update(
+            "[bold]AI Assistant[/bold]  "
+            "[bold yellow]Generating... 0s[/bold yellow]  "
+            "[dim]Esc[/dim] cancel"
+        )
+
+    def _update_title_idle(self) -> None:
+        """Restore the title bar to idle state."""
+        try:
+            title = self.query_one("#ai-chat-title", Static)
+            title.update(
+                "[bold]AI Assistant[/bold]  "
+                "[dim]Esc[/dim] close  [dim]Ctrl+N[/dim] new chat"
+            )
+        except Exception:
+            pass  # Screen may already be unmounted
 
     # ------------------------------------------------------------------
     # Tool execution

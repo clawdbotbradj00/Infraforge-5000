@@ -111,6 +111,8 @@ class AIClient:
         self._model: str = ""
         self._turn_count: int = 0
         self._custom_system_prompt: str = ""
+        self._active_proc: subprocess.Popen | None = None
+        self._aborted: bool = False
         if config and hasattr(config, "ai"):
             self._model = config.ai.model or ""
 
@@ -165,6 +167,21 @@ class AIClient:
         """Reset the conversation (starts a new session)."""
         self._session_id = None
         self._turn_count = 0
+
+    @property
+    def is_generating(self) -> bool:
+        """True while a subprocess is actively running."""
+        return self._active_proc is not None and self._active_proc.poll() is None
+
+    def abort(self) -> None:
+        """Kill the active subprocess and mark as aborted."""
+        self._aborted = True
+        if self._active_proc:
+            try:
+                self._active_proc.kill()
+            except Exception:
+                pass
+            self._active_proc = None
 
     def get_system_prompt(self) -> str:
         return self._custom_system_prompt or SYSTEM_PROMPT
@@ -303,6 +320,7 @@ class AIClient:
 
     def _run_claude_stream(self, prompt: str):
         """Stream response from ``claude -p`` using ``stream-json`` output."""
+        self._aborted = False
         cmd = [self._claude_path, "-p", prompt, "--output-format", "stream-json",
                "--verbose", "--max-turns", "1",
                "--system-prompt", self.get_system_prompt()]
@@ -317,12 +335,15 @@ class AIClient:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
+            self._active_proc = proc
         except FileNotFoundError:
             yield "[Error: claude CLI not found]"
             return
 
         try:
             while True:
+                if self._aborted:
+                    break
                 line = proc.stdout.readline()
                 if not line:
                     break
@@ -345,18 +366,22 @@ class AIClient:
                 if text:
                     yield text
 
-            proc.wait(timeout=10)
-            if proc.returncode and proc.returncode != 0:
-                stderr = ""
-                if proc.stderr:
-                    stderr = proc.stderr.read()[:300]
-                yield f"\n[Error: exit code {proc.returncode}: {stderr}]"
+            if not self._aborted:
+                proc.wait(timeout=10)
+                if proc.returncode and proc.returncode != 0:
+                    stderr = ""
+                    if proc.stderr:
+                        stderr = proc.stderr.read()[:300]
+                    yield f"\n[Error: exit code {proc.returncode}: {stderr}]"
         except Exception as e:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            yield f"\n[Error: {str(e)[:100]}]"
+            if not self._aborted:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                yield f"\n[Error: {str(e)[:100]}]"
+        finally:
+            self._active_proc = None
 
     @staticmethod
     def _extract_stream_text(data: dict) -> str:
