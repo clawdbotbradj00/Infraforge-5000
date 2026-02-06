@@ -25,6 +25,7 @@ class DashboardScreen(Screen):
         Binding("4", "manage_dns", "4:DNS", show=True),
         Binding("5", "manage_ipam", "5:IPAM", show=True),
         Binding("6", "create_vm", "6:New VM", show=True),
+        Binding("7", "manage_ansible", "7:Ansible", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
@@ -66,6 +67,7 @@ class DashboardScreen(Screen):
                 ListItem(Label("  [4]  DNS Management    —  View and manage DNS records"), id="nav-dns"),
                 ListItem(Label("  [5]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
                 ListItem(Label("  [6]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
+                ListItem(Label("  [7]  Ansible           —  Manage playbooks and automation"), id="nav-ansible"),
                 id="nav-menu",
             )
         yield Footer()
@@ -213,6 +215,8 @@ class DashboardScreen(Screen):
             self.action_manage_ipam()
         elif item_id == "nav-create":
             self.action_create_vm()
+        elif item_id == "nav-ansible":
+            self.action_manage_ansible()
 
     def action_view_vms(self):
         from infraforge.screens.vm_list import VMListScreen
@@ -237,6 +241,10 @@ class DashboardScreen(Screen):
     def action_create_vm(self):
         from infraforge.screens.new_vm import NewVMScreen
         self.app.push_screen(NewVMScreen())
+
+    def action_manage_ansible(self):
+        from infraforge.screens.ansible_screen import AnsibleScreen
+        self.app.push_screen(AnsibleScreen())
 
     @work(thread=True)
     def _check_for_update(self):

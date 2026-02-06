@@ -51,7 +51,51 @@ def _detect_missing(existing: dict) -> list[str]:
     ipam = existing.get("ipam", {})
     if not ipam.get("url"):
         missing.append("ipam")
+    ai = existing.get("ai", {})
+    if not ai.get("api_key"):
+        missing.append("ai")
     return missing
+
+
+# =====================================================================
+# AI Configuration
+# =====================================================================
+
+def _configure_ai(console: Console, prev: dict | None = None) -> dict:
+    """Configure AI provider settings."""
+    prev = prev or {}
+    console.print("\n[bold cyan]─── AI Configuration ───[/bold cyan]\n")
+    console.print("[dim]An Anthropic API key enables AI-assisted features like[/dim]")
+    console.print("[dim]natural language playbook generation and smart suggestions.[/dim]\n")
+
+    if not Confirm.ask("Configure AI provider?", default=True):
+        return prev or {"provider": "", "api_key": "", "model": "claude-sonnet-4-5-20250929"}
+
+    provider = "anthropic"
+    console.print(f"  Provider: [bold]{provider}[/bold]")
+
+    prev_key = prev.get("api_key", "")
+    if prev_key:
+        masked = prev_key[:8] + "..." + prev_key[-4:] if len(prev_key) > 12 else "****"
+        console.print(f"  [dim]Current key: {masked}[/dim]")
+        if Confirm.ask("  Keep existing API key?", default=True):
+            api_key = prev_key
+        else:
+            api_key = Prompt.ask("  Anthropic API Key", password=True)
+    else:
+        api_key = Prompt.ask("  Anthropic API Key (sk-ant-...)", password=True)
+
+    model = Prompt.ask(
+        "  Model",
+        default=prev.get("model", "claude-sonnet-4-5-20250929"),
+    )
+
+    console.print(f"  [green]✓[/green] AI configured: {provider} / {model}")
+    return {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+    }
 
 
 def run_setup_wizard():
@@ -122,6 +166,14 @@ def run_setup_wizard():
     else:
         skip_confirm = missing_only and "ipam" in missing
         config["ipam"] = _configure_ipam(console, existing.get("ipam", {}), skip_confirm=skip_confirm)
+
+    # ── AI Provider ───────────────────────────────────────────────────
+    ex_ai = existing.get("ai", {})
+    if not (missing_only and ex_ai.get("api_key")):
+        config["ai"] = _configure_ai(console, ex_ai)
+    else:
+        console.print("[dim]AI: already configured — skipping.[/dim]")
+        config["ai"] = ex_ai
 
     # ── Defaults ──────────────────────────────────────────────────────
     ex_tf = existing.get("terraform", {})

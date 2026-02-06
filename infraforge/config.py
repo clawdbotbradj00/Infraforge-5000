@@ -68,6 +68,13 @@ class IPAMConfig:
 
 
 @dataclass
+class AIConfig:
+    provider: str = ""          # "anthropic"
+    api_key: str = ""
+    model: str = "claude-sonnet-4-5-20250929"
+
+
+@dataclass
 class DefaultsConfig:
     cpu_cores: int = 2
     memory_mb: int = 2048
@@ -86,6 +93,7 @@ class Config:
     terraform: TerraformConfig = field(default_factory=TerraformConfig)
     ansible: AnsibleConfig = field(default_factory=AnsibleConfig)
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
 
     CONFIG_PATHS = [
         Path.home() / ".config" / "infraforge" / "config.yaml",
@@ -188,6 +196,15 @@ class Config:
                 username=str(ipam.get("username", "")),
                 password=str(ipam.get("password", "")),
                 verify_ssl=bool(ipam.get("verify_ssl", False)),
+            )
+
+        # Parse ai section
+        if "ai" in data:
+            ai = data["ai"]
+            config.ai = AIConfig(
+                provider=str(ai.get("provider", "")),
+                api_key=str(ai.get("api_key", "")),
+                model=str(ai.get("model", "claude-sonnet-4-5-20250929")),
             )
 
         # Parse defaults section
