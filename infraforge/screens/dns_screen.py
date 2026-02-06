@@ -417,25 +417,18 @@ class DNSScreen(Screen):
     def _init_zones(self) -> None:
         """Populate the zone list from config.
 
-        Uses ``self.app.config.dns.zones`` (list) if available, falling
-        back to the single ``self.app.config.dns.zone`` string.
+        Uses ``self.app.config.dns.zones`` (list).
         """
         dns_cfg = self.app.config.dns
         zones: list[str] = getattr(dns_cfg, "zones", None) or []
-        if not zones and dns_cfg.zone:
-            zones = [dns_cfg.zone]
         self._zones = list(zones)
         if self._zones:
             self._active_zone_index = 0
 
     def _persist_zones(self) -> None:
-        """Write the current zone list back to config and save."""
+        """Write the current zone list back to config."""
         dns_cfg = self.app.config.dns
-        # Support both the new multi-zone list and the legacy single zone
-        if hasattr(dns_cfg, "zones"):
-            dns_cfg.zones = list(self._zones)
-        if self._zones:
-            dns_cfg.zone = self._zones[self._active_zone_index]
+        dns_cfg.zones = list(self._zones)
 
     @property
     def _active_zone(self) -> str:
@@ -550,7 +543,8 @@ class DNSScreen(Screen):
             "[dim]dns:[/dim]\n"
             "[dim]  provider: bind9[/dim]\n"
             "[dim]  server: 10.0.0.1[/dim]\n"
-            "[dim]  zone: lab.local[/dim]\n"
+            "[dim]  zones:[/dim]\n"
+            "[dim]    - lab.local[/dim]\n"
             "[dim]  domain: lab.local[/dim]\n"
             "[dim]  tsig_key_name: infraforge-key[/dim]\n"
             "[dim]  tsig_key_secret: <base64-key>[/dim]\n"
