@@ -73,6 +73,7 @@ HELP_TEXT = """\
 
   Configuration: ~/.config/infraforge/config.yaml
   Setup wizard:  infraforge setup
+  Update:        infraforge update
 """
 
 

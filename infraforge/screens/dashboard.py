@@ -25,6 +25,7 @@ class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="dashboard-container"):
+            yield Static("", id="update-banner", markup=True, classes="hidden")
             yield Static("Dashboard", classes="section-title")
             with Horizontal(id="stats-row"):
                 with Container(classes="stat-card"):
@@ -56,6 +57,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self):
         self.load_data()
+        self._check_for_update()
 
     @work(thread=True)
     def load_data(self):
@@ -154,6 +156,29 @@ class DashboardScreen(Screen):
     def action_create_vm(self):
         from infraforge.screens.new_vm import NewVMScreen
         self.app.push_screen(NewVMScreen())
+
+    @work(thread=True)
+    def _check_for_update(self):
+        """Check GitHub for a newer release in the background."""
+        try:
+            from infraforge.updater import check_for_update
+            result = check_for_update()
+            if result:
+                self.app.call_from_thread(self._show_update_banner, result)
+        except Exception:
+            pass
+
+    def _show_update_banner(self, result: dict):
+        banner = self.query_one("#update-banner", Static)
+        latest = result.get("latest", "?")
+        current = result.get("current", "?")
+        banner.update(
+            f"  [bold yellow]New version available![/bold yellow]  "
+            f"[bold cyan]v{latest}[/bold cyan]  [dim](you have v{current})[/dim]  "
+            f"[bold yellow]—[/bold yellow]  "
+            f"Run [bold white on dark_green] infraforge update [/bold white on dark_green] to upgrade"
+        )
+        banner.remove_class("hidden")
 
     def action_refresh(self):
         self.load_data()

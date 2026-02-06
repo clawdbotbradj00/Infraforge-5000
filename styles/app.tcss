@@ -54,6 +54,17 @@ Screen {
 
 /* ── Dashboard Screen ── */
 
+#update-banner {
+    height: auto;
+    margin: 0 0 1 0;
+    background: $warning 30%;
+    border: round $warning;
+    color: $text;
+    padding: 0 2;
+    text-align: center;
+    text-style: bold;
+}
+
 #dashboard-container {
     padding: 1 2;
 }

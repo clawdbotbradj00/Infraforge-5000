@@ -14,6 +14,12 @@ def main():
         run_setup_wizard()
         return
 
+    # Check for update mode
+    if len(sys.argv) > 1 and sys.argv[1] == "update":
+        from infraforge.updater import perform_update
+        success = perform_update()
+        sys.exit(0 if success else 1)
+
     # Load config
     try:
         config = Config.load()
