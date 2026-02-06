@@ -3,6 +3,7 @@
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.widgets import Header, Footer, Static, LoadingIndicator
 from textual.containers import Container, Center, Middle
 from textual import work
@@ -60,18 +61,258 @@ class ConnectionErrorScreen(Screen):
         self.app.exit()
 
 
-_THEME_CYCLE = [
-    "textual-dark",
-    "dracula",
-    "nord",
-    "tokyo-night",
-    "monokai",
-    "gruvbox",
-    "catppuccin-mocha",
-    "solarized-dark",
-    "solarized-light",
-    "catppuccin-latte",
+_CUSTOM_THEMES = [
+    # ── Dark backgrounds, light text ──────────────────────────────
+    Theme(
+        name="midnight",
+        primary="#5B9BD5",
+        secondary="#4472C4",
+        accent="#FFC000",
+        warning="#FFC000",
+        error="#FF6B6B",
+        success="#70AD47",
+        foreground="#D6E4F0",
+        background="#0C1021",
+        surface="#131B30",
+        panel="#1A2742",
+        dark=True,
+        variables={
+            "block-cursor-background": "#FFC000",
+            "block-cursor-foreground": "#0C1021",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#997300",
+            "block-cursor-blurred-foreground": "#0C1021",
+            "footer-key-foreground": "#FFC000",
+            "footer-background": "#1A2742",
+            "input-selection-background": "#4472C4 35%",
+            "button-color-foreground": "#0C1021",
+        },
+    ),
+    Theme(
+        name="matrix",
+        primary="#00FF41",
+        secondary="#008F11",
+        accent="#33FF33",
+        warning="#CCFF00",
+        error="#FF0033",
+        success="#00FF41",
+        foreground="#00FF41",
+        background="#000000",
+        surface="#0A0A0A",
+        panel="#0D1A0D",
+        dark=True,
+        variables={
+            "block-cursor-background": "#00FF41",
+            "block-cursor-foreground": "#000000",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#006B1A",
+            "block-cursor-blurred-foreground": "#000000",
+            "footer-key-foreground": "#33FF33",
+            "input-selection-background": "#008F11 40%",
+            "button-color-foreground": "#000000",
+        },
+    ),
+    Theme(
+        name="amber",
+        primary="#FFB000",
+        secondary="#CC8800",
+        accent="#FFCC00",
+        warning="#FFEE00",
+        error="#FF4400",
+        success="#FFB000",
+        foreground="#FFB000",
+        background="#000000",
+        surface="#0A0800",
+        panel="#1A1000",
+        dark=True,
+        variables={
+            "block-cursor-background": "#FFB000",
+            "block-cursor-foreground": "#000000",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#805800",
+            "block-cursor-blurred-foreground": "#000000",
+            "footer-key-foreground": "#FFCC00",
+            "input-selection-background": "#CC8800 40%",
+            "button-color-foreground": "#000000",
+        },
+    ),
+    Theme(
+        name="cobalt",
+        primary="#3A96DD",
+        secondary="#0078D4",
+        accent="#FFFF00",
+        warning="#FFB900",
+        error="#E81123",
+        success="#16C60C",
+        foreground="#FFFFFF",
+        background="#012456",
+        surface="#013A6B",
+        panel="#01497D",
+        dark=True,
+        variables={
+            "block-cursor-background": "#FFFF00",
+            "block-cursor-foreground": "#012456",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#999900",
+            "block-cursor-blurred-foreground": "#012456",
+            "footer-key-foreground": "#FFFF00",
+            "footer-background": "#01497D",
+            "input-selection-background": "#3A96DD 40%",
+            "button-color-foreground": "#012456",
+        },
+    ),
+    Theme(
+        name="elementary",
+        primary="#00BCFF",
+        secondary="#F78FE7",
+        accent="#00D3D0",
+        warning="#D0BC00",
+        error="#FF8059",
+        success="#44BC44",
+        foreground="#F2F2F2",
+        background="#101010",
+        surface="#1A1A1A",
+        panel="#242424",
+        dark=True,
+        variables={
+            "block-cursor-background": "#F2F2F2",
+            "block-cursor-foreground": "#101010",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#888888",
+            "block-cursor-blurred-foreground": "#101010",
+            "footer-key-foreground": "#00BCFF",
+            "input-selection-background": "#00BCFF 30%",
+            "button-color-foreground": "#101010",
+        },
+    ),
+    Theme(
+        name="dark-pastel",
+        primary="#61AFEF",
+        secondary="#C678DD",
+        accent="#56B6C2",
+        warning="#E5C07B",
+        error="#E06C75",
+        success="#98C379",
+        foreground="#FFFFFF",
+        background="#000000",
+        surface="#0C0C0C",
+        panel="#1C1C1C",
+        dark=True,
+        variables={
+            "block-cursor-background": "#FFFFFF",
+            "block-cursor-foreground": "#000000",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#888888",
+            "block-cursor-blurred-foreground": "#000000",
+            "footer-key-foreground": "#61AFEF",
+            "input-selection-background": "#61AFEF 30%",
+            "button-color-foreground": "#000000",
+        },
+    ),
+    Theme(
+        name="borland",
+        primary="#FFFF55",
+        secondary="#55FFFF",
+        accent="#FFFF55",
+        warning="#FFFF55",
+        error="#FF5555",
+        success="#55FF55",
+        foreground="#FFFFFF",
+        background="#0000A4",
+        surface="#0000CC",
+        panel="#000088",
+        dark=True,
+        variables={
+            "block-cursor-background": "#FFFF55",
+            "block-cursor-foreground": "#0000A4",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#999933",
+            "block-cursor-blurred-foreground": "#0000A4",
+            "footer-key-foreground": "#FFFF55",
+            "footer-background": "#000088",
+            "input-selection-background": "#55FFFF 35%",
+            "button-color-foreground": "#0000A4",
+        },
+    ),
+    # ── Light backgrounds, dark text ──────────────────────────────
+    Theme(
+        name="paper",
+        primary="#0451A5",
+        secondary="#267F99",
+        accent="#AF00DB",
+        warning="#BF8803",
+        error="#CD3131",
+        success="#008000",
+        foreground="#1E1E1E",
+        background="#FFFFFF",
+        surface="#F3F3F3",
+        panel="#E8E8E8",
+        dark=False,
+        variables={
+            "block-cursor-background": "#0451A5",
+            "block-cursor-foreground": "#FFFFFF",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#6699CC",
+            "block-cursor-blurred-foreground": "#FFFFFF",
+            "footer-key-foreground": "#0451A5",
+            "footer-background": "#E8E8E8",
+            "input-selection-background": "#ADD6FF",
+            "button-color-foreground": "#FFFFFF",
+        },
+    ),
+    Theme(
+        name="acme",
+        primary="#2962FF",
+        secondary="#00897B",
+        accent="#AA5500",
+        warning="#BF8803",
+        error="#D50000",
+        success="#2E7D32",
+        foreground="#000000",
+        background="#FFFFEA",
+        surface="#F5F5D0",
+        panel="#EAEACC",
+        dark=False,
+        variables={
+            "block-cursor-background": "#2962FF",
+            "block-cursor-foreground": "#FFFFEA",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#7799DD",
+            "block-cursor-blurred-foreground": "#FFFFEA",
+            "footer-key-foreground": "#2962FF",
+            "footer-background": "#EAEACC",
+            "input-selection-background": "#BBDEFB",
+            "button-color-foreground": "#FFFFEA",
+        },
+    ),
+    Theme(
+        name="clrs",
+        primary="#0031A9",
+        secondary="#721045",
+        accent="#005E8B",
+        warning="#813E00",
+        error="#A60000",
+        success="#006800",
+        foreground="#262626",
+        background="#FFFFFF",
+        surface="#F2F2F2",
+        panel="#E0E0E0",
+        dark=False,
+        variables={
+            "block-cursor-background": "#0031A9",
+            "block-cursor-foreground": "#FFFFFF",
+            "block-cursor-text-style": "bold",
+            "block-cursor-blurred-background": "#6677AA",
+            "block-cursor-blurred-foreground": "#FFFFFF",
+            "footer-key-foreground": "#0031A9",
+            "footer-background": "#E0E0E0",
+            "input-selection-background": "#0031A9 25%",
+            "button-color-foreground": "#FFFFFF",
+        },
+    ),
 ]
+
+_THEME_CYCLE = [t.name for t in _CUSTOM_THEMES]
 
 
 class InfraForgeApp(App):
@@ -96,15 +337,18 @@ class InfraForgeApp(App):
         self._connected = False
 
     def on_mount(self):
-        # Restore saved theme
+        for t in _CUSTOM_THEMES:
+            self.register_theme(t)
         saved = self.preferences.theme
-        if saved and saved in [t for t in self.available_themes]:
+        if saved and saved in self.available_themes:
             self.theme = saved
+        else:
+            self.theme = _THEME_CYCLE[0]
         self.push_screen(ConnectingScreen())
         self.connect_to_proxmox()
 
     def action_cycle_theme(self) -> None:
-        """Cycle through curated color themes."""
+        """Cycle through high-contrast themes."""
         current = self.theme
         try:
             idx = _THEME_CYCLE.index(current)
