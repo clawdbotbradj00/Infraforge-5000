@@ -138,6 +138,7 @@ class AnsibleRunModal(ModalScreen):
         self._show_new_credential_form: bool = False
         self._new_cred_auth_type: str = "password"
         self._generated_pubkey: str = ""
+        self._cred_cursor: int = 0  # cursor in the credential list
         # Phase 3 — execution
         self._is_running: bool = False
         self._run_start: float = 0.0
@@ -182,7 +183,7 @@ class AnsibleRunModal(ModalScreen):
             self.app.pop_screen()
 
     def on_key(self, event) -> None:
-        """Handle arrow keys for subnet selection (Phase 0) and host toggles (Phase 1)."""
+        """Handle arrow keys for subnet selection (Phase 0), host toggles (Phase 1), and credential navigation (Phase 2)."""
         # Phase 0: subnet list navigation
         if self._phase == 0 and self._subnets:
             focused = self.focused
@@ -230,34 +231,91 @@ class AnsibleRunModal(ModalScreen):
             return
 
         # Phase 1: host toggle navigation
-        if self._phase != 1 or self._is_scanning or not self._alive_ips:
+        if self._phase == 1 and not self._is_scanning and self._alive_ips:
+            focused = self.focused
+            if isinstance(focused, (Button, Input)):
+                return
+
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                if self._host_cursor > 0:
+                    self._host_cursor -= 1
+                    self._refresh_host_lines()
+                    self._scroll_to_host_cursor()
+            elif event.key == "down":
+                event.prevent_default()
+                event.stop()
+                if self._host_cursor < len(self._alive_ips) - 1:
+                    self._host_cursor += 1
+                    self._refresh_host_lines()
+                    self._scroll_to_host_cursor()
+            elif event.key == "space":
+                event.prevent_default()
+                event.stop()
+                self._toggle_host(self._host_cursor)
+            elif event.key == "enter":
+                event.prevent_default()
+                event.stop()
+                included = self._get_included_ips()
+                if included:
+                    self._transition_to_credentials()
             return
 
-        focused = self.focused
-        if isinstance(focused, (Button, Input)):
-            return
+        # Phase 2: credential list navigation
+        if self._phase == 2 and not self._show_new_credential_form:
+            focused = self.focused
+            if isinstance(focused, (Button, Input)):
+                return
 
-        if event.key == "up":
-            event.prevent_default()
-            event.stop()
-            if self._host_cursor > 0:
-                self._host_cursor -= 1
-                self._refresh_host_lines()
-                self._scroll_to_host_cursor()
-        elif event.key == "down":
-            event.prevent_default()
-            event.stop()
-            if self._host_cursor < len(self._alive_ips) - 1:
-                self._host_cursor += 1
-                self._refresh_host_lines()
-                self._scroll_to_host_cursor()
-        elif event.key in ("enter", "space"):
-            event.prevent_default()
-            event.stop()
-            self._toggle_host(self._host_cursor)
+            total_items = len(self._credential_profiles) + 1  # profiles + "New"
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                if self._cred_cursor > 0:
+                    self._cred_cursor -= 1
+                    self._refresh_cred_lines()
+                    self._scroll_to_cred_cursor()
+            elif event.key == "down":
+                event.prevent_default()
+                event.stop()
+                if self._cred_cursor < total_items - 1:
+                    self._cred_cursor += 1
+                    self._refresh_cred_lines()
+                    self._scroll_to_cred_cursor()
+            elif event.key == "enter":
+                event.prevent_default()
+                event.stop()
+                if self._cred_cursor < len(self._credential_profiles):
+                    # Select profile and proceed to execution
+                    self._selected_credential = self._credential_profiles[self._cred_cursor]
+                    self._refresh_cred_lines()
+                    self._start_execution()
+                else:
+                    # "+ New Profile" line
+                    self._show_new_credential_form = True
+                    self._generated_pubkey = ""
+                    self._render_credential_selection()
+            elif event.key == "space":
+                event.prevent_default()
+                event.stop()
+                if self._cred_cursor < len(self._credential_profiles):
+                    prof = self._credential_profiles[self._cred_cursor]
+                    if self._selected_credential and self._selected_credential.name == prof.name:
+                        self._selected_credential = None
+                    else:
+                        self._selected_credential = prof
+                    self._refresh_cred_lines()
+                    self._update_cred_status()
+            elif event.key in ("d", "delete"):
+                event.prevent_default()
+                event.stop()
+                if self._cred_cursor < len(self._credential_profiles):
+                    self._delete_credential_at_cursor()
+            return
 
     def on_click(self, event) -> None:
-        """Handle mouse clicks on host lines and subnet lines."""
+        """Handle mouse clicks on host lines, subnet lines, and credential lines."""
         widget = event.widget
         if not widget or not hasattr(widget, "id") or not widget.id:
             return
@@ -278,6 +336,28 @@ class AnsibleRunModal(ModalScreen):
                     self._start_scan(cidr)
             except (ValueError, IndexError):
                 pass
+        elif widget.id.startswith("cred-line-"):
+            try:
+                idx = int(widget.id.split("-")[-1])
+                total_items = len(self._credential_profiles) + 1
+                if 0 <= idx < total_items:
+                    self._cred_cursor = idx
+                    if idx < len(self._credential_profiles):
+                        prof = self._credential_profiles[idx]
+                        if self._selected_credential and self._selected_credential.name == prof.name:
+                            self._selected_credential = None
+                        else:
+                            self._selected_credential = prof
+                    else:
+                        # Clicked "+ New Profile"
+                        self._show_new_credential_form = True
+                        self._generated_pubkey = ""
+                        self._render_credential_selection()
+                        return
+                    self._refresh_cred_lines()
+                    self._update_cred_status()
+            except (ValueError, IndexError):
+                pass
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Enter pressed in an Input — start scan if in Phase 0."""
@@ -293,6 +373,10 @@ class AnsibleRunModal(ModalScreen):
         if btn_id == "run-cancel-btn":
             if self._is_running:
                 self._abort_execution()
+            elif self._phase == 2 and self._show_new_credential_form:
+                self._show_new_credential_form = False
+                self._generated_pubkey = ""
+                self._render_credential_selection()
             elif self._phase == 2 and not self._show_new_credential_form:
                 self._phase = 1
                 self._is_scanning = False
@@ -313,12 +397,7 @@ class AnsibleRunModal(ModalScreen):
             elif self._phase == 3 and not self._is_running:
                 self.app.pop_screen()
 
-        # --- Credential buttons ---
-        elif btn_id == "run-cred-new-btn":
-            self._show_new_credential_form = True
-            self._generated_pubkey = ""
-            self._render_credential_selection()
-
+        # --- Credential form buttons (new form only) ---
         elif btn_id == "run-cred-save-btn":
             self._save_new_credential()
 
@@ -332,23 +411,6 @@ class AnsibleRunModal(ModalScreen):
 
         elif btn_id == "run-cred-delete-btn":
             self._delete_selected_credential()
-
-        elif btn_id == "cred-auth-type-pw":
-            self._new_cred_auth_type = "password"
-            self._render_credential_selection()
-
-        elif btn_id == "cred-auth-type-key":
-            self._new_cred_auth_type = "ssh_key"
-            self._render_credential_selection()
-
-        elif btn_id.startswith("run-cred-select-"):
-            try:
-                idx = int(btn_id.split("-")[-1])
-                if 0 <= idx < len(self._credential_profiles):
-                    self._selected_credential = self._credential_profiles[idx]
-                    self._render_credential_selection()
-            except (ValueError, IndexError):
-                pass
 
 
     # ------------------------------------------------------------------
@@ -373,6 +435,7 @@ class AnsibleRunModal(ModalScreen):
 
         # Clean up any widgets from other phases
         self._remove_cred_widgets()
+        self._remove_cred_lines()
         self._remove_host_toggles()
         self._remove_subnet_lines()
 
@@ -462,6 +525,7 @@ class AnsibleRunModal(ModalScreen):
             w.remove()
         self._remove_subnet_lines()
         self._remove_cred_widgets()
+        self._remove_cred_lines()
         self._remove_host_toggles()
 
         action_btn = self.query_one("#run-action-btn", Button)
@@ -487,15 +551,17 @@ class AnsibleRunModal(ModalScreen):
             f"[bold]Run: {self._playbook.filename}[/bold]  Phase 3/4: Credentials"
         )
 
-        # Remove widgets from other phases
+        # Remove widgets from other phases — Phase 0 widgets may linger
         for w in self.query("#run-ip-input"):
             w.remove()
         for w in self.query("#run-ipam-btn"):
             w.remove()
+        self._remove_subnet_lines()
         self._remove_host_toggles()
 
         # Remove all credential widgets for clean re-render
         self._remove_cred_widgets()
+        self._remove_cred_lines()
 
         scroll = self.query_one("#run-content", VerticalScroll)
         content = self.query_one("#run-phase-content", Static)
@@ -508,53 +574,42 @@ class AnsibleRunModal(ModalScreen):
         ]
 
         if self._credential_profiles:
-            lines.append("[bold]Saved Credential Profiles:[/bold]")
+            lines.append(
+                "[bold]Saved Credential Profiles:[/bold]  "
+                "[dim]up/down to navigate, Space to select, Enter to run, d to delete[/dim]"
+            )
+            lines.append(
+                f"[dim]      {'Name':<20}  {'User':<12}  Auth[/dim]"
+            )
             lines.append("")
         else:
             lines.append("[yellow]No saved credential profiles.[/yellow]")
-            lines.append("[dim]Create one below to continue.[/dim]")
+            lines.append("[dim]Press Enter on '+ New Profile' to create one.[/dim]")
 
         content.update("\n".join(lines))
 
-        # Mount profile selection buttons
-        if self._credential_profiles:
-            for idx, prof in enumerate(self._credential_profiles):
-                is_selected = (
-                    self._selected_credential is not None
-                    and self._selected_credential.name == prof.name
-                )
-                marker = ">> " if is_selected else "   "
-                auth_label = "Password" if prof.auth_type == "password" else "SSH Key"
-                label = f"{marker}{prof.name}  ({prof.username}, {auth_label})"
-                variant = "primary" if is_selected else "default"
-                btn = Button(
-                    label,
-                    variant=variant,
-                    id=f"run-cred-select-{idx}",
-                    classes="cred-widget cred-profile-btn",
-                )
-                scroll.mount(btn)
-
-            if self._selected_credential:
-                scroll.mount(
-                    Button(
-                        f"Delete '{self._selected_credential.name}'",
-                        variant="error",
-                        id="run-cred-delete-btn",
-                        classes="cred-widget",
-                    )
-                )
-
-        # New credential button / form
+        # Mount credential profile lines as Static widgets (cursor-based)
         if not self._show_new_credential_form:
-            scroll.mount(
-                Button(
-                    "+ Add New Credential",
-                    variant="warning",
-                    id="run-cred-new-btn",
-                    classes="cred-widget",
+            for idx, prof in enumerate(self._credential_profiles):
+                label = self._format_cred_line(idx, prof)
+                line = Static(
+                    label,
+                    markup=True,
+                    id=f"cred-line-{idx}",
+                    classes="cred-line",
                 )
+                scroll.mount(line)
+
+            # "+ New Profile" line
+            new_line_idx = len(self._credential_profiles)
+            new_label = self._format_new_cred_line()
+            new_line = Static(
+                new_label,
+                markup=True,
+                id=f"cred-line-{new_line_idx}",
+                classes="cred-line",
             )
+            scroll.mount(new_line)
         else:
             self._mount_new_credential_form(scroll)
 
@@ -567,15 +622,77 @@ class AnsibleRunModal(ModalScreen):
         cancel_btn = self.query_one("#run-cancel-btn", Button)
         cancel_btn.label = "Back"
 
+        self._update_cred_status()
+
+    def _format_cred_line(self, idx: int, profile: CredentialProfile) -> str:
+        """Build the markup for a single credential profile line."""
+        is_cursor = idx == self._cred_cursor
+        is_selected = (
+            self._selected_credential is not None
+            and self._selected_credential.name == profile.name
+        )
+        cursor = ">" if is_cursor else " "
+        check = "[green]\\[*][/green]" if is_selected else "[ ]"
+        auth = "key" if profile.auth_type == "ssh_key" else "pw"
+        name_padded = profile.name.ljust(20)
+        user_padded = profile.username.ljust(12)
+        if is_cursor:
+            return f" {cursor}  {check}  [bold]{name_padded}[/bold]  [dim]{user_padded}  {auth}[/dim]"
+        else:
+            return f" {cursor}  {check}  {name_padded}  [dim]{user_padded}  {auth}[/dim]"
+
+    def _format_new_cred_line(self) -> str:
+        """Build the markup for the '+ New Profile' line."""
+        is_cursor = self._cred_cursor == len(self._credential_profiles)
+        cursor = ">" if is_cursor else " "
+        if is_cursor:
+            return f" {cursor}  [bold yellow]+ New Profile[/bold yellow]"
+        else:
+            return f" {cursor}  [dim]+ New Profile[/dim]"
+
+    def _refresh_cred_lines(self) -> None:
+        """Refresh all credential line labels (for cursor movement)."""
+        for idx, prof in enumerate(self._credential_profiles):
+            try:
+                line = self.query_one(f"#cred-line-{idx}", Static)
+                line.update(self._format_cred_line(idx, prof))
+            except Exception:
+                pass
+        # Refresh the "+ New Profile" line
+        new_idx = len(self._credential_profiles)
+        try:
+            line = self.query_one(f"#cred-line-{new_idx}", Static)
+            line.update(self._format_new_cred_line())
+        except Exception:
+            pass
+
+    def _scroll_to_cred_cursor(self) -> None:
+        """Scroll the credential list so the cursor line is visible."""
+        try:
+            line = self.query_one(f"#cred-line-{self._cred_cursor}", Static)
+            line.scroll_visible()
+        except Exception:
+            pass
+
+    def _update_cred_status(self) -> None:
+        """Update status bar and action button for credential phase."""
+        action_btn = self.query_one("#run-action-btn", Button)
+        action_btn.disabled = self._selected_credential is None
+
         status = self.query_one("#run-status", Static)
         if self._selected_credential:
             status.update(
-                f"[dim]Using: {self._selected_credential.name} "
+                f"[dim]Selected: {self._selected_credential.name} "
                 f"({self._selected_credential.username}) — "
-                f"press Run Playbook[/dim]"
+                f"Enter to run, Space to deselect[/dim]"
             )
         else:
-            status.update("[dim]Select or create a credential profile[/dim]")
+            status.update("[dim]Navigate with arrows, Space to select, Enter on profile to run[/dim]")
+
+    def _remove_cred_lines(self) -> None:
+        """Remove all credential line widgets from the DOM."""
+        for w in self.query(".cred-line"):
+            w.remove()
 
     def _mount_new_credential_form(self, scroll: VerticalScroll) -> None:
         """Mount inline form widgets for creating a new credential."""
@@ -700,6 +817,7 @@ class AnsibleRunModal(ModalScreen):
         content = self.query_one("#run-phase-content", Static)
         content.update("")
         self._remove_cred_widgets()
+        self._remove_cred_lines()
         self._remove_host_toggles()
 
         action_btn = self.query_one("#run-action-btn", Button)
@@ -728,8 +846,14 @@ class AnsibleRunModal(ModalScreen):
         if target_override:
             text = target_override.strip()
         else:
-            ip_input = self.query_one("#run-ip-input", Input)
-            text = ip_input.value.strip()
+            try:
+                ip_input = self.query_one("#run-ip-input", Input)
+                text = ip_input.value.strip()
+            except Exception:
+                self.query_one("#run-status", Static).update(
+                    "[bold red]No target input available — enter a range first[/bold red]"
+                )
+                return
         if not text:
             self.query_one("#run-status", Static).update(
                 "[bold red]Enter at least one IP address or range[/bold red]"
@@ -836,7 +960,7 @@ class AnsibleRunModal(ModalScreen):
         if alive_count:
             lines.append(
                 "[bold]Alive hosts:[/bold]  "
-                "[dim]arrow keys to navigate, Enter to toggle[/dim]"
+                "[dim]up/down to navigate, Space to toggle, Enter to proceed[/dim]"
             )
             lines.append(
                 f"[dim]      {'IP':<16}  {'Hostname':<28}{'Description':<22}{'OS'}[/dim]"
@@ -992,11 +1116,11 @@ class AnsibleRunModal(ModalScreen):
         if included_count:
             status.update(
                 f"[dim]{included_count}/{total_alive} selected — "
-                f"Enter to toggle, Tab to proceed[/dim]"
+                f"Space to toggle, Enter to proceed[/dim]"
             )
         else:
             status.update(
-                "[dim]No hosts selected — Enter to include hosts[/dim]"
+                "[dim]No hosts selected — Space to include hosts[/dim]"
             )
 
     def _remove_host_toggles(self) -> None:
@@ -1130,7 +1254,7 @@ class AnsibleRunModal(ModalScreen):
             label = ", ".join(sources)
             self._set_status(
                 f"[dim]Enriched with {label} data  |  "
-                f"Enter to toggle, Tab to proceed[/dim]"
+                f"Space to toggle, Enter to proceed[/dim]"
             )
         else:
             self._update_host_count()
@@ -1149,6 +1273,8 @@ class AnsibleRunModal(ModalScreen):
         if self._credential_profiles and self._selected_credential is None:
             self._selected_credential = self._credential_profiles[0]
         self._show_new_credential_form = False
+        # Reset cursor: start at first profile, or at "+ New" if no profiles
+        self._cred_cursor = 0
         self._render_phase()
 
     # ------------------------------------------------------------------
@@ -1212,6 +1338,11 @@ class AnsibleRunModal(ModalScreen):
         self._selected_credential = profile
         self._show_new_credential_form = False
         self._generated_pubkey = ""
+        # Position cursor on the newly saved profile
+        for idx, p in enumerate(self._credential_profiles):
+            if p.name == profile.name:
+                self._cred_cursor = idx
+                break
         self._render_credential_selection()
         self._set_status(f"[green]Saved credential profile '{name}'[/green]")
 
@@ -1267,6 +1398,33 @@ class AnsibleRunModal(ModalScreen):
                 if self._credential_profiles
                 else None
             )
+            # Clamp cursor
+            total_items = len(self._credential_profiles) + 1
+            if self._cred_cursor >= total_items:
+                self._cred_cursor = max(0, total_items - 1)
+            self._render_credential_selection()
+            self._set_status(
+                f"[yellow]Deleted credential profile '{name}'[/yellow]"
+            )
+
+    def _delete_credential_at_cursor(self) -> None:
+        """Delete the credential profile at the current cursor position."""
+        if self._cred_cursor < len(self._credential_profiles):
+            prof = self._credential_profiles[self._cred_cursor]
+            name = prof.name
+            self._credential_mgr.delete_profile(name)
+            self._credential_profiles = self._credential_mgr.load_profiles()
+            # If the deleted profile was selected, clear or re-select
+            if self._selected_credential and self._selected_credential.name == name:
+                self._selected_credential = (
+                    self._credential_profiles[0]
+                    if self._credential_profiles
+                    else None
+                )
+            # Clamp cursor
+            total_items = len(self._credential_profiles) + 1
+            if self._cred_cursor >= total_items:
+                self._cred_cursor = max(0, total_items - 1)
             self._render_credential_selection()
             self._set_status(
                 f"[yellow]Deleted credential profile '{name}'[/yellow]"

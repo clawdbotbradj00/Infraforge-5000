@@ -842,6 +842,12 @@ AIChatModal {
     padding: 0 1;
 }
 
+.cred-line {
+    width: 100%;
+    height: 1;
+    padding: 0 1;
+}
+
 /* ── Host List (Ansible Ping Sweep Results) ── */
 
 .host-line {
@@ -853,17 +859,6 @@ AIChatModal {
 }
 
 /* ── Credential Selection (Ansible Run Modal) ── */
-
-.cred-profile-btn {
-    width: 100%;
-    height: 3;
-    content-align: left middle;
-    text-align: left;
-}
-
-.cred-profile-btn:hover {
-    background: $boost;
-}
 
 #run-cred-new-btn {
     margin: 1 0 0 0;
