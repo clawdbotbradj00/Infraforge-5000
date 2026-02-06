@@ -194,6 +194,57 @@ class DNSClient:
             })
         return results
 
+    def discover_zones(self, hints: list[str] | None = None) -> list[str]:
+        """Attempt to discover zones served by this DNS server.
+
+        Strategy:
+          1. Try each zone in *hints* (e.g. the configured domain) via SOA query
+          2. For every confirmed zone, do an AXFR and look for NS delegations
+             and SOA records that point to additional zones on this server
+          3. Return a deduplicated list of discovered zone names
+
+        This is best-effort — DNS doesn't provide a standard way to enumerate
+        all zones on a server, so we rely on what we can reach via AXFR.
+        """
+        discovered: list[str] = []
+        checked: set[str] = set()
+
+        # Seed candidates from hints
+        candidates: list[str] = list(hints or [])
+
+        while candidates:
+            zone = candidates.pop(0).strip().rstrip(".")
+            if not zone or zone in checked:
+                continue
+            checked.add(zone)
+
+            soa = self.check_zone(zone)
+            if soa is None:
+                continue
+
+            discovered.append(zone)
+
+            # Try AXFR to find delegated sub-zones or other zones
+            try:
+                records = self.get_zone_records(zone)
+                for rec in records:
+                    # NS records for names that aren't the zone apex hint at
+                    # delegated sub-zones we might also manage
+                    if rec.rtype == "NS" and rec.name != zone and rec.name != "@":
+                        sub = f"{rec.name}.{zone}" if "." not in rec.name else rec.name
+                        sub = sub.rstrip(".")
+                        if sub not in checked:
+                            candidates.append(sub)
+                    # PTR / SOA records sometimes reference other zones
+                    if rec.rtype == "SOA" and rec.name != zone and rec.name != "@":
+                        cand = rec.name.rstrip(".")
+                        if cand not in checked:
+                            candidates.append(cand)
+            except (DNSError, Exception):
+                pass  # AXFR might not be allowed; that's fine
+
+        return discovered
+
     # ------------------------------------------------------------------
     # Zone creation (rndc addzone)
     # ------------------------------------------------------------------

@@ -410,7 +410,7 @@ class DNSScreen(Screen):
         else:
             dns_cfg = self.app.config.dns
             if dns_cfg.provider == "bind9" and dns_cfg.server:
-                self._show_no_zones()
+                self._auto_discover_zones()
             else:
                 self._show_not_configured()
 
@@ -538,6 +538,75 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
     # Display update helpers
     # ------------------------------------------------------------------
+
+    @work(thread=True)
+    def _auto_discover_zones(self) -> None:
+        """Auto-discover zones from the DNS server when none are configured."""
+        dns_cfg = self.app.config.dns
+
+        self.app.call_from_thread(
+            self._set_status,
+            f"Discovering zones from {dns_cfg.server}..."
+        )
+        zone_info = self.query_one("#dns-zone-info", Static)
+        self.app.call_from_thread(
+            zone_info.update,
+            f"[bold]DNS Server:[/bold]  [green]{dns_cfg.server}:{dns_cfg.port}[/green]\n"
+            f"[bold]TSIG Key:[/bold]   [green]{dns_cfg.tsig_key_name or '(none)'}[/green]\n\n"
+            "[dim]Discovering zones...[/dim]"
+        )
+
+        try:
+            from infraforge.dns_client import DNSClient
+
+            client = DNSClient.from_config(self.app.config)
+
+            # Build hints: domain is the primary candidate
+            hints = []
+            if dns_cfg.domain:
+                hints.append(dns_cfg.domain)
+
+            discovered = client.discover_zones(hints=hints)
+
+            if discovered:
+                self._zones = discovered
+                self._active_zone_index = 0
+                self._persist_zones()
+                self.app.call_from_thread(self._render_zone_bar)
+                # Now load the first zone's data
+                self._loading = True
+                self.app.call_from_thread(
+                    self._set_status,
+                    f"Found {len(discovered)} zone(s) — loading {discovered[0]}..."
+                )
+
+                from infraforge.dns_client import DNSError
+
+                zone = self._active_zone
+                try:
+                    soa = client.get_zone_soa(zone)
+                    self._soa = soa
+                except DNSError:
+                    self._soa = {}
+
+                try:
+                    records = client.get_zone_records(zone)
+                    self._records = records
+                except DNSError as exc:
+                    self._records = []
+                    self.app.call_from_thread(
+                        self._show_error, f"Zone transfer failed: {exc}"
+                    )
+                    self._loading = False
+                    return
+
+                self.app.call_from_thread(self._update_display)
+                self._loading = False
+            else:
+                self.app.call_from_thread(self._show_no_zones)
+
+        except Exception as exc:
+            self.app.call_from_thread(self._show_no_zones)
 
     def _show_no_zones(self) -> None:
         """DNS is configured but no zones are added yet."""
