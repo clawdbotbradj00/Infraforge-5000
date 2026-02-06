@@ -74,10 +74,10 @@ class VMListScreen(Screen):
 
             # Control bar
             with Horizontal(id="vm-controls"):
-                yield Static("Filter: All", id="vm-filter-label")
-                yield Static("Sort: VMID ▲", id="vm-sort-label")
-                yield Static("Group: None", id="vm-group-label")
-                yield Static("", id="vm-count-label")
+                yield Static("Filter: All", id="vm-filter-label", markup=True)
+                yield Static("Sort: VMID ▲", id="vm-sort-label", markup=True)
+                yield Static("Group: None", id="vm-group-label", markup=True)
+                yield Static("", id="vm-count-label", markup=True)
 
             yield DataTable(id="vm-table")
         yield Footer()
@@ -92,7 +92,7 @@ class VMListScreen(Screen):
         table.add_column(Text("VMID", style="bold cyan"), key="vmid", width=7)
         table.add_column(Text("Name", style="bold cyan"), key="name", width=30)
         table.add_column(Text("Type", style="bold cyan"), key="type", width=6)
-        table.add_column(Text("Status", style="bold cyan"), key="status", width=10)
+        table.add_column(Text("Status", style="bold cyan"), key="status", width=12)
         table.add_column(Text("Node", style="bold cyan"), key="node", width=10)
         table.add_column(Text("CPU%", style="bold cyan"), key="cpu", width=7)
         table.add_column(Text("Memory", style="bold cyan"), key="mem", width=10)
