@@ -43,6 +43,7 @@ class NodeInfo:
     maxdisk: int = 0
     uptime: int = 0
     ssl_fingerprint: str = ""
+    cpu_model: str = ""
 
     @property
     def cpu_percent(self) -> float:
@@ -59,6 +60,26 @@ class NodeInfo:
         if self.maxdisk == 0:
             return 0.0
         return (self.disk / self.maxdisk) * 100
+
+    @property
+    def mem_used_gib(self) -> float:
+        """Memory used in GiB."""
+        return self.mem / (1024 ** 3) if self.mem else 0.0
+
+    @property
+    def mem_total_gib(self) -> float:
+        """Total memory in GiB."""
+        return self.maxmem / (1024 ** 3) if self.maxmem else 0.0
+
+    @property
+    def disk_used_gib(self) -> float:
+        """Disk used in GiB."""
+        return self.disk / (1024 ** 3) if self.disk else 0.0
+
+    @property
+    def disk_total_gib(self) -> float:
+        """Total disk in GiB."""
+        return self.maxdisk / (1024 ** 3) if self.maxdisk else 0.0
 
     @property
     def uptime_str(self) -> str:
@@ -238,7 +259,7 @@ class NewVMSpec:
     template: str = ""
     template_volid: str = ""
     template_vmid: Optional[int] = None
-    vm_type: VMType = VMType.LXC
+    vm_type: VMType = VMType.QEMU
     cpu_cores: int = 2
     memory_mb: int = 2048
     disk_gb: int = 10

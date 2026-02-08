@@ -95,9 +95,20 @@ class ProxmoxClient:
         """Get raw node data."""
         return self._get_nodes_raw()
 
+    def _fetch_node_cpu_model(self, node_name: str) -> str:
+        """Fetch CPU model string from node status endpoint."""
+        try:
+            status = self.api.nodes(node_name).status.get()
+            cpuinfo = status.get("cpuinfo", {})
+            model = cpuinfo.get("model", "")
+            return model
+        except Exception:
+            return ""
+
     def get_node_info(self, force: bool = False) -> list[NodeInfo]:
         """Get info about all cluster nodes."""
-        return [
+        raw = self._get_nodes_raw(force=force)
+        nodes = [
             NodeInfo(
                 node=n.get("node", ""),
                 status=n.get("status", "unknown"),
@@ -110,8 +121,20 @@ class ProxmoxClient:
                 uptime=int(n.get("uptime", 0)),
                 ssl_fingerprint=n.get("ssl_fingerprint", ""),
             )
-            for n in self._get_nodes_raw(force=force)
+            for n in raw
         ]
+        # Enrich online nodes with CPU model in parallel
+        online = [ni for ni in nodes if ni.status == "online"]
+        if online:
+            with ThreadPoolExecutor(max_workers=min(len(online), 4)) as pool:
+                futures = {pool.submit(self._fetch_node_cpu_model, ni.node): ni for ni in online}
+                for fut in futures:
+                    ni = futures[fut]
+                    try:
+                        ni.cpu_model = fut.result(timeout=5)
+                    except Exception:
+                        pass
+        return nodes
 
     # ------------------------------------------------------------------
     # VMs & templates (parallelized per node)
@@ -341,6 +364,20 @@ class ProxmoxClient:
             pass
         return templates
 
+    def download_appliance_template(self, node: str, storage: str, template: str) -> str:
+        """Download an appliance template via pveam. Returns UPID."""
+        return self.api.nodes(node).aplinfo.post(storage=storage, template=template)
+
+    def download_url_to_storage(self, node: str, storage: str, url: str,
+                                filename: str, content: str = "iso") -> str:
+        """Download a URL to Proxmox storage. Returns UPID.
+
+        content: 'iso' for ISO images, 'vztmpl' for container templates
+        """
+        return self.api.nodes(node).storage(storage)('download-url').post(
+            url=url, filename=filename, content=content,
+        )
+
     # ------------------------------------------------------------------
     # Storage info (parallelized per node)
     # ------------------------------------------------------------------
@@ -411,6 +448,10 @@ class ProxmoxClient:
             newid=newid, name=name, full=1 if full else 0,
         )
 
+    def get_vm_config(self, node: str, vmid: int) -> dict:
+        """Get full VM configuration dict."""
+        return self.api.nodes(node).qemu(vmid).config.get()
+
     def set_vm_config(self, node: str, vmid: int, **kwargs) -> None:
         """Set VM configuration (cores, memory, ipconfig0, nameserver, net0, etc.)."""
         self.api.nodes(node).qemu(vmid).config.put(**kwargs)
@@ -463,6 +504,15 @@ class ProxmoxClient:
         except Exception:
             return []
 
+    def get_task_status(self, node: str, upid: str) -> dict:
+        """Get status of a task by UPID."""
+        return self.api.nodes(node).tasks(upid).status.get()
+
+    def get_task_log(self, node: str, upid: str, start: int = 0,
+                     limit: int = 50) -> list[dict]:
+        """Get log lines from a task. Each dict has 'n' (line number) and 't' (text)."""
+        return self.api.nodes(node).tasks(upid).log.get(start=start, limit=limit)
+
     def wait_for_task(self, node: str, upid: str, timeout: int = 120) -> bool:
         """Poll a Proxmox task until completion. Returns True if OK, False on failure/timeout."""
         elapsed = 0
@@ -473,6 +523,28 @@ class ProxmoxClient:
             time.sleep(2)
             elapsed += 2
         return False
+
+    def create_vm_from_cloud_image(self, node: str, vmid: int, name: str,
+                                   storage: str, image_path: str,
+                                   memory: int = 2048, cores: int = 2) -> None:
+        """Create a VM, import a cloud image disk, and convert to template.
+
+        This creates the VM, sets the boot config, and converts to template.
+        The actual disk import needs to happen via qm importdisk on the node.
+        """
+        # Create the VM
+        self.api.nodes(node).qemu.post(
+            vmid=vmid,
+            name=name,
+            memory=memory,
+            cores=cores,
+            ostype="l26",
+            scsihw="virtio-scsi-single",
+            net0="virtio,bridge=vmbr0",
+            serial0="socket",
+            vga="serial0",
+            agent="enabled=1",
+        )
 
     # ------------------------------------------------------------------
     # Parsing

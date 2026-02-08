@@ -10,8 +10,8 @@ def main():
 
     # Check for setup mode
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        from infraforge.setup_wizard import run_setup_wizard
-        run_setup_wizard()
+        from infraforge.screens.setup_screen import run_setup_tui
+        run_setup_tui()
         return
 
     # Check for update mode
@@ -19,6 +19,13 @@ def main():
         from infraforge.updater import perform_update
         success = perform_update()
         sys.exit(0 if success else 1)
+
+    # Check for version browser mode
+    if (len(sys.argv) > 1 and sys.argv[1] == "versions") or \
+       (len(sys.argv) > 2 and sys.argv[1] == "list" and sys.argv[2] == "versions"):
+        from infraforge.screens.version_list_screen import run_version_browser
+        run_version_browser()
+        return
 
     # Load config
     try:

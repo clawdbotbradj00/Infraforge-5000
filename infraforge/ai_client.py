@@ -93,6 +93,16 @@ DNS record lookup (check if a record exists and its value):
   answering. Do not guess what the result will contain.
 """
 
+# ---------------------------------------------------------------------------
+# Diagnostic system prompt — lightweight, one-shot issue analysis
+# ---------------------------------------------------------------------------
+
+_DIAG_SYSTEM_PROMPT = """\
+You are a Proxmox infrastructure diagnostic assistant. Given a list of \
+warnings or errors that occurred during a VM operation, provide a brief, \
+clear summary (1-3 sentences) explaining what happened and whether it \
+matters. Be concise and practical. No markdown formatting."""
+
 # Regex that extracts   <<<ACTION:name:{...}>>>   markers
 _ACTION_RE = re.compile(r"<<<ACTION:(\w+):(.*?)>>>")
 
@@ -185,6 +195,57 @@ class AIClient:
 
     def get_system_prompt(self) -> str:
         return self._custom_system_prompt or SYSTEM_PROMPT
+
+    def diagnose_issues(self, issues: list[str], operation: str) -> str:
+        """Return a brief AI-generated summary of warnings/errors.
+
+        This is a lightweight, one-shot diagnostic call with no session or
+        history tracking.  It fails silently (returns ``""``) when the CLI
+        is unavailable, *issues* is empty, or any error occurs.
+
+        Parameters
+        ----------
+        issues:
+            Warning or error strings captured during the operation.
+        operation:
+            Human-readable name of the operation, e.g.
+            ``"cloning staging VM"`` or ``"finalizing template"``.
+        """
+        if not self._claude_path or not issues:
+            return ""
+
+        numbered = "\n".join(f"{i}. {msg}" for i, msg in enumerate(issues, 1))
+        prompt = (
+            f"Operation: {operation}\n\n"
+            f"The following warnings/issues occurred:\n"
+            f"{numbered}\n\n"
+            f"Summarize what happened in 1-3 sentences."
+        )
+
+        cmd = [
+            self._claude_path, "-p", prompt,
+            "--output-format", "json",
+            "--max-turns", "1",
+            "--system-prompt", _DIAG_SYSTEM_PROMPT,
+        ]
+
+        if self._model:
+            cmd.extend(["--model", self._model])
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if proc.returncode != 0:
+                return ""
+
+            data = json.loads(proc.stdout)
+            return data.get("result", "")
+        except Exception:
+            return ""
 
     def chat_stream(self, user_message: str, context: str = ""):
         """Yield text chunks as they stream from the claude CLI.

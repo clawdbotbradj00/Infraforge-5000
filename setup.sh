@@ -1228,6 +1228,35 @@ should_configure() {
 banner
 check_python
 setup_venv
+
+# ── Setup Method Selection ───────────────────────────────────────
+echo ""
+echo -e "${BOLD}How would you like to configure InfraForge?${NC}"
+echo "  1) Launch the interactive TUI setup wizard (recommended)"
+echo "  2) Continue with command-line setup"
+echo ""
+read -rp "$(echo -e "${BOLD}Select [1]:${NC} ")" SETUP_METHOD
+SETUP_METHOD=${SETUP_METHOD:-1}
+
+if [ "$SETUP_METHOD" = "1" ]; then
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+    echo ""
+
+    # Ensure textual is available (should be installed via requirements)
+    $PYTHON_CMD -m pip install textual -q 2>/dev/null || true
+
+    # Launch the TUI-based setup wizard
+    $PYTHON_CMD -m infraforge setup
+
+    echo ""
+    echo -e "${GREEN}${BOLD}Setup wizard complete!${NC}"
+    echo -e "Run ${BOLD}infraforge${NC} to start."
+    exit 0
+fi
+
 load_existing_config
 select_setup_mode
 

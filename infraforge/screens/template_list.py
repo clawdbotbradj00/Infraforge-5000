@@ -128,6 +128,7 @@ class TemplateListScreen(Screen):
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("u", "update_template", "Update Template", show=True),
+        Binding("d", "download_template", "Download", show=True),
     ]
 
     def __init__(self):
@@ -423,3 +424,8 @@ class TemplateListScreen(Screen):
         if node and node.data and getattr(node.data, "kind", None) == "template":
             template = node.data.record
         self.app.push_screen(TemplateUpdateScreen(template=template))
+
+    def action_download_template(self):
+        """Open the template download screen."""
+        from infraforge.screens.template_download_screen import TemplateDownloadScreen
+        self.app.push_screen(TemplateDownloadScreen())

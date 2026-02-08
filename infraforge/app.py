@@ -254,6 +254,7 @@ class InfraForgeApp(App):
         Binding("d", "dashboard", "Dashboard", show=True),
         Binding("T", "cycle_theme", "Theme", show=True, priority=True),
         Binding("slash", "open_ai_chat", "AI Chat", show=True),
+        Binding("V", "version_list", "Versions", show=False),
     ]
 
     def __init__(self, config: Config):
@@ -272,6 +273,13 @@ class InfraForgeApp(App):
             self.theme = saved
         else:
             self.theme = _THEME_CYCLE[0]
+
+        # Show pinned version indicator in subtitle
+        from infraforge.updater import get_pinned_version
+        pinned = get_pinned_version()
+        if pinned:
+            self.sub_title = f"v{__version__} \U0001f512 pinned"
+
         self.push_screen(ConnectingScreen())
         self.connect_to_proxmox()
 
@@ -325,6 +333,11 @@ class InfraForgeApp(App):
         """Show help screen."""
         from infraforge.screens.help_screen import HelpScreen
         self.push_screen(HelpScreen())
+
+    def action_version_list(self):
+        """Open the version browser."""
+        from infraforge.screens.version_list_screen import VersionListScreen
+        self.push_screen(VersionListScreen())
 
     def action_open_ai_chat(self) -> None:
         """Open the AI chat overlay."""

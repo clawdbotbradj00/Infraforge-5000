@@ -119,6 +119,13 @@ Screen {
     color: $text-muted;
 }
 
+/* Node summary (dashboard cards — horizontal tile) */
+#node-summary {
+    height: auto;
+    layout: horizontal;
+    margin: 0 0 1 0;
+}
+
 /* Navigation menu */
 #nav-menu {
     margin: 1 0;
@@ -700,8 +707,14 @@ DataTable > .datatable--hover {
 
 .node-card {
     border: round $primary-background;
-    padding: 1 2;
-    margin: 0 0 1 0;
+    padding: 0 1;
+    margin: 0 1 0 0;
+    width: 1fr;
+    height: auto;
+}
+
+.node-card:hover {
+    border: round $accent;
 }
 
 .node-title {
@@ -952,4 +965,47 @@ AIChatModal {
     border: round $primary-background;
     padding: 1 2;
     margin: 1 0;
+}
+
+/* ── CTA banner (template update waiting phase) ── */
+
+.wiz-cta {
+    width: 100%;
+    margin: 2 4;
+    padding: 1 3;
+    border: round $accent;
+    text-align: center;
+    text-style: bold;
+    color: $accent;
+    content-align: center middle;
+}
+
+.wiz-cta.-dim {
+    border: round $primary-background;
+    color: $text-muted;
+}
+
+/* ── Setup Wizard Screen ── */
+
+#setup-container {
+    padding: 1 2;
+}
+
+#setup-title {
+    height: 1;
+    margin: 0 0 1 0;
+    color: $text;
+}
+
+#setup-list {
+    height: auto;
+    margin: 1 0;
+}
+
+#setup-status {
+    height: 1;
+    margin: 1 0 0 0;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
 }

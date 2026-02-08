@@ -29,6 +29,7 @@ class DashboardScreen(Screen):
         Binding("8", "ai_settings", "8:AI", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
+        Binding("D", "download_template", "Download Templates", show=False),
     ]
 
     def __init__(self) -> None:
@@ -59,17 +60,24 @@ class DashboardScreen(Screen):
             with Horizontal(id="node-header-row"):
                 yield Static("Cluster Nodes", classes="section-title")
                 yield Static("  Sort: [bold]Name \u25b2[/bold]", id="node-sort-label", markup=True)
-            yield Container(id="node-summary")
+            yield Horizontal(id="node-summary")
 
             yield Static("Navigation", classes="section-title")
             yield ListView(
+                ListItem(Label("[dim bold]  INFRASTRUCTURE[/dim bold]"), id="nav-group-infra", disabled=True),
                 ListItem(Label("  [1]  Virtual Machines  —  View and manage all VMs and containers"), id="nav-vms"),
                 ListItem(Label("  [2]  Templates         —  Browse VM and container templates"), id="nav-templates"),
                 ListItem(Label("  [3]  Node Info         —  Cluster node details and resources"), id="nav-nodes"),
+                ListItem(Label(" "), id="nav-spacer-1", disabled=True),
+                ListItem(Label("[dim bold]  NETWORKING[/dim bold]"), id="nav-group-net", disabled=True),
                 ListItem(Label("  [4]  DNS Management    —  View and manage DNS records"), id="nav-dns"),
                 ListItem(Label("  [5]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
+                ListItem(Label(" "), id="nav-spacer-2", disabled=True),
+                ListItem(Label("[dim bold]  PROVISIONING[/dim bold]"), id="nav-group-prov", disabled=True),
                 ListItem(Label("  [6]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
                 ListItem(Label("  [7]  Ansible           —  Manage playbooks and automation"), id="nav-ansible"),
+                ListItem(Label(" "), id="nav-spacer-3", disabled=True),
+                ListItem(Label("[dim bold]  SETTINGS[/dim bold]"), id="nav-group-settings", disabled=True),
                 ListItem(Label("  [8]  AI Settings       —  Configure AI assistant and model"), id="nav-ai-settings"),
                 id="nav-menu",
             )
@@ -174,22 +182,27 @@ class DashboardScreen(Screen):
 
         sorted_nodes = self._sort_nodes(nodes)
         for node in sorted_nodes:
+            status_color = "green" if node.status == "online" else "red"
+            status_dot = f"[{status_color}]●[/{status_color}]"
+
+            # CPU model — compact
+            cpu_model = node.cpu_model if node.cpu_model else "—"
+            if len(cpu_model) > 30:
+                cpu_model = cpu_model[:28] + ".."
+
             cpu_bar = self._make_bar(node.cpu_percent)
             mem_bar = self._make_bar(node.mem_percent)
             disk_bar = self._make_bar(node.disk_percent)
 
-            status_color = "green" if node.status == "online" else "red"
-
             node_text = (
-                f"  [{status_color}]●[/{status_color}] [bold]{node.node}[/bold]"
-                f"  │  CPU: {cpu_bar} {node.cpu_percent:5.1f}%"
-                f"  │  Mem: {mem_bar} {node.mem_percent:5.1f}%"
-                f"  │  Disk: {disk_bar} {node.disk_percent:5.1f}%"
-                f"  │  Up: {node.uptime_str}"
+                f" {status_dot} [bold]{node.node}[/bold]  [dim]Up:[/dim] {node.uptime_str}\n"
+                f" [bold cyan]CPU[/bold cyan]  {cpu_bar} {node.cpu_percent:4.1f}%  [dim]{cpu_model} • {node.maxcpu}c[/dim]\n"
+                f" [bold cyan]Mem[/bold cyan]  {mem_bar} {node.mem_percent:4.1f}%  [dim]{node.mem_used_gib:.1f}/{node.mem_total_gib:.1f} GiB[/dim]\n"
+                f" [bold cyan]Disk[/bold cyan] {disk_bar} {node.disk_percent:4.1f}%  [dim]{node.disk_used_gib:.1f}/{node.disk_total_gib:.1f} GiB[/dim]"
             )
-            container.mount(Static(node_text, markup=True))
+            container.mount(Static(node_text, markup=True, classes="node-card"))
 
-    def _make_bar(self, percent: float, width: int = 15) -> str:
+    def _make_bar(self, percent: float, width: int = 20) -> str:
         filled = int(percent / 100 * width)
         empty = width - filled
         if percent > 80:
@@ -296,6 +309,11 @@ class DashboardScreen(Screen):
             f"Run [bold white on dark_green] infraforge update [/bold white on dark_green] to upgrade"
         )
         banner.remove_class("hidden")
+
+    def action_download_template(self):
+        """Open the template download screen."""
+        from infraforge.screens.template_download_screen import TemplateDownloadScreen
+        self.app.push_screen(TemplateDownloadScreen())
 
     def action_refresh(self):
         self.load_data()

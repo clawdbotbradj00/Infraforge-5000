@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 from textual.app import ComposeResult
@@ -34,6 +36,82 @@ GROUP_LABELS = ["None", "Node"]
 _VMID_W = 8
 _NAME_W = 36
 _NODE_W = 14
+
+# Storage table column widths
+_STOR_NAME_W = 18
+_STOR_TYPE_W = 12
+_STOR_FREE_W = 12
+_STOR_TOTAL_W = 12
+_STOR_USED_W = 10
+
+
+def _stor_label(s) -> str:
+    """Build a colored, columnar label for a storage pool."""
+    name = (s.storage or "—")
+    if len(name) > _STOR_NAME_W - 1:
+        name = name[: _STOR_NAME_W - 2] + ".."
+    name = name.ljust(_STOR_NAME_W)
+
+    stype = (s.storage_type or "—").ljust(_STOR_TYPE_W)
+    free = (s.avail_display or "—").ljust(_STOR_FREE_W)
+    total = (s.total_display or "—").ljust(_STOR_TOTAL_W)
+
+    pct = s.used_percent
+    if pct > 85:
+        pct_color = "red"
+    elif pct > 60:
+        pct_color = "yellow"
+    else:
+        pct_color = "green"
+    used_txt = f"{pct:.0f}%".ljust(_STOR_USED_W)
+
+    shared = "  [magenta]shared[/magenta]" if s.shared else ""
+    return (
+        f"[bold bright_white]{name}[/bold bright_white]"
+        f"[dim]{stype}[/dim]"
+        f"[green]{free}[/green]"
+        f"[dim]{total}[/dim]"
+        f"[{pct_color}]{used_txt}[/{pct_color}]"
+        f"{shared}"
+    )
+
+
+def _stor_header() -> str:
+    """Column header for storage table (3-space offset for option alignment)."""
+    return (
+        f"   [dim]"
+        f"{'Name'.ljust(_STOR_NAME_W)}"
+        f"{'Type'.ljust(_STOR_TYPE_W)}"
+        f"{'Free'.ljust(_STOR_FREE_W)}"
+        f"{'Total'.ljust(_STOR_TOTAL_W)}"
+        f"{'Used'.ljust(_STOR_USED_W)}"
+        f"[/dim]"
+    )
+
+
+# Regex to strip accumulated suffixes: -staging, -terraform, -MMDDYYYY, -YYYYMMDD
+_SUFFIX_RE = re.compile(r"(-staging|-terraform|-\d{8})$")
+
+
+def _base_template_name(name: str) -> str:
+    """Strip accumulated -staging / -terraform / -timestamp suffixes to get the base name."""
+    prev = None
+    while name != prev:
+        prev = name
+        name = _SUFFIX_RE.sub("", name)
+    return name
+
+
+def _make_staging_name(template_name: str) -> str:
+    """Generate a staging VM name from a template name."""
+    return f"{_base_template_name(template_name)}-staging"
+
+
+def _make_final_name(template_name: str) -> str:
+    """Generate the final template name: {base}-MMDDYYYY."""
+    base = _base_template_name(template_name)
+    stamp = datetime.now().strftime("%m%d%Y")
+    return f"{base}-{stamp}"
 
 
 def _tmpl_label(t, show_node: bool = True) -> str:
@@ -108,6 +186,12 @@ class TemplateUpdateScreen(Screen):
         self._sort_index = 0
         self._sort_reverse = False
         self._group_index = 1  # default: group by node
+        self._clone_warnings: list[str] = []
+        self._finalize_warnings: list[str] = []
+        self._clone_ai_summary: str = ""
+        self._finalize_ai_summary: str = ""
+        self._cta_timer = None
+        self._cta_bright = True
 
     # ------------------------------------------------------------------
     # Compose
@@ -169,7 +253,7 @@ class TemplateUpdateScreen(Screen):
                 "vmid": t.vmid,
                 "node": t.node,
             }
-            self._staging_name = f"{t.name}-staging"
+            self._staging_name = _make_staging_name(t.name)
         self._load_initial_data()
         self._render_phase()
 
@@ -381,7 +465,7 @@ class TemplateUpdateScreen(Screen):
                     "vmid": m.get("vmid"),
                     "node": m.get("node", ""),
                 }
-                self._staging_name = f"{m.get('name', '')}-staging"
+                self._staging_name = _make_staging_name(m.get("name", ""))
                 self._resuming = False
                 try:
                     btn = self.query_one("#btn-next", Button)
@@ -427,6 +511,7 @@ class TemplateUpdateScreen(Screen):
         self._items = []
         self._cursor = 0
         self._unfocus_next_btn()
+        self._stop_cta_pulse()
 
         if self._phase == 0:
             self._build_select_items()
@@ -470,6 +555,9 @@ class TemplateUpdateScreen(Screen):
 
         self._mount_items()
 
+        if self._phase == 3:
+            self._start_cta_pulse()
+
         nav = self._nav_indices()
         if nav:
             self._cursor = nav[0]
@@ -484,6 +572,8 @@ class TemplateUpdateScreen(Screen):
 
     def _mount_items(self):
         for w in self.query(".wiz-line"):
+            w.remove()
+        for w in self.query(".wiz-cta"):
             w.remove()
         for w in self.query("#deploy-log"):
             w.remove()
@@ -501,13 +591,22 @@ class TemplateUpdateScreen(Screen):
             header.update("[b]STAGING VM READY[/b]")
 
         for idx, item in enumerate(self._items):
-            line = Static(
-                self._format_line(idx, item),
-                markup=True,
-                id=f"wiz-line-{gen}-{idx}",
-                classes="wiz-line",
-            )
-            scroll.mount(line)
+            if item.kind == "cta":
+                cta = Static(
+                    item.label,
+                    markup=True,
+                    id=f"wiz-cta-{gen}",
+                    classes="wiz-cta",
+                )
+                scroll.mount(cta)
+            else:
+                line = Static(
+                    self._format_line(idx, item),
+                    markup=True,
+                    id=f"wiz-line-{gen}-{idx}",
+                    classes="wiz-line",
+                )
+                scroll.mount(line)
 
     def _format_line(self, idx: int, item: WizItem) -> str:
         is_cur = idx == self._cursor
@@ -551,6 +650,30 @@ class TemplateUpdateScreen(Screen):
             self.query_one(
                 f"#wiz-line-{gen}-{self._cursor}", Static
             ).scroll_visible()
+        except Exception:
+            pass
+
+    def _start_cta_pulse(self):
+        """Start a slow pulse on the CTA banner."""
+        self._cta_bright = True
+        self._cta_timer = self.set_interval(1.5, self._toggle_cta_pulse)
+
+    def _stop_cta_pulse(self):
+        """Stop the CTA pulse timer."""
+        if self._cta_timer:
+            self._cta_timer.stop()
+            self._cta_timer = None
+
+    def _toggle_cta_pulse(self):
+        """Toggle the CTA banner between bright and dim states."""
+        gen = self._mount_gen
+        try:
+            cta = self.query_one(f"#wiz-cta-{gen}", Static)
+            self._cta_bright = not self._cta_bright
+            if self._cta_bright:
+                cta.remove_class("-dim")
+            else:
+                cta.add_class("-dim")
         except Exception:
             pass
 
@@ -756,14 +879,29 @@ class TemplateUpdateScreen(Screen):
     def _build_configure_items(self):
         items = self._items
 
+        if self._selected_template:
+            t_name = self._selected_template.get("name", "")
+            t_vmid = self._selected_template.get("vmid", "")
+            t_node = self._selected_template.get("node", "")
+            items.append(WizItem(
+                kind="info",
+                label=(
+                    f"[dim]Template:[/dim]  "
+                    f"[bold yellow]{t_vmid}[/bold yellow]  "
+                    f"[bold bright_white]{t_name}[/bold bright_white]  "
+                    f"[dim]on[/dim] [cyan]{t_node}[/cyan]"
+                ),
+            ))
+            items.append(WizItem(kind="info", label=""))
+
         items.append(WizItem(kind="header", label="COMPUTE"))
         items.append(WizItem(
-            kind="input", label="CPU Cores", key="cpu_cores",
+            kind="input", label="[cyan]CPU Cores[/cyan]", key="cpu_cores",
             value=str(self._cpu_cores),
             meta={"placeholder": "2"},
         ))
         items.append(WizItem(
-            kind="input", label="RAM (GB)", key="ram_gb",
+            kind="input", label="[cyan]RAM (GB)[/cyan]", key="ram_gb",
             value=str(self._ram_gb),
             meta={"placeholder": "4"},
         ))
@@ -783,16 +921,13 @@ class TemplateUpdateScreen(Screen):
             if s.node == tmpl_node or s.shared
         ]
         if node_storages:
+            items.append(WizItem(kind="info", label=_stor_header()))
             seen: set[str] = set()
             for s in node_storages:
                 if s.storage not in seen:
                     seen.add(s.storage)
-                    lbl = (
-                        f"{s.storage}  [dim]({s.storage_type}  "
-                        f"{s.avail_display} free)[/dim]"
-                    )
                     items.append(WizItem(
-                        kind="option", label=lbl,
+                        kind="option", label=_stor_label(s),
                         key=s.storage, group="storage",
                         selected=self._storage == s.storage,
                     ))
@@ -806,36 +941,36 @@ class TemplateUpdateScreen(Screen):
 
         items.append(WizItem(kind="header", label="VLAN"))
         items.append(WizItem(
-            kind="input", label="VLAN Tag", key="vlan_tag",
+            kind="input", label="[cyan]VLAN Tag[/cyan]", key="vlan_tag",
             value=self._vlan_tag,
             meta={"placeholder": "(optional)"},
         ))
 
         items.append(WizItem(kind="header", label="NETWORK"))
         items.append(WizItem(
-            kind="input", label="IP Address", key="ip_address",
+            kind="input", label="[cyan]IP Address[/cyan]", key="ip_address",
             value=self._ip,
             meta={"placeholder": "10.0.3.251"},
         ))
         items.append(WizItem(
-            kind="input", label="Subnet Mask", key="subnet_mask",
+            kind="input", label="[cyan]Subnet Mask[/cyan]", key="subnet_mask",
             value=str(self._mask),
             meta={"placeholder": "/24"},
         ))
         items.append(WizItem(
-            kind="input", label="Gateway", key="gateway",
+            kind="input", label="[cyan]Gateway[/cyan]", key="gateway",
             value=self._gateway,
             meta={"placeholder": "10.0.3.1"},
         ))
         items.append(WizItem(
-            kind="input", label="DNS Server", key="dns_server",
+            kind="input", label="[cyan]DNS Server[/cyan]", key="dns_server",
             value=self._dns,
             meta={"placeholder": "10.0.3.3"},
         ))
 
         items.append(WizItem(kind="header", label="STAGING VM"))
         items.append(WizItem(
-            kind="input", label="Staging VM Name", key="staging_name",
+            kind="input", label="[cyan]Staging VM Name[/cyan]", key="staging_name",
             value=self._staging_name,
             meta={"placeholder": "e.g. ubuntu-22-staging"},
         ))
@@ -884,6 +1019,8 @@ class TemplateUpdateScreen(Screen):
         """Clear wizard items and mount a RichLog widget."""
         for w in self.query(".wiz-line"):
             w.remove()
+        for w in self.query(".wiz-cta"):
+            w.remove()
         for w in self.query("#deploy-log"):
             w.remove()
         scroll = self.query_one("#wizard-content", VerticalScroll)
@@ -921,13 +1058,29 @@ class TemplateUpdateScreen(Screen):
         ))
         items.append(WizItem(kind="info", label=""))
         items.append(WizItem(
-            kind="info",
-            label="SSH to this VM and perform your updates.",
+            kind="cta",
+            label=(
+                "SSH to this VM and perform your updates.\n"
+                "\n"
+                "When finished, press [b]Enter[/b] to finalize."
+            ),
         ))
-        items.append(WizItem(
-            kind="info",
-            label="When finished, press Enter to finalize.",
-        ))
+
+        if self._clone_ai_summary:
+            items.append(WizItem(kind="info", label=""))
+            items.append(WizItem(kind="header", label="ISSUES DETECTED"))
+            items.append(WizItem(
+                kind="info",
+                label=f"[yellow]{self._clone_ai_summary}[/yellow]",
+            ))
+        elif self._clone_warnings:
+            items.append(WizItem(kind="info", label=""))
+            items.append(WizItem(kind="header", label="ISSUES DETECTED"))
+            for w in self._clone_warnings:
+                items.append(WizItem(
+                    kind="info",
+                    label=f"[yellow]- {w}[/yellow]",
+                ))
 
     # ------------------------------------------------------------------
     # Navigation
@@ -976,6 +1129,7 @@ class TemplateUpdateScreen(Screen):
             self.notify("Operation in progress...", severity="warning")
         elif self._waiting_for_user:
             # Leave staging VM running for manual cleanup
+            self._stop_cta_pulse()
             self.app.pop_screen()
         elif self._phase > 0 and self._phase <= 1:
             self._go_back()
@@ -1079,6 +1233,7 @@ class TemplateUpdateScreen(Screen):
     @work(thread=True)
     def _run_clone(self):
         self._working = True
+        self._clone_warnings = []
         tmpl = self._selected_template
         if not tmpl:
             return
@@ -1125,22 +1280,47 @@ class TemplateUpdateScreen(Screen):
 
             # Ensure cloud-init drive exists so ipconfig0 is applied
             storage_id = self._storage or "local-lvm"
-            log("[dim]  Attaching cloud-init drive...[/dim]")
+            log("[dim]  Checking for cloud-init drive...[/dim]")
             try:
-                self.app.proxmox.set_vm_config(
-                    node, new_vmid,
-                    ide2=f"{storage_id}:cloudinit",
-                )
-            except Exception:
-                # May already have a cloud-init drive — try scsi1
+                vm_cfg = self.app.proxmox.get_vm_config(node, new_vmid)
+                ci_bus = None
+                for key, val in vm_cfg.items():
+                    if re.match(r"(ide|scsi|sata|virtio)\d+", key):
+                        if isinstance(val, str) and "cloudinit" in val:
+                            ci_bus = key
+                            break
+                if ci_bus:
+                    log(f"[green]  Cloud-init drive found on {ci_bus}[/green]")
+                else:
+                    log("[dim]  No cloud-init drive — attaching on ide2...[/dim]")
+                    try:
+                        self.app.proxmox.set_vm_config(
+                            node, new_vmid,
+                            ide2=f"{storage_id}:cloudinit",
+                        )
+                        log("[green]  Cloud-init drive attached on ide2[/green]")
+                    except Exception:
+                        try:
+                            self.app.proxmox.set_vm_config(
+                                node, new_vmid,
+                                scsi1=f"{storage_id}:cloudinit",
+                            )
+                            log("[green]  Cloud-init drive attached on scsi1[/green]")
+                        except Exception as ci_err:
+                            log(f"[yellow]  cloud-init drive: {ci_err} "
+                                f"(IP may need manual config)[/yellow]")
+                            self._clone_warnings.append(
+                                f"Cloud-init drive: {ci_err}")
+            except Exception as cfg_err:
+                log(f"[dim]  Could not read VM config ({cfg_err}), "
+                    f"attempting cloud-init attach...[/dim]")
                 try:
                     self.app.proxmox.set_vm_config(
                         node, new_vmid,
-                        scsi1=f"{storage_id}:cloudinit",
+                        ide2=f"{storage_id}:cloudinit",
                     )
-                except Exception as ci_err:
-                    log(f"[yellow]  cloud-init drive: {ci_err} "
-                        f"(IP may need manual config)[/yellow]")
+                except Exception:
+                    pass
 
             # Set CPU, RAM, network, and cloud-init IP config
             net0_val = "virtio,bridge=vmbr0"
@@ -1189,6 +1369,7 @@ class TemplateUpdateScreen(Screen):
             if not online:
                 log("[yellow]  VM did not reach running state within "
                     f"{max_wait}s (may still be booting)[/yellow]\n")
+                self._clone_warnings.append(f"VM did not reach running state within {max_wait}s")
             else:
                 log("[green]  VM is online![/green]\n")
 
@@ -1202,6 +1383,17 @@ class TemplateUpdateScreen(Screen):
             return
 
         self._working = False
+
+        # Diagnose any clone warnings via AI
+        if self._clone_warnings:
+            ai = getattr(self.app, "ai_client", None)
+            if ai and getattr(ai, "diagnose_issues", None):
+                try:
+                    self._clone_ai_summary = ai.diagnose_issues(
+                        self._clone_warnings, "cloning and booting staging VM"
+                    )
+                except Exception:
+                    pass
 
         # Transition to Phase 3 (waiting for user)
         def _go_to_waiting():
@@ -1233,6 +1425,7 @@ class TemplateUpdateScreen(Screen):
     @work(thread=True)
     def _run_finalize(self):
         self._working = True
+        self._finalize_warnings = []
         tmpl = self._selected_template
         if not tmpl:
             return
@@ -1264,6 +1457,7 @@ class TemplateUpdateScreen(Screen):
                 if not ok:
                     log("[yellow]  Stop task may have timed out, "
                         "polling status...[/yellow]")
+                    self._finalize_warnings.append("Stop task may have timed out")
 
                 # Poll until stopped
                 elapsed = 0
@@ -1310,9 +1504,15 @@ class TemplateUpdateScreen(Screen):
             self.app.proxmox.convert_to_template(node, new_vmid)
             log("[green]  Conversion complete![/green]\n")
 
+            # Step 5: Rename to base-MMDDYYYY
+            final_name = _make_final_name(tmpl["name"])
+            log(f"[bold]Renaming template to {final_name}...[/bold]")
+            self.app.proxmox.set_vm_config(node, new_vmid, name=final_name)
+            log(f"[green]  Renamed to {final_name}[/green]\n")
+
             log(
                 f"\n[bold green]Template update complete! "
-                f"New template VMID: {new_vmid}[/bold green]"
+                f"{final_name} (VMID {new_vmid})[/bold green]"
             )
 
         except Exception as e:
@@ -1322,6 +1522,26 @@ class TemplateUpdateScreen(Screen):
             return
 
         self._working = False
+
+        # Diagnose any finalize warnings via AI
+        if self._finalize_warnings:
+            ai = getattr(self.app, "ai_client", None)
+            if ai and getattr(ai, "diagnose_issues", None):
+                try:
+                    self._finalize_ai_summary = ai.diagnose_issues(
+                        self._finalize_warnings, "finalizing template update"
+                    )
+                except Exception:
+                    pass
+
+        if self._finalize_ai_summary:
+            log(f"\n[yellow bold]Issues noted:[/yellow bold]")
+            log(f"[yellow]{self._finalize_ai_summary}[/yellow]")
+        elif self._finalize_warnings:
+            log(f"\n[yellow bold]Issues noted:[/yellow bold]")
+            for w in self._finalize_warnings:
+                log(f"[yellow]- {w}[/yellow]")
+
         self._finalize_done = True
 
         def _show_done():
