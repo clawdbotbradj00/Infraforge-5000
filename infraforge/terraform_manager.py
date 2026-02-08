@@ -524,6 +524,22 @@ class TerraformManager:
             '    }',
         ])
 
+        # DNS nameservers
+        dns_servers = spec.dns_servers.strip() if spec.dns_servers else "1.1.1.1,8.8.8.8"
+        dns_list = [s.strip() for s in dns_servers.split(",") if s.strip()]
+        if dns_list:
+            lines.extend([
+                '',
+                '    dns {',
+                '      servers = [',
+            ])
+            for ns in dns_list:
+                lines.append(f'        "{ns}",')
+            lines.extend([
+                '      ]',
+                '    }',
+            ])
+
         if spec.ssh_keys:
             lines.extend([
                 '',
@@ -609,6 +625,22 @@ class TerraformManager:
             '      }',
             '    }',
         ])
+
+        # DNS nameservers
+        dns_servers = spec.dns_servers.strip() if spec.dns_servers else "1.1.1.1,8.8.8.8"
+        dns_list = [s.strip() for s in dns_servers.split(",") if s.strip()]
+        if dns_list:
+            lines.extend([
+                '',
+                '    dns {',
+                '      servers = [',
+            ])
+            for ns in dns_list:
+                lines.append(f'        "{ns}",')
+            lines.extend([
+                '      ]',
+                '    }',
+            ])
 
         if spec.ssh_keys:
             lines.extend([

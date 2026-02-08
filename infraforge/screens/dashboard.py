@@ -24,10 +24,9 @@ class DashboardScreen(Screen):
         Binding("3", "view_nodes", "3:Nodes", show=True),
         Binding("4", "manage_dns", "4:DNS", show=True),
         Binding("5", "manage_ipam", "5:IPAM", show=True),
-        Binding("6", "create_vm", "6:New VM", show=True),
+        Binding("6", "create_vm", "6:Provision", show=True),
         Binding("7", "manage_ansible", "7:Ansible", show=True),
         Binding("8", "ai_settings", "8:AI", show=True),
-        Binding("9", "deploy_dns_server", "9:DNS Deploy", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("D", "download_template", "Download Templates", show=False),
@@ -75,9 +74,8 @@ class DashboardScreen(Screen):
                 ListItem(Label("  [5]  IPAM Management   —  Manage IP addresses and subnets"), id="nav-ipam"),
                 ListItem(Label(" "), id="nav-spacer-2", disabled=True),
                 ListItem(Label("[dim bold]  PROVISIONING[/dim bold]"), id="nav-group-prov", disabled=True),
-                ListItem(Label("  [6]  Create New VM     —  Spin up a new virtual machine"), id="nav-create"),
+                ListItem(Label("  [6]  Provision VM      —  Templates and custom VM creation"), id="nav-create"),
                 ListItem(Label("  [7]  Ansible           —  Manage playbooks and automation"), id="nav-ansible"),
-                ListItem(Label("  [9]  Deploy DNS Server —  Deploy and configure BIND9 DNS"), id="nav-dns-deploy"),
                 ListItem(Label(" "), id="nav-spacer-3", disabled=True),
                 ListItem(Label("[dim bold]  SETTINGS[/dim bold]"), id="nav-group-settings", disabled=True),
                 ListItem(Label("  [8]  AI Settings       —  Configure AI assistant and model"), id="nav-ai-settings"),
@@ -236,8 +234,6 @@ class DashboardScreen(Screen):
             self.action_create_vm()
         elif item_id == "nav-ansible":
             self.action_manage_ansible()
-        elif item_id == "nav-dns-deploy":
-            self.action_deploy_dns_server()
         elif item_id == "nav-ai-settings":
             self.action_ai_settings()
 
@@ -262,16 +258,12 @@ class DashboardScreen(Screen):
         self.app.push_screen(IPAMScreen())
 
     def action_create_vm(self):
-        from infraforge.screens.new_vm import NewVMScreen
-        self.app.push_screen(NewVMScreen())
+        from infraforge.screens.provision_menu import ProvisionMenuScreen
+        self.app.push_screen(ProvisionMenuScreen())
 
     def action_manage_ansible(self):
         from infraforge.screens.ansible_screen import AnsibleScreen
         self.app.push_screen(AnsibleScreen())
-
-    def action_deploy_dns_server(self):
-        from infraforge.screens.dns_server_wizard import DNSServerWizardScreen
-        self.app.push_screen(DNSServerWizardScreen())
 
     def action_ai_settings(self):
         from infraforge.screens.ai_settings_screen import AISettingsScreen

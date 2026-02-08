@@ -48,10 +48,17 @@ class TemplateUpdatePrefs:
 
 
 @dataclass
+class NewVMPrefs:
+    dns_servers: str = ""
+    vlan_tag: str = ""
+
+
+@dataclass
 class Preferences:
     vm_list: VMListPrefs = field(default_factory=VMListPrefs)
     template_list: TemplateListPrefs = field(default_factory=TemplateListPrefs)
     template_update: TemplateUpdatePrefs = field(default_factory=TemplateUpdatePrefs)
+    new_vm: NewVMPrefs = field(default_factory=NewVMPrefs)
     theme: str = ""
 
     @classmethod
@@ -108,6 +115,12 @@ class Preferences:
                 vlan_tag=str(tu.get("vlan_tag", "")),
                 cpu_cores=int(tu.get("cpu_cores", 2)),
                 ram_gb=int(tu.get("ram_gb", 4)),
+            )
+        if isinstance(data.get("new_vm"), dict):
+            nv = data["new_vm"]
+            prefs.new_vm = NewVMPrefs(
+                dns_servers=str(nv.get("dns_servers", "")),
+                vlan_tag=str(nv.get("vlan_tag", "")),
             )
         if data.get("theme"):
             prefs.theme = str(data["theme"])

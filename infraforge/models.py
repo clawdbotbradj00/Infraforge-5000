@@ -280,3 +280,4 @@ class NewVMSpec:
     subnet_cidr: str = ""
     unprivileged: bool = True
     vlan_tag: Optional[int] = None
+    dns_servers: str = ""

@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import socket
 import subprocess
+import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -96,6 +100,9 @@ class DNSServerWizardScreen(Screen):
         self._root_password = ""
         # Deployment results
         self._deploy_results: dict = {}
+        self._deploy_log_path: Optional[Path] = None
+        self._show_private_key: bool = False
+        self._ip_from_ipam: bool = False
 
     # ------------------------------------------------------------------
     # Compose
@@ -139,7 +146,7 @@ class DNSServerWizardScreen(Screen):
         self.spec.storage = defaults.storage
         self.spec.network_bridge = defaults.network_bridge
         self.spec.start_after_create = True
-        self.spec.vm_type = VMType.QEMU
+        self.spec.vm_type = VMType.LXC
         if self.app.config.dns.domain:
             self.spec.dns_domain = self.app.config.dns.domain
         dns_zones = self.app.config.dns.zones
@@ -147,6 +154,15 @@ class DNSServerWizardScreen(Screen):
             self.spec.dns_zone = dns_zones[0]
             self.spec.dns_domain = dns_zones[0]
             self._dns_zones_str = ", ".join(dns_zones)
+
+        # Load saved DNS servers preference, or use default
+        saved_dns = self.app.preferences.new_vm.dns_servers
+        self.spec.dns_servers = saved_dns if saved_dns else "1.1.1.1,8.8.8.8"
+
+        # Load saved VLAN tag preference
+        saved_vlan = self.app.preferences.new_vm.vlan_tag
+        if saved_vlan:
+            self.spec.vlan_tag = int(saved_vlan)
 
         self._load_initial_data()
         self._load_ipam_subnets()
@@ -166,10 +182,33 @@ class DNSServerWizardScreen(Screen):
             return
 
         if self._deploy_done:
-            if event.key in ("enter", "escape"):
+            if event.key == "escape":
                 event.prevent_default()
                 event.stop()
                 self.app.pop_screen()
+                return
+
+            nav = self._nav_indices()
+            if event.key in ("up", "k"):
+                event.prevent_default()
+                event.stop()
+                nxt = self._nav_move(nav, -1)
+                if nxt is not None:
+                    self._cursor = nxt
+                    self._refresh_lines()
+                    self._scroll_to_cursor()
+            elif event.key in ("down", "j"):
+                event.prevent_default()
+                event.stop()
+                nxt = self._nav_move(nav, 1)
+                if nxt is not None:
+                    self._cursor = nxt
+                    self._refresh_lines()
+                    self._scroll_to_cursor()
+            elif event.key in ("enter", "space"):
+                event.prevent_default()
+                event.stop()
+                self._activate_completion_item()
             return
 
         if self._deploying:
@@ -281,6 +320,59 @@ class DNSServerWizardScreen(Screen):
             self._maybe_focus_next()
 
     # ------------------------------------------------------------------
+    # Completion step actions
+    # ------------------------------------------------------------------
+
+    def _activate_completion_item(self):
+        """Handle Enter/Space on items in the completion step."""
+        if self._cursor < 0 or self._cursor >= len(self._items):
+            return
+        item = self._items[self._cursor]
+        if item.kind != "option":
+            return
+
+        if item.key == "show_key":
+            self._show_private_key = not self._show_private_key
+            self._render_step()
+        elif item.key == "copy_key":
+            key_content = self._read_private_key()
+            if key_content:
+                try:
+                    self.app.copy_to_clipboard(key_content)
+                    self.notify(
+                        "Private key copied to clipboard",
+                        title="Copied",
+                    )
+                except Exception:
+                    self.notify(
+                        "Clipboard not available in this terminal",
+                        severity="warning",
+                    )
+            else:
+                self.notify("Could not read private key", severity="error")
+        elif item.key == "done":
+            self.app.pop_screen()
+
+    def _get_private_key_path(self) -> str:
+        """Return the path to the private key used for this deployment."""
+        for label, pubkey in self._ssh_keys:
+            if pubkey == self.spec.ssh_keys:
+                key_file = Path.home() / ".ssh" / label.replace(".pub", "")
+                if key_file.exists():
+                    return str(key_file)
+        return ""
+
+    def _read_private_key(self) -> str:
+        """Read the private key file contents."""
+        key_path = self._get_private_key_path()
+        if not key_path:
+            return ""
+        try:
+            return Path(key_path).read_text().strip()
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
     # Text editing (hidden Input)
     # ------------------------------------------------------------------
 
@@ -360,6 +452,13 @@ class DNSServerWizardScreen(Screen):
             self._apply_subnet_selection(item)
         elif item.group == "ip":
             self.spec.ip_address = item.key
+            self._ip_from_ipam = True
+            # Update the manual IP input field to reflect the selection
+            for it in self._items:
+                if it.key == "manual_ip":
+                    it.value = item.key
+                    break
+            self._refresh_lines()
         elif item.group == "storage":
             self.spec.storage = item.key
         elif item.group == "ssh_key":
@@ -392,6 +491,7 @@ class DNSServerWizardScreen(Screen):
             self.spec.dns_zone = val
         elif key == "manual_ip":
             self.spec.ip_address = val
+            self._ip_from_ipam = False
         elif key == "subnet_cidr":
             self.spec.subnet_cidr = val
             # Auto-derive gateway
@@ -405,6 +505,12 @@ class DNSServerWizardScreen(Screen):
             self.spec.gateway = val
         elif key == "vlan_tag":
             self.spec.vlan_tag = int(val) if val else None
+            self.app.preferences.new_vm.vlan_tag = val
+            self.app.preferences.save()
+        elif key == "dns_servers":
+            self.spec.dns_servers = val
+            self.app.preferences.new_vm.dns_servers = val
+            self.app.preferences.save()
         elif key == "cpu_cores":
             try:
                 self.spec.cpu_cores = int(val) if val else 2
@@ -534,6 +640,9 @@ class DNSServerWizardScreen(Screen):
     def _format_line(self, idx: int, item: WizItem) -> str:
         is_cur = idx == self._cursor
 
+        if item.kind == "separator":
+            return " [dim]\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/dim]"
+
         if item.kind == "header":
             return f" [bold cyan]{item.label}[/bold cyan]"
 
@@ -553,6 +662,10 @@ class DNSServerWizardScreen(Screen):
             )
             if item.meta.get("password") and item.value:
                 val = "*" * min(len(item.value), 12)
+            # Highlight IP field yellow when populated from IPAM list
+            if item.key == "manual_ip" and self._ip_from_ipam and item.value:
+                lbl = f"[bold]{item.label}:[/bold]" if is_cur else f"{item.label}:"
+                return f" {cur}    {lbl}  [yellow]{val}[/yellow] [dim](from IPAM)[/dim]"
             lbl = f"[bold]{item.label}:[/bold]" if is_cur else f"{item.label}:"
             return f" {cur}    {lbl}  {val}"
 
@@ -617,7 +730,7 @@ class DNSServerWizardScreen(Screen):
             4: "Space edit/toggle  |  Enter confirm  |  Backspace back",
             5: "Space select key  |  Enter confirm  |  Backspace back",
             6: "Enter to deploy  |  Backspace back",
-            7: "Press Escape to return to dashboard",
+            7: "Enter=Activate  Escape=Dashboard",
         }
         self._set_hint(hints.get(self._step, ""))
 
@@ -783,7 +896,9 @@ class DNSServerWizardScreen(Screen):
                     selected=self.spec.ip_address == ip,
                 ))
 
-        items.append(WizItem(kind="header", label="IP ADDRESS"))
+        items.append(WizItem(kind="separator", label=""))
+
+        items.append(WizItem(kind="header", label="MANUAL OVERRIDES"))
         items.append(WizItem(
             kind="input", label="IP Address", key="manual_ip",
             value=self.spec.ip_address,
@@ -809,6 +924,13 @@ class DNSServerWizardScreen(Screen):
             kind="input", label="VLAN Tag", key="vlan_tag",
             value=str(self.spec.vlan_tag) if self.spec.vlan_tag else "",
             meta={"placeholder": "e.g. 30 (optional)"},
+        ))
+
+        items.append(WizItem(kind="header", label="DNS SERVERS"))
+        items.append(WizItem(
+            kind="input", label="DNS Servers", key="dns_servers",
+            value=self.spec.dns_servers,
+            meta={"placeholder": "e.g. 10.0.200.2,1.1.1.1 (default: 1.1.1.1,8.8.8.8)"},
         ))
 
     # ------------------------------------------------------------------
@@ -859,7 +981,7 @@ class DNSServerWizardScreen(Screen):
         if ct_templates:
             items.append(WizItem(
                 kind="header",
-                label=f"CT TEMPLATES  [dim]on {selected_node}[/dim]",
+                label=f"LXC CONTAINER TEMPLATES  [dim]on {selected_node}[/dim]",
             ))
             for t in ct_templates:
                 lbl = t.name
@@ -879,7 +1001,7 @@ class DNSServerWizardScreen(Screen):
         if vm_templates:
             items.append(WizItem(
                 kind="header",
-                label=f"VM TEMPLATES  [dim]on {selected_node}[/dim]",
+                label=f"QEMU VM TEMPLATES  [dim]on {selected_node}[/dim]",
             ))
             for t in vm_templates:
                 lbl = t.name
@@ -953,6 +1075,21 @@ class DNSServerWizardScreen(Screen):
             else:
                 items.append(WizItem(
                     kind="info", label="Loading templates...",
+                ))
+
+        # Show deployment type indicator based on current selection
+        if self.spec.template or self.spec.template_volid:
+            if self.spec.vm_type == VMType.LXC:
+                items.append(WizItem(kind="info", label=""))
+                items.append(WizItem(
+                    kind="info",
+                    label="[bold yellow]\u2192 Will deploy as:[/bold yellow] [bold]LXC Container[/bold]",
+                ))
+            else:
+                items.append(WizItem(kind="info", label=""))
+                items.append(WizItem(
+                    kind="info",
+                    label="[bold yellow]\u2192 Will deploy as:[/bold yellow] [bold]QEMU Virtual Machine[/bold]",
                 ))
 
         items.append(WizItem(kind="header", label="STORAGE"))
@@ -1153,6 +1290,10 @@ class DNSServerWizardScreen(Screen):
         items.append(WizItem(
             kind="info", label=f"VLAN:         [b]{vlan_display}[/b]",
         ))
+        dns_svr = s.dns_servers or "1.1.1.1,8.8.8.8"
+        items.append(WizItem(
+            kind="info", label=f"DNS Servers:  [b]{dns_svr}[/b]",
+        ))
 
         items.append(WizItem(kind="header", label="DNS SERVER"))
         zones = [
@@ -1244,30 +1385,74 @@ class DNSServerWizardScreen(Screen):
 
         # SSH command
         items.append(WizItem(kind="header", label="SSH ACCESS"))
-        if self._auth_method == "ssh_key":
-            # Try to find the private key path
-            key_path = ""
-            for label, pubkey in self._ssh_keys:
-                if pubkey == self.spec.ssh_keys:
-                    key_file = Path.home() / ".ssh" / label.replace(".pub", "")
-                    if key_file.exists():
-                        key_path = str(key_file)
-                    break
-            if key_path:
-                items.append(WizItem(
-                    kind="info",
-                    label=f"  [bold]ssh -i {key_path} root@{ip}[/bold]",
-                ))
-            else:
-                items.append(WizItem(
-                    kind="info",
-                    label=f"  [bold]ssh root@{ip}[/bold]",
-                ))
+        key_path = self._get_private_key_path()
+        ssh_user = self._detect_ssh_user()
+        if self._auth_method == "ssh_key" and key_path:
+            items.append(WizItem(
+                kind="info",
+                label=f"  [bold]ssh -i {key_path} {ssh_user}@{ip}[/bold]",
+            ))
         else:
             items.append(WizItem(
                 kind="info",
-                label=f"  [bold]ssh root@{ip}[/bold]",
+                label=f"  [bold]ssh {ssh_user}@{ip}[/bold]",
             ))
+        if self._auth_method == "password":
+            items.append(WizItem(
+                kind="info",
+                label="  [dim]Login with the root password you set[/dim]",
+            ))
+
+        # Private key display/copy options
+        if self._auth_method == "ssh_key" and key_path:
+            items.append(WizItem(kind="info", label=""))
+            items.append(WizItem(kind="header", label="PRIVATE KEY"))
+            items.append(WizItem(
+                kind="info",
+                label=(
+                    f"[dim]To connect from another machine (e.g. Windows + "
+                    f"MobaXterm/PuTTY), you need this private key:[/dim]"
+                ),
+            ))
+            items.append(WizItem(
+                kind="info",
+                label=f"  [dim]{key_path}[/dim]",
+            ))
+
+            if self._show_private_key:
+                toggle_label = (
+                    "[bold yellow]Hide Private Key[/bold yellow]"
+                )
+            else:
+                toggle_label = (
+                    "[bold cyan]Show Private Key[/bold cyan]"
+                )
+            items.append(WizItem(
+                kind="option", label=toggle_label, key="show_key",
+            ))
+            items.append(WizItem(
+                kind="option",
+                label="[bold cyan]Copy Private Key to Clipboard[/bold cyan]",
+                key="copy_key",
+            ))
+
+            if self._show_private_key:
+                key_content = self._read_private_key()
+                if key_content:
+                    items.append(WizItem(kind="info", label=""))
+                    items.append(WizItem(
+                        kind="info",
+                        label="[bold yellow]--- BEGIN PRIVATE KEY ---[/bold yellow]",
+                    ))
+                    for line in key_content.splitlines():
+                        items.append(WizItem(
+                            kind="info",
+                            label=f"  {line}",
+                        ))
+                    items.append(WizItem(
+                        kind="info",
+                        label="[bold yellow]--- END PRIVATE KEY ---[/bold yellow]",
+                    ))
 
         # DNS info
         if r.get("ansible_ok"):
@@ -1352,10 +1537,19 @@ class DNSServerWizardScreen(Screen):
                 label=f"[green]IP reserved in IPAM: {ip}[/green]",
             ))
 
+        # Deployment log file
+        if self._deploy_log_path:
+            items.append(WizItem(kind="header", label="DEPLOYMENT LOG"))
+            items.append(WizItem(
+                kind="info",
+                label=f"Log: [b]{self._deploy_log_path}[/b]",
+            ))
+
         items.append(WizItem(kind="info", label=""))
         items.append(WizItem(
-            kind="info",
-            label="[bold]Press Escape to return to the dashboard.[/bold]",
+            kind="option",
+            label="[bold white on dark_green]  Done — Return to Dashboard  [/bold white on dark_green]",
+            key="done",
         ))
 
     # ------------------------------------------------------------------
@@ -1546,6 +1740,7 @@ class DNSServerWizardScreen(Screen):
             self._available_ips = ips
             if ips:
                 self.spec.ip_address = ips[0]
+                self._ip_from_ipam = True
             if self._step == 2:
                 self.app.call_from_thread(self._render_step)
         except Exception:
@@ -1616,6 +1811,25 @@ class DNSServerWizardScreen(Screen):
         lower = name.lower()
         return "ubuntu" in lower or "debian" in lower
 
+    def _detect_ssh_user(self) -> str:
+        """Detect the default SSH user based on the template/image name.
+
+        Cloud images ship with a distro-specific default user rather than
+        allowing direct root login.  LXC containers and unknown images
+        fall back to root.
+        """
+        name = (self.spec.template or self.spec.template_volid or "").lower()
+        if "ubuntu" in name:
+            return "ubuntu"
+        elif "debian" in name:
+            return "debian"
+        elif "centos" in name or "rocky" in name or "alma" in name:
+            return "cloud-user"
+        elif "fedora" in name:
+            return "fedora"
+        # LXC containers and unknown templates -> root
+        return "root"
+
     # ------------------------------------------------------------------
     # Deployment
     # ------------------------------------------------------------------
@@ -1624,8 +1838,39 @@ class DNSServerWizardScreen(Screen):
     def _deploy(self):
         self._deploying = True
         self._deploy_results = {}
+        deploy_start = time.monotonic()
+
+        # --- Set up deployment log file ---
+        log_dir = Path.home() / ".config" / "infraforge" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_id = uuid.uuid4().hex[:6]
+        hostname = self.spec.name or "unknown"
+        log_filename = f"deploy_{hostname}_{timestamp}_{run_id}.log"
+        log_file_path = log_dir / log_filename
+        self._deploy_log_path = log_file_path
+
+        # Also create/update a 'latest' symlink for convenience
+        latest_link = log_dir / "latest.log"
+        try:
+            if latest_link.is_symlink() or latest_link.exists():
+                latest_link.unlink()
+            latest_link.symlink_to(log_file_path)
+        except OSError:
+            pass  # symlink creation is best-effort
+
+        lf = open(log_file_path, "w")
+
+        def _strip_markup(text: str) -> str:
+            """Remove Rich markup tags for plain-text log output."""
+            return re.sub(r'\[/?[^\]]*\]', '', text)
 
         def log(msg: str):
+            # Write plain text to the log file
+            clean = _strip_markup(msg)
+            lf.write(clean + "\n")
+            lf.flush()
+            # Write Rich markup to the UI
             def _update():
                 try:
                     self.query_one("#deploy-log", RichLog).write(msg)
@@ -1649,6 +1894,30 @@ class DNSServerWizardScreen(Screen):
         show_log()
         # Small pause so the UI can mount the RichLog
         time.sleep(0.3)
+
+        # --- Write deployment metadata header to log ---
+        lf.write("=" * 60 + "\n")
+        lf.write("  InfraForge DNS Server Deployment Log\n")
+        lf.write("=" * 60 + "\n")
+        lf.write(f"  Run ID:       {run_id}\n")
+        lf.write(f"  Timestamp:    {datetime.now().isoformat()}\n")
+        lf.write(f"  Hostname:     {hostname}\n")
+        lf.write(f"  VM Type:      {self.spec.vm_type.value if self.spec.vm_type else 'N/A'}\n")
+        lf.write(f"  Node:         {self.spec.node or 'N/A'}\n")
+        lf.write(f"  Template:     {self.spec.template_volid or 'N/A'}\n")
+        lf.write(f"  IP Address:   {self.spec.ip_address or 'DHCP'}\n")
+        lf.write(f"  CPU Cores:    {self.spec.cpu_cores}\n")
+        lf.write(f"  Memory (MB):  {self.spec.memory_mb}\n")
+        lf.write(f"  Disk (GB):    {self.spec.disk_gb}\n")
+        lf.write(f"  Storage:      {self.spec.storage or 'N/A'}\n")
+        lf.write(f"  Bridge:       {self.spec.network_bridge or 'N/A'}\n")
+        lf.write(f"  DNS Domain:   {self.spec.dns_domain or 'N/A'}\n")
+        lf.write(f"  DNS Zones:    {self._dns_zones_str or 'N/A'}\n")
+        lf.write(f"  Forwarders:   {self._dns_forwarders_str or 'N/A'}\n")
+        lf.write(f"  Auth Method:  {self._auth_method}\n")
+        lf.write(f"  Log File:     {log_file_path}\n")
+        lf.write("=" * 60 + "\n\n")
+        lf.flush()
 
         try:
             from infraforge.terraform_manager import TerraformManager
@@ -1914,6 +2183,8 @@ class DNSServerWizardScreen(Screen):
                 log("[dim]  IPAM: skipped (not configured)[/dim]\n")
 
             # Final summary
+            elapsed = time.monotonic() - deploy_start
+            elapsed_str = f"{elapsed:.1f}s"
             if self._deploy_results.get("ansible_ok"):
                 self._deploy_results["success"] = True
                 log("\n[bold green]============================================"
@@ -1930,8 +2201,33 @@ class DNSServerWizardScreen(Screen):
                 log("[bold yellow]========================================"
                     "====[/bold yellow]")
 
+            log(f"\n[dim]Total duration: {elapsed_str}[/dim]")
+            log(f"[dim]Log: {log_file_path}[/dim]")
+
+            # Write final status to log file
+            lf.write("\n" + "=" * 60 + "\n")
+            lf.write("  Deployment Summary\n")
+            lf.write("=" * 60 + "\n")
+            lf.write(f"  Status:       {'SUCCESS' if self._deploy_results.get('success') else 'COMPLETED WITH WARNINGS'}\n")
+            lf.write(f"  VM Created:   {'Yes' if self._deploy_results.get('vm_created') else 'No'}\n")
+            lf.write(f"  Ansible OK:   {'Yes' if self._deploy_results.get('ansible_ok') else 'No'}\n")
+            lf.write(f"  DNS Record:   {'Yes' if self._deploy_results.get('dns_registered') else 'No/Skipped'}\n")
+            lf.write(f"  IPAM Reserve: {'Yes' if self._deploy_results.get('ipam_registered') else 'No/Skipped'}\n")
+            lf.write(f"  Duration:     {elapsed_str}\n")
+            lf.write(f"  Completed:    {datetime.now().isoformat()}\n")
+            lf.write("=" * 60 + "\n")
+            lf.flush()
+
         except Exception as e:
             log(f"\n[red]Deployment error: {e}[/red]")
+            # Write error to log file
+            elapsed = time.monotonic() - deploy_start
+            lf.write(f"\nDEPLOYMENT ERROR: {e}\n")
+            lf.write(f"Duration before failure: {elapsed:.1f}s\n")
+            lf.write(f"Completed: {datetime.now().isoformat()}\n")
+            lf.flush()
+        finally:
+            lf.close()
 
         self._deploying = False
         self._deploy_done = True
@@ -2053,14 +2349,29 @@ class DNSServerWizardScreen(Screen):
             "dns_domain": self.spec.dns_domain,
         }
 
+        # Detect the correct SSH user for the target OS
+        ssh_user = self._detect_ssh_user()
+
+        # Write a temporary inventory file with the [targets] group
+        # so it matches the playbook's `hosts: targets`
+        inv_fd, inv_path = tempfile.mkstemp(
+            prefix="infraforge_inv_", suffix=".ini", text=True,
+        )
+        with os.fdopen(inv_fd, "w") as inv_f:
+            inv_f.write(f"[targets]\n{ip}\n")
+
         # Build command
         cmd = [
             "ansible-playbook",
             str(playbook_path),
-            "-i", f"{ip},",
-            "-u", "root",
+            "-i", inv_path,
+            "-u", ssh_user,
             "--extra-vars", json.dumps(extra_vars),
         ]
+
+        # Non-root users need privilege escalation for system tasks
+        if ssh_user != "root":
+            cmd.append("--become")
 
         # SSH key argument
         if self._auth_method == "ssh_key" and self.spec.ssh_keys:
@@ -2083,11 +2394,13 @@ class DNSServerWizardScreen(Screen):
         }
 
         if log_fn:
+            log_fn(f"[dim]  SSH user: {ssh_user}[/dim]")
+            if ssh_user != "root":
+                log_fn("[dim]  Privilege escalation: --become (sudo)[/dim]")
             safe_cmd = " ".join(cmd)
             log_fn(f"[dim]  $ {safe_cmd}[/dim]\n")
 
         try:
-            import os
             env = os.environ.copy()
             env.update(env_vars)
 
@@ -2099,30 +2412,44 @@ class DNSServerWizardScreen(Screen):
                 env=env,
             )
 
+            # Save log file for post-mortem debugging
+            self._save_ansible_log(
+                Path(self.app.config.ansible.playbook_dir).resolve(),
+                result,
+            )
+
             # Stream output
             if log_fn:
                 for line in result.stdout.split("\n"):
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    # Color Ansible output
+                    # Escape Rich markup in raw ansible output
+                    safe = stripped.replace("[", "\\[")
                     if "ok:" in stripped or "ok=" in stripped:
-                        log_fn(f"[green]  {stripped}[/green]")
+                        log_fn(f"[green]  {safe}[/green]")
                     elif "changed:" in stripped or "changed=" in stripped:
-                        log_fn(f"[yellow]  {stripped}[/yellow]")
+                        log_fn(f"[yellow]  {safe}[/yellow]")
                     elif "failed:" in stripped or "fatal:" in stripped.lower():
-                        log_fn(f"[red]  {stripped}[/red]")
+                        log_fn(f"[red]  {safe}[/red]")
                     elif "TASK" in stripped or "PLAY" in stripped:
-                        log_fn(f"[bold]  {stripped}[/bold]")
+                        log_fn(f"[bold]  {safe}[/bold]")
                     elif "RECAP" in stripped:
-                        log_fn(f"\n[bold]  {stripped}[/bold]")
+                        log_fn(f"\n[bold]  {safe}[/bold]")
                     else:
-                        log_fn(f"[dim]  {stripped}[/dim]")
+                        log_fn(f"[dim]  {safe}[/dim]")
 
                 if result.stderr:
                     for line in result.stderr.split("\n")[-5:]:
                         if line.strip():
-                            log_fn(f"[red]  {line.strip()}[/red]")
+                            safe = line.strip().replace("[", "\\[")
+                            log_fn(f"[red]  {safe}[/red]")
+
+                # Show log file path
+                if self._deploy_log_path:
+                    log_fn(
+                        f"\n[dim]  Log saved: {self._deploy_log_path}[/dim]"
+                    )
 
             return result.returncode == 0
 
@@ -2138,3 +2465,46 @@ class DNSServerWizardScreen(Screen):
             if log_fn:
                 log_fn(f"[red]  Ansible error: {e}[/red]")
             return False
+        finally:
+            # Clean up temp inventory file
+            try:
+                os.unlink(inv_path)
+            except OSError:
+                pass
+
+    def _save_ansible_log(
+        self,
+        playbook_dir: Path,
+        result: subprocess.CompletedProcess,
+    ) -> None:
+        """Persist combined stdout+stderr to a timestamped log file.
+
+        Log files are written to ``<playbook_dir>/logs/`` using the naming
+        convention ``bind9-server_YYYYMMDD_HHMMSS.log`` so they are easy to
+        find and sort chronologically.
+        """
+        self._deploy_log_path = None
+        try:
+            log_dir = playbook_dir / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_path = log_dir / f"bind9-server_{ts}.log"
+            ssh_user = self._detect_ssh_user()
+            with open(log_path, "w") as fh:
+                fh.write(f"=== bind9-server.yml  {ts} ===\n")
+                fh.write(f"Target: {self.spec.ip_address}\n")
+                fh.write(f"SSH user: {ssh_user}\n")
+                fh.write(f"Return code: {result.returncode}\n")
+                fh.write("=" * 60 + "\n\n")
+                if result.stdout:
+                    fh.write("--- STDOUT ---\n")
+                    fh.write(result.stdout)
+                    fh.write("\n")
+                if result.stderr:
+                    fh.write("--- STDERR ---\n")
+                    fh.write(result.stderr)
+                    fh.write("\n")
+            self._deploy_log_path = log_path
+        except Exception:
+            # Logging failure must not break the deployment
+            pass

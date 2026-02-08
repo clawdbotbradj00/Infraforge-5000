@@ -7,9 +7,12 @@ following the pattern from ansible_run_modal.py.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +24,7 @@ from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from textual import work
 
 from infraforge.models import NewVMSpec, VMType, TemplateType
+from infraforge.ansible_runner import PlaybookInfo, discover_playbooks
 
 
 WIZARD_STEPS = ["Template", "Identity", "Network", "Resources", "Access", "Review"]
@@ -65,11 +69,15 @@ class NewVMScreen(Screen):
         self._dns_check_timer = None
         self._deploying = False
         self._deploy_done = False
+        self._post_deploy = False
+        self._post_deploy_running = False
+        self._available_playbooks: list[PlaybookInfo] = []
         self._initial_template = template_name
         self._saved_templates: list[dict] = []
         self._data_loaded = False
         self._mount_gen = 0
         self._net_mode = ""  # "ipam" or "manual" — dims the other section
+        self._ip_from_ipam = False
         self._vm_count = 1
         self._batch_specs: list[NewVMSpec] = []  # per-VM overrides (name, ip_address, dns_name)
 
@@ -118,6 +126,15 @@ class NewVMScreen(Screen):
             self.spec.dns_zone = dns_zones[0]
             self.spec.dns_domain = dns_zones[0]
 
+        # Load saved DNS servers preference, or use default
+        saved_dns = self.app.preferences.new_vm.dns_servers
+        self.spec.dns_servers = saved_dns if saved_dns else "1.1.1.1,8.8.8.8"
+
+        # Load saved VLAN tag preference
+        saved_vlan = self.app.preferences.new_vm.vlan_tag
+        if saved_vlan:
+            self.spec.vlan_tag = int(saved_vlan)
+
         self._load_initial_data()
         self._load_ipam_subnets()
         self._scan_ssh_keys()
@@ -143,7 +160,53 @@ class NewVMScreen(Screen):
                 self.app.pop_screen()
             return
 
-        if self._deploying:
+        if self._deploying or self._post_deploy_running:
+            return
+
+        if self._post_deploy:
+            nav = self._nav_indices()
+            if not nav:
+                return
+
+            if event.key in ("up", "k"):
+                event.prevent_default()
+                event.stop()
+                nxt = self._nav_move(nav, -1)
+                if nxt is not None:
+                    self._cursor = nxt
+                    self._refresh_lines()
+                    self._scroll_to_cursor()
+
+            elif event.key in ("down", "j"):
+                event.prevent_default()
+                event.stop()
+                nxt = self._nav_move(nav, 1)
+                if nxt is not None:
+                    self._cursor = nxt
+                    self._refresh_lines()
+                    self._scroll_to_cursor()
+
+            elif event.key in ("enter", "space"):
+                event.prevent_default()
+                event.stop()
+                if 0 <= self._cursor < len(self._items):
+                    item = self._items[self._cursor]
+                    if item.kind == "option":
+                        # Select this item
+                        for it in self._items:
+                            if it.group == item.group:
+                                it.selected = False
+                        item.selected = True
+                        self._refresh_lines()
+                        if item.key == "__skip__":
+                            self._finish_post_deploy()
+                        else:
+                            self._run_selected_playbook(item.key)
+
+            elif event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                self._finish_post_deploy()
             return
 
         nav = self._nav_indices()
@@ -338,6 +401,13 @@ class NewVMScreen(Screen):
         elif item.group == "ip":
             self._net_mode = "ipam"
             self.spec.ip_address = item.key
+            self._ip_from_ipam = True
+            # Update the manual IP input field to reflect the selection
+            for it in self._items:
+                if it.key == "manual_ip":
+                    it.value = item.key
+                    break
+            self._refresh_lines()
         elif item.group == "storage":
             self.spec.storage = item.key
         elif item.group == "ssh_key":
@@ -379,6 +449,7 @@ class NewVMScreen(Screen):
         elif item.key == "manual_ip":
             self._net_mode = "manual"
             self.spec.ip_address = item.value.strip()
+            self._ip_from_ipam = False
         elif item.key == "gateway":
             self._net_mode = "manual"
             self.spec.gateway = item.value.strip()
@@ -403,6 +474,14 @@ class NewVMScreen(Screen):
         elif item.key == "vlan_tag":
             val = item.value.strip()
             self.spec.vlan_tag = int(val) if val else None
+            self.app.preferences.new_vm.vlan_tag = val
+            self.app.preferences.save()
+        elif item.key == "dns_servers":
+            val = item.value.strip()
+            self.spec.dns_servers = val
+            # Persist to preferences for next time
+            self.app.preferences.new_vm.dns_servers = val
+            self.app.preferences.save()
         elif item.key == "ssh_key_paste":
             self.spec.ssh_keys = item.value.strip()
         elif item.key == "save_spec_name":
@@ -510,6 +589,9 @@ class NewVMScreen(Screen):
             and section != self._net_mode
         )
 
+        if item.kind == "separator":
+            return " [dim]\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/dim]"
+
         if item.kind == "header":
             if dimmed:
                 return f" [dim yellow]{item.label}[/dim yellow]"
@@ -535,6 +617,10 @@ class NewVMScreen(Screen):
                 val = f"[dim yellow]{item.value or '...'}[/dim yellow]"
                 return f" {cur}    {lbl}  {val}"
             val = item.value if item.value else f"[dim]{item.meta.get('placeholder', '...')}[/dim]"
+            # Highlight IP field yellow when populated from IPAM list
+            if item.key == "manual_ip" and self._ip_from_ipam and item.value:
+                lbl = f"[bold]{item.label}:[/bold]" if is_cur else f"{item.label}:"
+                return f" {cur}    {lbl}  [yellow]{val}[/yellow] [dim](from IPAM)[/dim]"
             lbl = f"[bold]{item.label}:[/bold]" if is_cur else f"{item.label}:"
             return f" {cur}    {lbl}  {val}"
 
@@ -650,7 +736,7 @@ class NewVMScreen(Screen):
         if ct:
             items.append(WizItem(
                 kind="header",
-                label=f"CT TEMPLATES  [dim]on {selected_node}[/dim]",
+                label=f"LXC CONTAINER TEMPLATES  [dim]on {selected_node}[/dim]",
             ))
             for t in ct:
                 lbl = t.name
@@ -670,7 +756,7 @@ class NewVMScreen(Screen):
         if vm:
             items.append(WizItem(
                 kind="header",
-                label=f"VM TEMPLATES  [dim]on {selected_node}[/dim]",
+                label=f"QEMU VM TEMPLATES  [dim]on {selected_node}[/dim]",
             ))
             for t in vm:
                 lbl = t.name
@@ -699,6 +785,21 @@ class NewVMScreen(Screen):
             else:
                 items.append(WizItem(
                     kind="info", label="Loading templates...",
+                ))
+
+        # Show deployment type indicator based on current selection
+        if self.spec.template or self.spec.template_volid:
+            if self.spec.vm_type == VMType.LXC:
+                items.append(WizItem(kind="info", label=""))
+                items.append(WizItem(
+                    kind="info",
+                    label="[bold yellow]\u2192 Will deploy as:[/bold yellow] [bold]LXC Container[/bold]",
+                ))
+            else:
+                items.append(WizItem(kind="info", label=""))
+                items.append(WizItem(
+                    kind="info",
+                    label="[bold yellow]\u2192 Will deploy as:[/bold yellow] [bold]QEMU Virtual Machine[/bold]",
                 ))
 
         # ── Saved specs (not node-specific) ──
@@ -853,8 +954,11 @@ class NewVMScreen(Screen):
                     meta={"section": "ipam"},
                 ))
 
+        items.append(WizItem(kind="separator", label="",
+            meta={"section": "manual"},
+        ))
         items.append(WizItem(
-            kind="header", label="MANUAL NETWORK",
+            kind="header", label="MANUAL OVERRIDES",
             meta={"section": "manual"},
         ))
         items.append(WizItem(
@@ -878,6 +982,13 @@ class NewVMScreen(Screen):
             kind="input", label="VLAN Tag", key="vlan_tag",
             value=str(self.spec.vlan_tag) if self.spec.vlan_tag else "",
             meta={"placeholder": "e.g. 30 (optional)"},
+        ))
+
+        items.append(WizItem(kind="header", label="DNS SERVERS"))
+        items.append(WizItem(
+            kind="input", label="DNS Servers", key="dns_servers",
+            value=self.spec.dns_servers,
+            meta={"placeholder": "e.g. 10.0.200.2,1.1.1.1 (default: 1.1.1.1,8.8.8.8)"},
         ))
 
         if self._vm_count > 1:
@@ -1029,6 +1140,8 @@ class NewVMScreen(Screen):
         items.append(WizItem(kind="info", label=f"Gateway:      [b]{gw}[/b]"))
         vlan_display = str(s.vlan_tag) if s.vlan_tag else "None"
         items.append(WizItem(kind="info", label=f"VLAN:         [b]{vlan_display}[/b]"))
+        dns_svr = s.dns_servers or "1.1.1.1,8.8.8.8"
+        items.append(WizItem(kind="info", label=f"DNS Servers:  [b]{dns_svr}[/b]"))
         items.append(WizItem(kind="info", label=f"FQDN:         [b]{fqdn}[/b]"))
 
         if self._vm_count > 1:
@@ -1089,6 +1202,10 @@ class NewVMScreen(Screen):
     def action_handle_escape(self):
         if self._deploy_done:
             self.app.pop_screen()
+        elif self._post_deploy_running:
+            self.notify("Playbook running...", severity="warning")
+        elif self._post_deploy:
+            self._finish_post_deploy()
         elif self._editing:
             self._cancel_edit()
         elif self._deploying:
@@ -1101,6 +1218,10 @@ class NewVMScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed):
         if self._deploy_done:
             self.app.pop_screen()
+            return
+        if self._post_deploy:
+            if event.button.id in ("btn-cancel", "btn-next"):
+                self._finish_post_deploy()
             return
         if event.button.id == "btn-cancel":
             if self._deploying:
@@ -1200,6 +1321,7 @@ class NewVMScreen(Screen):
             self._available_ips = ips
             if ips:
                 self.spec.ip_address = ips[0]
+                self._ip_from_ipam = True
             if self._step == 2:
                 self.app.call_from_thread(self._render_step)
         except Exception:
@@ -1520,11 +1642,27 @@ class NewVMScreen(Screen):
                     log("[dim]  IPAM: skipped (not configured)[/dim]\n")
 
             log("\n[bold green]━━━ Deployment Complete! ━━━[/bold green]")
+            deploy_succeeded = True
 
         except Exception as e:
             log(f"\n[red]Deployment error: {e}[/red]")
+            deploy_succeeded = False
 
         self._deploying = False
+
+        # --- Post-deploy: offer Ansible playbook selection ---
+        if deploy_succeeded:
+            try:
+                playbook_dir = self.app.config.ansible.playbook_dir
+                self._available_playbooks = discover_playbooks(playbook_dir)
+            except Exception:
+                self._available_playbooks = []
+
+            if self._available_playbooks:
+                self.app.call_from_thread(self._show_post_deploy_options)
+                return
+
+        # No playbooks or deploy failed — go straight to done
         self._deploy_done = True
 
         def _show_done():
@@ -1540,3 +1678,288 @@ class NewVMScreen(Screen):
                 pass
 
         self.app.call_from_thread(_show_done)
+
+    # ------------------------------------------------------------------
+    # Post-deploy: Ansible playbook selection
+    # ------------------------------------------------------------------
+
+    def _show_post_deploy_options(self):
+        """Switch the UI to the post-deploy playbook selection phase."""
+        self._post_deploy = True
+
+        # Clear deploy log and mount WizItem-based selection
+        for w in self.query(".wiz-line"):
+            w.remove()
+        for w in self.query("#deploy-log"):
+            w.remove()
+
+        self._items = []
+        self._cursor = 0
+        self._build_post_deploy_items()
+
+        self._mount_gen += 1
+        gen = self._mount_gen
+
+        scroll = self.query_one("#wizard-content", VerticalScroll)
+        header = self.query_one("#wiz-phase-header", Static)
+        header.update("[b]Post-Deployment[/b]")
+
+        for idx, item in enumerate(self._items):
+            line = Static(
+                self._format_line(idx, item),
+                markup=True,
+                id=f"wiz-line-{gen}-{idx}",
+                classes="wiz-line",
+            )
+            scroll.mount(line)
+
+        nav = self._nav_indices()
+        if nav:
+            self._cursor = nav[0]
+        self._refresh_lines()
+
+        self._set_hint("Arrow keys navigate  |  Enter to select  |  Escape to skip")
+
+        try:
+            btn_next = self.query_one("#btn-next", Button)
+            btn_next.label = "Skip"
+            btn_next.disabled = False
+            btn_next.variant = "default"
+            btn_cancel = self.query_one("#btn-cancel", Button)
+            btn_cancel.add_class("hidden")
+        except Exception:
+            pass
+
+        # Hide step indicators during post-deploy
+        for i in range(len(WIZARD_STEPS)):
+            try:
+                ind = self.query_one(f"#step-ind-{i}")
+                ind.set_classes("wizard-step -completed")
+            except Exception:
+                pass
+
+    def _build_post_deploy_items(self):
+        """Build WizItem list for the post-deploy playbook selection."""
+        items = self._items
+
+        items.append(WizItem(
+            kind="header",
+            label="RUN AN ANSIBLE PLAYBOOK AGAINST THE NEW VM?",
+        ))
+
+        vm_ip = self.spec.ip_address or "(no IP)"
+        vm_name = self.spec.name or "(unnamed)"
+        items.append(WizItem(
+            kind="info",
+            label=f"Target: [b]{vm_name}[/b]  ({vm_ip})",
+        ))
+        items.append(WizItem(kind="info", label=""))
+
+        items.append(WizItem(kind="header", label="AVAILABLE PLAYBOOKS"))
+        for pb in self._available_playbooks:
+            desc = pb.description if pb.description != pb.name else ""
+            task_info = f"{pb.task_count} tasks"
+            if desc:
+                lbl = f"{pb.filename}  [dim]{desc}  ({task_info})[/dim]"
+            else:
+                lbl = f"{pb.filename}  [dim]({task_info})[/dim]"
+            items.append(WizItem(
+                kind="option",
+                label=lbl,
+                key=str(pb.path),
+                group="post_deploy_playbook",
+            ))
+
+        items.append(WizItem(kind="info", label=""))
+        items.append(WizItem(kind="header", label="SKIP"))
+        items.append(WizItem(
+            kind="option",
+            label="Skip  [dim]Don't run any playbook[/dim]",
+            key="__skip__",
+            group="post_deploy_playbook",
+        ))
+
+    @work(thread=True)
+    def _run_selected_playbook(self, playbook_path_str: str):
+        """Run the selected Ansible playbook against the new VM."""
+        self._post_deploy = False
+        self._post_deploy_running = True
+
+        playbook_path = Path(playbook_path_str)
+        ip = self.spec.ip_address
+        if not ip:
+            self._post_deploy_running = False
+            self.app.call_from_thread(self._finish_post_deploy)
+            return
+
+        def _show_run_log():
+            for w in self.query(".wiz-line"):
+                w.remove()
+            for w in self.query("#deploy-log"):
+                w.remove()
+            scroll = self.query_one("#wizard-content", VerticalScroll)
+            scroll.mount(RichLog(markup=True, id="deploy-log"))
+            self.query_one("#wiz-phase-header", Static).update(
+                f"[b]Running: {playbook_path.name}[/b]"
+            )
+            try:
+                btn = self.query_one("#btn-next", Button)
+                btn.label = "Running..."
+                btn.disabled = True
+            except Exception:
+                pass
+            self._set_hint("Ansible playbook running...")
+
+        self.app.call_from_thread(_show_run_log)
+
+        def log(msg: str):
+            def _update():
+                try:
+                    self.query_one("#deploy-log", RichLog).write(msg)
+                except Exception:
+                    pass
+            self.app.call_from_thread(_update)
+
+        log(f"[bold]━━━ Ansible Playbook: {playbook_path.name} ━━━[/bold]\n")
+        log(f"[bold]Target:[/bold] {self.spec.name} ({ip})")
+
+        # Determine the SSH private key to use
+        private_key_path = self._find_ssh_private_key()
+        if private_key_path:
+            log(f"[bold]SSH Key:[/bold] {private_key_path}\n")
+        else:
+            log("[dim]SSH Key: none (using ssh-agent or default)[/dim]\n")
+
+        # Build the ansible-playbook command
+        cmd = [
+            "ansible-playbook",
+            str(playbook_path),
+            "-i", f"{ip},",
+            "-u", "root",
+        ]
+        if private_key_path:
+            cmd.extend(["--private-key", private_key_path])
+
+        log(f"[dim]$ {' '.join(cmd)}[/dim]\n")
+
+        run_env = {
+            **os.environ,
+            "ANSIBLE_FORCE_COLOR": "false",
+            "ANSIBLE_HOST_KEY_CHECKING": "False",
+        }
+
+        # Write log to file
+        log_dir = playbook_path.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file_path = log_dir / f"{playbook_path.stem}_{timestamp}.log"
+
+        exit_code = 1
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=run_env,
+            )
+
+            with open(log_file_path, "w") as lf:
+                lf.write(f"# InfraForge Post-Deploy Ansible Run\n")
+                lf.write(f"# Command: {' '.join(cmd)}\n")
+                lf.write(f"# Target: {self.spec.name} ({ip})\n")
+                lf.write(f"# Started: {datetime.now().isoformat()}\n\n")
+
+                for line in proc.stdout:
+                    lf.write(line)
+                    lf.flush()
+                    # Escape Rich markup in raw ansible output
+                    safe_line = line.rstrip("\n").replace("[", "\\[")
+                    log(safe_line)
+
+                proc.wait()
+                exit_code = proc.returncode
+                lf.write(f"\n# Exit code: {exit_code}\n")
+
+        except FileNotFoundError:
+            log("\n[red]ansible-playbook not found. Install Ansible first.[/red]")
+        except Exception as e:
+            log(f"\n[red]Error running playbook: {e}[/red]")
+
+        if exit_code == 0:
+            log(f"\n[bold green]Playbook completed successfully (exit code 0)[/bold green]")
+        else:
+            log(f"\n[bold red]Playbook finished with exit code {exit_code}[/bold red]")
+        log(f"[dim]Log saved to {log_file_path}[/dim]")
+
+        self._post_deploy_running = False
+        self._deploy_done = True
+
+        def _show_done():
+            self._set_hint(
+                "[bold green]Done![/bold green]  Press [b]Enter[/b] to return to dashboard"
+            )
+            try:
+                btn = self.query_one("#btn-next", Button)
+                btn.label = "Done"
+                btn.disabled = False
+                btn.variant = "success"
+                btn.add_class("-ready")
+                btn.focus()
+            except Exception:
+                pass
+
+        self.app.call_from_thread(_show_done)
+
+    def _finish_post_deploy(self):
+        """Skip playbook selection and go straight to done."""
+        self._post_deploy = False
+        self._deploy_done = True
+        self._set_hint(
+            "[bold green]Done![/bold green]  Press [b]Enter[/b] to return to dashboard"
+        )
+        try:
+            btn = self.query_one("#btn-next", Button)
+            btn.label = "Done"
+            btn.disabled = False
+            btn.variant = "success"
+            btn.add_class("-ready")
+            btn.focus()
+        except Exception:
+            pass
+
+    def _find_ssh_private_key(self) -> str:
+        """Find the SSH private key corresponding to the selected public key.
+
+        Returns the path to the private key file, or empty string if none found.
+        """
+        pubkey_content = self.spec.ssh_keys
+        if not pubkey_content:
+            return ""
+
+        # Check ~/.ssh/ for matching pub key
+        ssh_dir = Path.home() / ".ssh"
+        if ssh_dir.exists():
+            for pub in ssh_dir.glob("*.pub"):
+                try:
+                    if pub.read_text().strip() == pubkey_content:
+                        priv = pub.with_suffix("")
+                        if priv.exists():
+                            return str(priv)
+                except Exception:
+                    pass
+
+        # Check infraforge ssh_keys directory
+        infra_keys_dir = Path.home() / ".config" / "infraforge" / "ssh_keys"
+        if infra_keys_dir.exists():
+            for pub in infra_keys_dir.glob("*.pub"):
+                try:
+                    if pub.read_text().strip() == pubkey_content:
+                        priv = pub.with_suffix("")
+                        if priv.exists():
+                            return str(priv)
+                except Exception:
+                    pass
+
+        return ""

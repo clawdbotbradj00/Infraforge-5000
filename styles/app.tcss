@@ -160,6 +160,21 @@ ListView:focus > ListItem.-highlight {
     border-left: tall $accent;
 }
 
+/* ── Provision Menu Screen ── */
+
+#provision-menu-container {
+    padding: 1 2;
+}
+
+#provision-menu-hint {
+    color: $text-muted;
+    margin: 0 0 1 0;
+}
+
+#provision-nav-menu {
+    margin: 1 0;
+}
+
 /* ── VM List Screen ── */
 
 #vm-list-container {

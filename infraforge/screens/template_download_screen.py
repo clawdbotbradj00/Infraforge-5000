@@ -3,6 +3,11 @@
 Lets users browse a curated registry of popular QEMU cloud images and
 Proxmox LXC container templates (from pveam), select a target node and
 storage pool, and download them with live progress tracking.
+
+Flow:
+  1. Browse phase  — navigate the template list, press Enter to select
+  2. Config phase  — pick target node and compatible storage
+  3. Download       — live progress log
 """
 
 from __future__ import annotations
@@ -100,6 +105,62 @@ CLOUD_IMAGES = [
     },
 ]
 
+# Block-based storage types that cannot accept file uploads
+_BLOCK_STORAGE_TYPES = frozenset({
+    "lvm", "lvmthin", "zfs", "zfspool", "rbd", "iscsi", "iscsidirect",
+})
+
+# Storage column widths for config phase display
+_STOR_NAME_W = 18
+_STOR_TYPE_W = 12
+_STOR_FREE_W = 12
+_STOR_TOTAL_W = 12
+_STOR_USED_W = 10
+
+
+def _stor_label(s: StorageInfo) -> str:
+    """Build a colored, columnar label for a storage pool."""
+    name = (s.storage or "—")
+    if len(name) > _STOR_NAME_W - 1:
+        name = name[: _STOR_NAME_W - 2] + ".."
+    name = name.ljust(_STOR_NAME_W)
+
+    stype = (s.storage_type or "—").ljust(_STOR_TYPE_W)
+    free = (s.avail_display or "—").ljust(_STOR_FREE_W)
+    total = (s.total_display or "—").ljust(_STOR_TOTAL_W)
+
+    pct = s.used_percent
+    if pct > 85:
+        pct_color = "red"
+    elif pct > 60:
+        pct_color = "yellow"
+    else:
+        pct_color = "green"
+    used_txt = f"{pct:.0f}%".ljust(_STOR_USED_W)
+
+    shared = "  [magenta]shared[/magenta]" if s.shared else ""
+    return (
+        f"[bold bright_white]{name}[/bold bright_white]"
+        f"[dim]{stype}[/dim]"
+        f"[green]{free}[/green]"
+        f"[dim]{total}[/dim]"
+        f"[{pct_color}]{used_txt}[/{pct_color}]"
+        f"{shared}"
+    )
+
+
+def _stor_header() -> str:
+    """Column header for storage table."""
+    return (
+        f"   [dim]"
+        f"{'Name'.ljust(_STOR_NAME_W)}"
+        f"{'Type'.ljust(_STOR_TYPE_W)}"
+        f"{'Free'.ljust(_STOR_FREE_W)}"
+        f"{'Total'.ljust(_STOR_TOTAL_W)}"
+        f"{'Used'.ljust(_STOR_USED_W)}"
+        f"[/dim]"
+    )
+
 
 class TemplateDownloadScreen(Screen):
     """Browse and download VM cloud images and LXC container templates."""
@@ -137,10 +198,8 @@ class TemplateDownloadScreen(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("backspace", "go_back", "Back", show=False),
-        Binding("n", "cycle_node", "Node", show=True),
-        Binding("t", "cycle_storage", "Storage", show=True),
         Binding("r", "refresh", "Refresh", show=True),
-        Binding("enter", "download", "Download", show=True),
+        Binding("enter", "select", "Select", show=True),
     ]
 
     def __init__(self):
@@ -149,13 +208,19 @@ class TemplateDownloadScreen(Screen):
         self._lxc_templates: list = []
         self._node_list: list[str] = []
         self._storage_list: list[StorageInfo] = []
-        self._selected_node: str = ""
-        self._selected_storage: str = ""
         self._items: list[WizItem] = []
         self._cursor: int = 0
         self._downloading: bool = False
         self._mount_gen: int = 0
         self._data_loaded: bool = False
+
+        # Phase management: "browse" (template list) or "config" (node/storage)
+        self._phase: str = "browse"
+        self._pending_download: dict | None = None
+
+        # Selections for config phase
+        self._selected_dl_node: str = ""
+        self._selected_dl_storage: str = ""
 
     # ------------------------------------------------------------------
     # Compose
@@ -208,6 +273,14 @@ class TemplateDownloadScreen(Screen):
                 self._refresh_lines()
                 self._scroll_to_cursor()
 
+        elif event.key == "space":
+            event.prevent_default()
+            event.stop()
+            if self._phase == "config":
+                self._activate_item()
+            elif self._phase == "browse":
+                self._enter_config_phase()
+
     def _nav_indices(self) -> list[int]:
         return [
             i for i, it in enumerate(self._items)
@@ -232,6 +305,153 @@ class TemplateDownloadScreen(Screen):
         return None
 
     # ------------------------------------------------------------------
+    # Item activation (radio selection in config phase)
+    # ------------------------------------------------------------------
+
+    def _activate_item(self):
+        """Handle Enter/Space on an item in config phase."""
+        if self._cursor < 0 or self._cursor >= len(self._items):
+            return
+        item = self._items[self._cursor]
+
+        # Confirm button
+        if item.kind == "option" and item.key == "_confirm":
+            self._confirm_download()
+            return
+
+        if item.kind != "option" or not item.group:
+            return
+
+        # Deselect all in same group, select this one
+        for it in self._items:
+            if it.group == item.group:
+                it.selected = False
+        item.selected = True
+
+        if item.group == "dl_node":
+            self._selected_dl_node = item.key
+            # Rebuild storage list for the new node, then focus first storage
+            self._rebuild_storage_options()
+            return  # _rebuild_storage_options handles cursor + refresh
+        elif item.group == "dl_storage":
+            self._selected_dl_storage = item.key
+            # Auto-focus the confirm button
+            self._focus_confirm_button()
+
+        self._refresh_lines()
+
+    def _rebuild_storage_options(self):
+        """After node change, rebuild only the storage radio options."""
+        if not self._pending_download:
+            return
+
+        content_type = self._content_type_for_download(self._pending_download)
+        compatible = self._compatible_storages(content_type, self._selected_dl_node)
+
+        # Find the storage section in _items and replace it
+        stor_header_idx: int | None = None
+        stor_end_idx: int | None = None
+        for i, it in enumerate(self._items):
+            if it.kind == "header" and it.key == "_stor_header":
+                stor_header_idx = i
+            elif stor_header_idx is not None and it.kind == "header" and it.key != "_stor_header":
+                stor_end_idx = i
+                break
+        if stor_header_idx is None:
+            return
+        if stor_end_idx is None:
+            stor_end_idx = len(self._items)
+
+        # Build new storage items
+        new_items: list[WizItem] = []
+        new_items.append(WizItem(
+            kind="header",
+            label="TARGET STORAGE",
+            key="_stor_header",
+        ))
+        new_items.append(WizItem(kind="info", label=_stor_header()))
+
+        if compatible:
+            # Auto-select first if current selection is not in new list
+            names = [s.storage for s in compatible]
+            if self._selected_dl_storage not in names:
+                self._selected_dl_storage = names[0]
+
+            for s in compatible:
+                sel = s.storage == self._selected_dl_storage
+                new_items.append(WizItem(
+                    kind="option",
+                    label=_stor_label(s),
+                    key=s.storage,
+                    group="dl_storage",
+                    selected=sel,
+                ))
+        else:
+            self._selected_dl_storage = ""
+            new_items.append(WizItem(
+                kind="info",
+                label="[red]No compatible storage found for this node[/red]",
+            ))
+            new_items.append(WizItem(
+                kind="info",
+                label=(
+                    f"[dim]  Need a file-based storage with "
+                    f"'{content_type}' content support[/dim]"
+                ),
+            ))
+
+        # Confirm button
+        new_items.append(WizItem(kind="info", label=""))
+        if self._selected_dl_storage:
+            new_items.append(WizItem(
+                kind="option",
+                label=(
+                    "[bold white on dark_green]  CONFIRM DOWNLOAD  "
+                    "[/bold white on dark_green]"
+                ),
+                key="_confirm",
+            ))
+        else:
+            new_items.append(WizItem(
+                kind="info",
+                label=(
+                    "[dim]Select a compatible storage above "
+                    "to enable download[/dim]"
+                ),
+            ))
+
+        # Replace the storage section in _items
+        self._items[stor_header_idx:stor_end_idx] = new_items
+
+        # Re-mount everything to get correct widget IDs
+        self._mount_items()
+
+        # Keep cursor in valid range
+        nav = self._nav_indices()
+        if nav and self._cursor not in nav:
+            # Try to land on first storage option
+            for idx in nav:
+                if (idx < len(self._items)
+                        and self._items[idx].group == "dl_storage"):
+                    self._cursor = idx
+                    break
+            else:
+                self._cursor = nav[-1]
+
+        self._refresh_lines()
+        self._scroll_to_cursor()
+        self._update_status()
+
+    def _focus_confirm_button(self):
+        """Move cursor to the CONFIRM button item."""
+        for i, it in enumerate(self._items):
+            if it.key == "_confirm":
+                self._cursor = i
+                self._refresh_lines()
+                self._scroll_to_cursor()
+                return
+
+    # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
@@ -239,69 +459,89 @@ class TemplateDownloadScreen(Screen):
         if self._downloading:
             self.notify("Download in progress...", severity="warning")
             return
+        if self._phase == "config":
+            # Return to browse phase
+            self._phase = "browse"
+            self._pending_download = None
+            self._build_and_mount()
+            return
         self.app.pop_screen()
-
-    def action_cycle_node(self):
-        if self._downloading or not self._node_list:
-            return
-        if self._selected_node in self._node_list:
-            idx = self._node_list.index(self._selected_node)
-            self._selected_node = self._node_list[(idx + 1) % len(self._node_list)]
-        else:
-            self._selected_node = self._node_list[0]
-        # Reset storage selection for new node
-        self._pick_default_storage()
-        self._build_and_mount()
-
-    def action_cycle_storage(self):
-        if self._downloading:
-            return
-        compatible = self._compatible_storages()
-        if not compatible:
-            return
-        names = [s.storage for s in compatible]
-        if self._selected_storage in names:
-            idx = names.index(self._selected_storage)
-            self._selected_storage = names[(idx + 1) % len(names)]
-        else:
-            self._selected_storage = names[0]
-        self._update_status()
 
     def action_refresh(self):
         if self._downloading:
+            return
+        if self._phase == "config":
             return
         self._data_loaded = False
         self._set_hint("Refreshing...")
         self._load_initial_data()
 
-    def action_download(self):
+    def action_select(self):
+        """Handle Enter binding — selects in browse, activates in config."""
         if self._downloading:
             self.notify("Download already in progress", severity="warning")
             return
+
+        if self._phase == "browse":
+            self._enter_config_phase()
+        elif self._phase == "config":
+            self._activate_item()
+
+    def _enter_config_phase(self):
+        """Validate selection in browse phase and transition to config."""
         if self._cursor < 0 or self._cursor >= len(self._items):
             return
         item = self._items[self._cursor]
         if item.kind != "option":
             return
 
-        if not self._selected_node:
-            self.notify("No node available", severity="error")
-            return
-        if not self._selected_storage:
-            self.notify("No compatible storage selected (press t to cycle)", severity="error")
+        meta = item.meta
+        if not meta:
             return
 
-        meta = item.meta
+        # Store what was selected
+        self._pending_download = dict(meta)
+
+        # Default node/storage selections
+        if self._node_list:
+            self._selected_dl_node = self._node_list[0]
+        else:
+            self._selected_dl_node = ""
+
+        # Pick default storage for the default node
+        content_type = self._content_type_for_download(meta)
+        compatible = self._compatible_storages(content_type, self._selected_dl_node)
+        if compatible:
+            self._selected_dl_storage = compatible[0].storage
+        else:
+            self._selected_dl_storage = ""
+
+        # Switch phase and build config UI
+        self._phase = "config"
+        self._build_and_mount()
+
+    def _confirm_download(self):
+        """Validate config selections and start the download."""
+        if not self._pending_download:
+            return
+        if not self._selected_dl_node:
+            self.notify("No node selected", severity="error")
+            return
+        if not self._selected_dl_storage:
+            self.notify("No compatible storage selected", severity="error")
+            return
+
+        meta = self._pending_download
         if meta.get("type") == "cloud":
             self._do_download_cloud(meta)
         elif meta.get("type") == "lxc":
             self._do_download_lxc(meta)
 
     # ------------------------------------------------------------------
-    # Build items
+    # Build items — browse phase
     # ------------------------------------------------------------------
 
-    def _build_items(self):
+    def _build_browse_items(self):
         self._items = []
         items = self._items
 
@@ -386,13 +626,125 @@ class TemplateDownloadScreen(Screen):
         else:
             items.append(WizItem(kind="info", label="Loading templates..."))
 
+    # ------------------------------------------------------------------
+    # Build items — config phase (node + storage selection)
+    # ------------------------------------------------------------------
+
+    def _build_config_items(self):
+        self._items = []
+        items = self._items
+        meta = self._pending_download or {}
+
+        dl_type = meta.get("type", "")
+        dl_name = meta.get("name", "unknown")
+        type_label = "Cloud Image" if dl_type == "cloud" else "Container Template"
+        content_type = self._content_type_for_download(meta)
+
+        # Header: what is being downloaded
+        items.append(WizItem(
+            kind="header",
+            label="DOWNLOAD CONFIGURATION",
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                f"[bold bright_white]{dl_name}[/bold bright_white]"
+                f"  [dim]({type_label})[/dim]"
+            ),
+        ))
+        items.append(WizItem(kind="info", label=""))
+
+        # Node selection
+        items.append(WizItem(
+            kind="header",
+            label="TARGET NODE",
+        ))
+        if self._node_list:
+            for node_name in self._node_list:
+                sel = node_name == self._selected_dl_node
+                items.append(WizItem(
+                    kind="option",
+                    label=f"[bold bright_white]{node_name}[/bold bright_white]",
+                    key=node_name,
+                    group="dl_node",
+                    selected=sel,
+                ))
+        else:
+            items.append(WizItem(
+                kind="info",
+                label="[red]No online nodes found[/red]",
+            ))
+
+        items.append(WizItem(kind="info", label=""))
+
+        # Storage selection
+        items.append(WizItem(
+            kind="header",
+            label="TARGET STORAGE",
+            key="_stor_header",
+        ))
+        items.append(WizItem(kind="info", label=_stor_header()))
+
+        compatible = self._compatible_storages(content_type, self._selected_dl_node)
+        if compatible:
+            # Ensure current selection is valid
+            names = [s.storage for s in compatible]
+            if self._selected_dl_storage not in names:
+                self._selected_dl_storage = names[0]
+
+            for s in compatible:
+                sel = s.storage == self._selected_dl_storage
+                items.append(WizItem(
+                    kind="option",
+                    label=_stor_label(s),
+                    key=s.storage,
+                    group="dl_storage",
+                    selected=sel,
+                ))
+        else:
+            self._selected_dl_storage = ""
+            items.append(WizItem(
+                kind="info",
+                label="[red]No compatible storage found for this node[/red]",
+            ))
+            items.append(WizItem(
+                kind="info",
+                label=(
+                    f"[dim]  Need a file-based storage with "
+                    f"'{content_type}' content support[/dim]"
+                ),
+            ))
+
+        # Confirm button
+        items.append(WizItem(kind="info", label=""))
+        if self._selected_dl_storage:
+            items.append(WizItem(
+                kind="option",
+                label=(
+                    "[bold white on dark_green]  CONFIRM DOWNLOAD  [/bold white on dark_green]"
+                ),
+                key="_confirm",
+            ))
+        else:
+            items.append(WizItem(
+                kind="info",
+                label="[dim]Select a node and storage above to enable download[/dim]",
+            ))
+
+    # ------------------------------------------------------------------
+    # Common build + mount
+    # ------------------------------------------------------------------
+
     def _build_and_mount(self):
-        """Rebuild items, mount widgets, and update UI."""
-        self._build_items()
+        """Rebuild items for the current phase, mount widgets, update UI."""
+        if self._phase == "browse":
+            self._build_browse_items()
+        else:
+            self._build_config_items()
+
         self._mount_items()
         nav = self._nav_indices()
         if nav:
-            # Keep cursor in range
             if self._cursor not in nav:
                 self._cursor = nav[0]
         self._refresh_lines()
@@ -434,8 +786,18 @@ class TemplateDownloadScreen(Screen):
         cur = "[bold]>[/bold]" if is_cur else " "
 
         if item.kind == "option":
-            lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
-            return f" {cur}  {lbl}"
+            if item.group:
+                # Radio button style (config phase)
+                mark = (
+                    "[green]\u25cf[/green]" if item.selected
+                    else "[dim]\u25cb[/dim]"
+                )
+                lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+                return f" {cur} {mark}  {lbl}"
+            else:
+                # Simple selectable (browse phase)
+                lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+                return f" {cur}  {lbl}"
 
         return f"   {item.label}"
 
@@ -458,29 +820,38 @@ class TemplateDownloadScreen(Screen):
             pass
 
     def _update_status(self):
-        node_info = (
-            f"[bold]Node:[/bold] [cyan]{self._selected_node}[/cyan]"
-            if self._selected_node
-            else "[bold]Node:[/bold] [dim]none[/dim]"
-        )
-        storage_info = (
-            f"[bold]Storage:[/bold] [cyan]{self._selected_storage}[/cyan]"
-            if self._selected_storage
-            else "[bold]Storage:[/bold] [dim]none[/dim]"
-        )
-        cloud_count = len(self._cloud_images)
-        lxc_count = len(self._lxc_templates)
-        counts = (
-            f"[dim]{cloud_count} cloud images, "
-            f"{lxc_count} container templates[/dim]"
-        )
-        try:
-            self.query_one("#dl-status", Static).update(
-                f"  DOWNLOAD TEMPLATES & IMAGES  |  "
-                f"{node_info}  {storage_info}  |  {counts}"
+        if self._phase == "config" and self._pending_download:
+            dl_name = self._pending_download.get("name", "")
+            node_info = (
+                f"[bold]Node:[/bold] [cyan]{self._selected_dl_node}[/cyan]"
+                if self._selected_dl_node
+                else "[bold]Node:[/bold] [dim]none[/dim]"
             )
-        except Exception:
-            pass
+            storage_info = (
+                f"[bold]Storage:[/bold] [cyan]{self._selected_dl_storage}[/cyan]"
+                if self._selected_dl_storage
+                else "[bold]Storage:[/bold] [dim]none[/dim]"
+            )
+            try:
+                self.query_one("#dl-status", Static).update(
+                    f"  DOWNLOAD: {dl_name}  |  "
+                    f"{node_info}  {storage_info}"
+                )
+            except Exception:
+                pass
+        else:
+            cloud_count = len(self._cloud_images)
+            lxc_count = len(self._lxc_templates)
+            counts = (
+                f"[dim]{cloud_count} cloud images, "
+                f"{lxc_count} container templates[/dim]"
+            )
+            try:
+                self.query_one("#dl-status", Static).update(
+                    f"  DOWNLOAD TEMPLATES & IMAGES  |  {counts}"
+                )
+            except Exception:
+                pass
 
     def _set_hint(self, text: str):
         try:
@@ -491,29 +862,58 @@ class TemplateDownloadScreen(Screen):
     def _update_hint(self):
         if self._downloading:
             self._set_hint("Download in progress...")
+        elif self._phase == "config":
+            self._set_hint(
+                "Enter=Select  Backspace=Back"
+            )
         else:
             self._set_hint(
-                "Enter=Download  n=Node  t=Storage  r=Refresh  Esc=Back"
+                "Enter=Select  r=Refresh  Esc=Back"
             )
 
     # ------------------------------------------------------------------
     # Storage helpers
     # ------------------------------------------------------------------
 
-    def _compatible_storages(self) -> list[StorageInfo]:
-        """Return storages on the selected node that can hold images or templates."""
-        if not self._selected_node:
+    @staticmethod
+    def _content_type_for_download(meta: dict) -> str:
+        """Return the required content type for a download meta dict."""
+        if meta.get("type") == "cloud":
+            return "iso"
+        return "vztmpl"
+
+    def _compatible_storages(
+        self, content_type: str, node: str = ""
+    ) -> list[StorageInfo]:
+        """Return storages on the given node that support the content type.
+
+        Only file-based storages are returned; block-based storage types
+        (lvm, lvmthin, zfs, zfspool, rbd, iscsi, iscsidirect) are excluded
+        because Proxmox cannot upload files to them.
+
+        Args:
+            content_type: Required content type — "iso" for cloud images,
+                          "vztmpl" for LXC templates.
+            node: Target node name. If empty, returns nothing.
+        """
+        if not node:
             return []
         compatible = []
         for s in self._storage_list:
-            if s.node != self._selected_node and not s.shared:
+            # Must be on the target node (or shared)
+            if s.node != node and not s.shared:
                 continue
             if not s.active or not s.enabled:
                 continue
+            # Exclude block-based storage types
+            if s.storage_type in _BLOCK_STORAGE_TYPES:
+                continue
+            # Must support the requested content type
             content = s.content or ""
-            # Accept storages that support iso, images, or vztmpl
-            if any(ct in content for ct in ("iso", "images", "vztmpl")):
-                compatible.append(s)
+            if content_type not in content:
+                continue
+            compatible.append(s)
+
         # Deduplicate by storage name (shared storages appear on multiple nodes)
         seen: set[str] = set()
         deduped: list[StorageInfo] = []
@@ -523,14 +923,6 @@ class TemplateDownloadScreen(Screen):
                 deduped.append(s)
         return deduped
 
-    def _pick_default_storage(self):
-        """Pick the first compatible storage for the selected node."""
-        compatible = self._compatible_storages()
-        if compatible:
-            self._selected_storage = compatible[0].storage
-        else:
-            self._selected_storage = ""
-
     # ------------------------------------------------------------------
     # Background data loader
     # ------------------------------------------------------------------
@@ -539,22 +931,18 @@ class TemplateDownloadScreen(Screen):
     def _load_initial_data(self):
         try:
             # Fetch online nodes
-            nodes = self.app.proxmox._online_node_names()
-            self._node_list = nodes
-            if nodes and not self._selected_node:
-                self._selected_node = nodes[0]
+            node_list = self.app.proxmox._online_node_names()
+            self._node_list = node_list
 
             # Fetch storage pools
             self._storage_list = self.app.proxmox.get_storage_info()
 
-            # Pick default storage if none selected
-            if not self._selected_storage:
-                self._pick_default_storage()
-
             # Fetch available LXC templates from Proxmox appliance index
-            self._lxc_templates = self.app.proxmox.get_appliance_templates(
-                node=self._selected_node
-            )
+            fetch_node = node_list[0] if node_list else ""
+            if fetch_node:
+                self._lxc_templates = self.app.proxmox.get_appliance_templates(
+                    node=fetch_node
+                )
 
             self._data_loaded = True
             self.app.call_from_thread(self._on_data_loaded)
@@ -582,8 +970,8 @@ class TemplateDownloadScreen(Screen):
         url = meta["url"]
         filename = meta["filename"]
         name = meta["name"]
-        node = self._selected_node
-        storage = self._selected_storage
+        node = self._selected_dl_node
+        storage = self._selected_dl_storage
 
         def log(msg: str):
             def _update():
@@ -660,8 +1048,8 @@ class TemplateDownloadScreen(Screen):
 
         template_name = meta["template_name"]
         display_name = meta["name"]
-        node = self._selected_node
-        storage = self._selected_storage
+        node = self._selected_dl_node
+        storage = self._selected_dl_storage
 
         def log(msg: str):
             def _update():
@@ -743,6 +1131,8 @@ class TemplateDownloadScreen(Screen):
 
     def _on_download_done(self):
         """Restore hint after download finishes."""
+        self._phase = "browse"
+        self._pending_download = None
         self._set_hint(
             "[bold green]Done![/bold green]  "
             "Press [b]r[/b] to refresh list  |  Esc=Back"

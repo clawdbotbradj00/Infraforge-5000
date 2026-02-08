@@ -177,6 +177,10 @@ class AnsibleRunModal(ModalScreen):
         self._new_cred_auth_type: str = "password"
         self._generated_pubkey: str = ""
         self._cred_cursor: int = 0  # cursor in the credential list
+        self._detected_keys: list[tuple[str, str]] = []  # (path, label) pairs
+        self._detected_key_cursor: int = -1  # cursor in detected key list
+        self._form_cursor: int = 0           # cursor in new-credential form items
+        self._form_items: list[str] = []     # ordered IDs of navigable form items
         # Phase 3 — execution
         self._is_running: bool = False
         self._run_start: float = 0.0
@@ -191,6 +195,7 @@ class AnsibleRunModal(ModalScreen):
         # IPAM
         self._subnets: list[dict] = []
         self._ipam_loaded: bool = False
+        self._skipped_scan: bool = False  # True if user used Direct Hosts
 
     # ------------------------------------------------------------------
     # Compose / Mount
@@ -225,13 +230,18 @@ class AnsibleRunModal(ModalScreen):
 
     def on_key(self, event) -> None:
         """Handle arrow keys for subnet selection (Phase 0), host toggles (Phase 1), and credential navigation (Phase 2)."""
+
+        # ------------------------------------------------------------------
         # Phase 0: subnet list navigation
+        # ------------------------------------------------------------------
         if self._phase == 0 and self._subnets:
             focused = self.focused
-            # If the Input is focused and cursor is on manual entry, let it handle keys
-            if isinstance(focused, Input) and self._subnet_cursor == -1:
-                return
-            # If the Input is focused but cursor is on a subnet line, intercept arrows
+            # If ANY Input is focused, let it handle Enter — only intercept arrows
+            if isinstance(focused, Input):
+                if event.key in ("up", "down"):
+                    pass  # fall through to arrow handling below
+                else:
+                    return
             if event.key == "up":
                 event.prevent_default()
                 event.stop()
@@ -239,7 +249,6 @@ class AnsibleRunModal(ModalScreen):
                     self._subnet_cursor -= 1
                     self._refresh_subnet_lines()
                     self._scroll_to_subnet_cursor()
-                    # Unfocus input when moving up into subnet list
                     try:
                         self.query_one("#run-ip-input", Input).blur()
                     except Exception:
@@ -256,7 +265,6 @@ class AnsibleRunModal(ModalScreen):
                     except Exception:
                         pass
                 elif self._subnet_cursor == len(self._subnets) - 1:
-                    # Move to manual input
                     self._subnet_cursor = -1
                     self._refresh_subnet_lines()
                     try:
@@ -271,7 +279,9 @@ class AnsibleRunModal(ModalScreen):
                 self._start_scan(cidr)
             return
 
+        # ------------------------------------------------------------------
         # Phase 1: host toggle navigation
+        # ------------------------------------------------------------------
         if self._phase == 1 and not self._is_scanning and self._alive_ips:
             focused = self.focused
             if isinstance(focused, (Button, Input)):
@@ -303,13 +313,55 @@ class AnsibleRunModal(ModalScreen):
                     self._transition_to_credentials()
             return
 
-        # Phase 2: credential list navigation
+        # ------------------------------------------------------------------
+        # Phase 2: credential FORM navigation (new credential form is open)
+        # ------------------------------------------------------------------
+        if self._phase == 2 and self._show_new_credential_form:
+            focused = self.focused
+            if isinstance(focused, Input):
+                return  # Let Input handle all keys
+
+            if not self._form_items:
+                return
+
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                if self._form_cursor > 0:
+                    self._form_cursor -= 1
+                    self._refresh_form_items()
+            elif event.key == "down":
+                event.prevent_default()
+                event.stop()
+                if self._form_cursor < len(self._form_items) - 1:
+                    self._form_cursor += 1
+                    self._refresh_form_items()
+            elif event.key == "enter":
+                event.prevent_default()
+                event.stop()
+                self._handle_form_enter()
+            elif event.key == "g":
+                if self._new_cred_auth_type == "ssh_key":
+                    event.prevent_default()
+                    event.stop()
+                    self._generate_ssh_key()
+            elif event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                self._show_new_credential_form = False
+                self._generated_pubkey = ""
+                self._render_credential_selection()
+            return
+
+        # ------------------------------------------------------------------
+        # Phase 2: credential LIST navigation (browsing saved profiles)
+        # ------------------------------------------------------------------
         if self._phase == 2 and not self._show_new_credential_form:
             focused = self.focused
             if isinstance(focused, (Button, Input)):
                 return
 
-            total_items = len(self._credential_profiles) + 1  # profiles + "New"
+            total_items = len(self._credential_profiles) + 1  # profiles + "+ Create New Profile"
             if event.key == "up":
                 event.prevent_default()
                 event.stop()
@@ -328,14 +380,14 @@ class AnsibleRunModal(ModalScreen):
                 event.prevent_default()
                 event.stop()
                 if self._cred_cursor < len(self._credential_profiles):
-                    # Select profile and proceed to execution
                     self._selected_credential = self._credential_profiles[self._cred_cursor]
                     self._refresh_cred_lines()
                     self._start_execution()
                 else:
-                    # "+ New Profile" line
                     self._show_new_credential_form = True
                     self._generated_pubkey = ""
+                    self._form_cursor = 0
+                    self._form_items = self._build_form_items()
                     self._render_credential_selection()
             elif event.key == "space":
                 event.prevent_default()
@@ -355,11 +407,61 @@ class AnsibleRunModal(ModalScreen):
                     self._delete_credential_at_cursor()
             return
 
+    def _handle_form_enter(self) -> None:
+        """Handle Enter press on the currently highlighted form item."""
+        if not self._form_items or self._form_cursor >= len(self._form_items):
+            return
+
+        item_id = self._form_items[self._form_cursor]
+
+        if item_id == "cred-form-auth-pw":
+            if self._new_cred_auth_type != "password":
+                self._new_cred_auth_type = "password"
+                self._form_items = self._build_form_items()
+                self._form_cursor = 0
+                self._apply_cred_field_visibility()
+                self._refresh_form_items()
+                self._update_cred_status()
+
+        elif item_id == "cred-form-auth-key":
+            if self._new_cred_auth_type != "ssh_key":
+                self._new_cred_auth_type = "ssh_key"
+                if not self._detected_keys:
+                    self._detected_keys = self._detect_ssh_keys()
+                self._detected_key_cursor = 0 if self._detected_keys else -1
+                self._form_items = self._build_form_items()
+                self._form_cursor = 1
+                self._apply_cred_field_visibility()
+                self._refresh_form_items()
+                self._update_cred_status()
+
+        elif item_id.startswith("cred-form-key-"):
+            try:
+                idx = int(item_id.split("-")[-1])
+                self._select_detected_key(idx)
+                self._detected_key_cursor = idx
+                self._refresh_form_items()
+            except (ValueError, IndexError):
+                pass
+
+        elif item_id == "cred-form-genkey":
+            self._generate_ssh_key()
+
+        elif item_id == "cred-form-save":
+            self._save_new_credential()
+
+        elif item_id == "cred-form-cancel":
+            self._show_new_credential_form = False
+            self._generated_pubkey = ""
+            self._render_credential_selection()
+
     def on_click(self, event) -> None:
-        """Handle mouse clicks on host lines, subnet lines, and credential lines."""
+        """Handle mouse clicks on host lines, subnet lines, credential lines, and form items."""
         widget = event.widget
         if not widget or not hasattr(widget, "id") or not widget.id:
             return
+
+        # --- Phase 1: host line clicks ---
         if widget.id.startswith("host-line-"):
             try:
                 idx = int(widget.id.split("-")[-1])
@@ -368,6 +470,8 @@ class AnsibleRunModal(ModalScreen):
                     self._toggle_host(idx)
             except (ValueError, IndexError):
                 pass
+
+        # --- Phase 0: subnet line clicks ---
         elif widget.id.startswith("subnet-line-"):
             try:
                 idx = int(widget.id.split("-")[-1])
@@ -377,6 +481,8 @@ class AnsibleRunModal(ModalScreen):
                     self._start_scan(cidr)
             except (ValueError, IndexError):
                 pass
+
+        # --- Phase 2 list view: credential line clicks ---
         elif widget.id.startswith("cred-line-"):
             try:
                 idx = int(widget.id.split("-")[-1])
@@ -390,9 +496,11 @@ class AnsibleRunModal(ModalScreen):
                         else:
                             self._selected_credential = prof
                     else:
-                        # Clicked "+ New Profile"
+                        # Clicked "+ Create New Profile"
                         self._show_new_credential_form = True
                         self._generated_pubkey = ""
+                        self._form_cursor = 0
+                        self._form_items = self._build_form_items()
                         self._render_credential_selection()
                         return
                     self._refresh_cred_lines()
@@ -400,10 +508,20 @@ class AnsibleRunModal(ModalScreen):
             except (ValueError, IndexError):
                 pass
 
+        # --- Phase 2 form view: form item clicks ---
+        elif widget.id and widget.id.startswith("cred-form-"):
+            if hasattr(self, "_form_items") and self._form_items:
+                if widget.id in self._form_items:
+                    self._form_cursor = self._form_items.index(widget.id)
+                    self._refresh_form_items()
+                    self._handle_form_enter()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Enter pressed in an Input — handle per-phase."""
         if self._phase == 0 and event.input.id == "run-ip-input":
             self._start_scan()
+        elif self._phase == 0 and event.input.id == "run-direct-input":
+            self._use_direct_hosts()
         elif self._phase == 3 and event.input.id == "run-console-input":
             # Send user input to the running subprocess via PTY
             if self._runner and self._runner.is_running:
@@ -417,6 +535,7 @@ class AnsibleRunModal(ModalScreen):
                 event.input.value = ""
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses — only bottom action bar buttons remain."""
         btn_id = event.button.id
         if not btn_id:
             return
@@ -430,8 +549,12 @@ class AnsibleRunModal(ModalScreen):
                 self._generated_pubkey = ""
                 self._render_credential_selection()
             elif self._phase == 2 and not self._show_new_credential_form:
-                self._phase = 1
-                self._is_scanning = False
+                if self._skipped_scan:
+                    self._phase = 0
+                    self._skipped_scan = False
+                else:
+                    self._phase = 1
+                    self._is_scanning = False
                 self._render_phase()
             elif self._phase == 1 and not self._is_scanning:
                 self._phase = 0
@@ -448,21 +571,6 @@ class AnsibleRunModal(ModalScreen):
                 self._start_execution()
             elif self._phase == 3 and not self._is_running:
                 self.app.pop_screen()
-
-        # --- Credential form buttons (new form only) ---
-        elif btn_id == "run-cred-save-btn":
-            self._save_new_credential()
-
-        elif btn_id == "run-cred-cancel-btn":
-            self._show_new_credential_form = False
-            self._generated_pubkey = ""
-            self._render_credential_selection()
-
-        elif btn_id == "run-cred-genkey-btn":
-            self._generate_ssh_key()
-
-        elif btn_id == "run-cred-delete-btn":
-            self._delete_selected_credential()
 
 
     # ------------------------------------------------------------------
@@ -489,15 +597,16 @@ class AnsibleRunModal(ModalScreen):
         self._remove_cred_widgets()
         self._remove_cred_lines()
         self._remove_host_toggles()
-        self._remove_subnet_lines()
 
         content = self.query_one("#run-phase-content", Static)
+        scroll = self.query_one("#run-content", VerticalScroll)
 
         ipam_cfg = getattr(self.app.config, "ipam", None)
         has_ipam = ipam_cfg and getattr(ipam_cfg, "url", "")
 
+        # -- Section 1: Scan subnet --
         lines = [
-            "[bold]Select a target range and press Enter to scan.[/bold]",
+            "[bold]SCAN SUBNET[/bold]  [dim]— select a subnet or enter a range to ping sweep[/dim]",
             "",
         ]
 
@@ -511,40 +620,72 @@ class AnsibleRunModal(ModalScreen):
 
         content.update("\n".join(lines))
 
-        # Remove old input for clean remount
-        scroll = self.query_one("#run-content", VerticalScroll)
-        prev_value = ""
-        for w in self.query("#run-ip-input"):
-            prev_value = w.value
-            w.remove()
-        for w in self.query("#run-ipam-btn"):
-            w.remove()
-
-        # Mount subnet suggestion lines (simple Static widgets)
+        # -- Subnet lines: refresh existing or mount new --
+        self._remove_subnet_lines()
         if self._subnets:
             if self._subnet_cursor == -1:
-                self._subnet_cursor = 0  # auto-select first subnet
+                self._subnet_cursor = 0
+            # Mount before the scan input if it exists, else at end
+            before_widget = None
+            try:
+                before_widget = self.query_one("#run-ip-input")
+            except Exception:
+                pass
             for idx, s in enumerate(self._subnets):
                 label = self._format_subnet_line(idx, s)
-                line = Static(
+                w = Static(
                     label,
                     markup=True,
                     id=f"subnet-line-{idx}",
                     classes="subnet-line",
                 )
-                scroll.mount(line)
+                if before_widget:
+                    scroll.mount(w, before=before_widget)
+                else:
+                    scroll.mount(w)
 
-        # Manual input line at the bottom
-        ip_input = Input(
-            placeholder="Or type a range: 10.0.1.0/24, 10.0.5.1-100",
-            id="run-ip-input",
-            value=prev_value,
-        )
-        scroll.mount(ip_input)
+        # -- Scan range input: reuse if already mounted --
+        try:
+            self.query_one("#run-ip-input", Input)
+        except Exception:
+            scroll.mount(
+                Input(
+                    placeholder="Or type a range to scan: 10.0.1.0/24, 10.0.5.1-100",
+                    id="run-ip-input",
+                )
+            )
 
-        # Focus the input only if cursor is on manual entry
+        # -- Separator + Direct hosts section: reuse if already mounted --
+        try:
+            self.query_one("#run-direct-separator", Static)
+        except Exception:
+            scroll.mount(
+                Static(
+                    "\n [dim]─────────────────────────────────────────────────────[/dim]\n\n"
+                    " [bold]DIRECT HOSTS[/bold]  [dim]— enter hosts directly, skip the scan[/dim]\n"
+                    " [dim]Comma-separated IPs, ranges, or hostnames[/dim]",
+                    markup=True,
+                    id="run-direct-separator",
+                    classes="target-section-widget",
+                )
+            )
+
+        try:
+            self.query_one("#run-direct-input", Input)
+        except Exception:
+            scroll.mount(
+                Input(
+                    placeholder="e.g. 10.0.3.22, 10.0.5.1-10, web-server.local",
+                    id="run-direct-input",
+                )
+            )
+
+        # Focus the appropriate input
         if self._subnet_cursor == -1 or not self._subnets:
-            ip_input.focus()
+            try:
+                self.query_one("#run-ip-input", Input).focus()
+            except Exception:
+                pass
 
         action_btn = self.query_one("#run-action-btn", Button)
         action_btn.label = "Scan Hosts"
@@ -556,13 +697,31 @@ class AnsibleRunModal(ModalScreen):
 
         status = self.query_one("#run-status", Static)
         if self._subnets:
-            status.update("[dim]Select a subnet or type a range, then press Enter[/dim]")
+            status.update(
+                "[dim]Select subnet + Enter to scan  |  "
+                "Or type hosts in Direct Hosts + Enter to skip scan[/dim]"
+            )
         else:
-            status.update("[dim]Enter target IPs and press Enter[/dim]")
+            status.update(
+                "[dim]Enter a range + Enter to scan  |  "
+                "Or type hosts in Direct Hosts + Enter to skip scan[/dim]"
+            )
 
         # Auto-load IPAM subnets in background if not loaded yet
         if has_ipam and not self._ipam_loaded:
             self._load_ipam_subnets()
+
+    def _remove_target_widgets(self) -> None:
+        """Remove all Phase 0 target-selection widgets from the DOM."""
+        for sel in (
+            "#run-ip-input", "#run-direct-input", "#run-direct-separator",
+            "#run-ipam-btn",
+        ):
+            for w in self.query(sel):
+                w.remove()
+        for w in self.query(".target-section-widget"):
+            w.remove()
+        self._remove_subnet_lines()
 
     def _render_ping_sweep(self) -> None:
         title = self.query_one("#run-title", Static)
@@ -571,11 +730,7 @@ class AnsibleRunModal(ModalScreen):
         )
 
         # Remove widgets from other phases
-        for w in self.query("#run-ip-input"):
-            w.remove()
-        for w in self.query("#run-ipam-btn"):
-            w.remove()
-        self._remove_subnet_lines()
+        self._remove_target_widgets()
         self._remove_cred_widgets()
         self._remove_cred_lines()
         self._remove_host_toggles()
@@ -603,12 +758,8 @@ class AnsibleRunModal(ModalScreen):
             f"[bold]Run: {self._playbook.filename}[/bold]  Phase 3/4: Credentials"
         )
 
-        # Remove widgets from other phases — Phase 0 widgets may linger
-        for w in self.query("#run-ip-input"):
-            w.remove()
-        for w in self.query("#run-ipam-btn"):
-            w.remove()
-        self._remove_subnet_lines()
+        # Remove widgets from other phases
+        self._remove_target_widgets()
         self._remove_host_toggles()
 
         # Remove all credential widgets for clean re-render
@@ -618,30 +769,33 @@ class AnsibleRunModal(ModalScreen):
         scroll = self.query_one("#run-content", VerticalScroll)
         content = self.query_one("#run-phase-content", Static)
 
-        lines = [
-            "[bold]Select credentials for playbook execution.[/bold]",
-            "",
-            f"[dim]{len(self._get_included_ips())} hosts will be targeted.[/dim]",
-            "",
-        ]
+        action_btn = self.query_one("#run-action-btn", Button)
+        cancel_btn = self.query_one("#run-cancel-btn", Button)
 
-        if self._credential_profiles:
-            lines.append(
-                "[bold]Saved Credential Profiles:[/bold]  "
-                "[dim]up/down to navigate, Space to select, Enter to run, d to delete[/dim]"
-            )
-            lines.append(
-                f"[dim]      {'Name':<20}  {'User':<12}  Auth[/dim]"
-            )
-            lines.append("")
-        else:
-            lines.append("[yellow]No saved credential profiles.[/yellow]")
-            lines.append("[dim]Press Enter on '+ New Profile' to create one.[/dim]")
-
-        content.update("\n".join(lines))
-
-        # Mount credential profile lines as Static widgets (cursor-based)
         if not self._show_new_credential_form:
+            # ── LIST VIEW ──────────────────────────────────────────────
+            host_count = len(self._get_included_ips())
+            lines = [
+                "[bold]SAVED PROFILES[/bold]  "
+                "[dim]up/down navigate, Space select, Enter run, d delete[/dim]",
+                "",
+                f"[dim]{host_count} hosts will be targeted.[/dim]",
+                "",
+            ]
+
+            if self._credential_profiles:
+                lines.append(
+                    f"[dim]      {'Name':<20}  {'User':<12}  {'Auth':<6}Detail[/dim]"
+                )
+                lines.append("")
+            else:
+                lines.append("[yellow]No saved credential profiles.[/yellow]")
+                lines.append("[dim]Navigate to '+ Create New Profile' and press Enter.[/dim]")
+                lines.append("")
+
+            content.update("\n".join(lines))
+
+            # Mount credential profile lines as cursor-navigable Static widgets
             for idx, prof in enumerate(self._credential_profiles):
                 label = self._format_cred_line(idx, prof)
                 line = Static(
@@ -652,7 +806,17 @@ class AnsibleRunModal(ModalScreen):
                 )
                 scroll.mount(line)
 
-            # "+ New Profile" line
+            # Separator before the "create new" line
+            scroll.mount(
+                Static(
+                    "\n [dim]\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/dim]",
+                    markup=True,
+                    id="cred-line-separator",
+                    classes="cred-line",
+                )
+            )
+
+            # "+ Create New Profile" as a cursor-navigable Static line
             new_line_idx = len(self._credential_profiles)
             new_label = self._format_new_cred_line()
             new_line = Static(
@@ -662,17 +826,24 @@ class AnsibleRunModal(ModalScreen):
                 classes="cred-line",
             )
             scroll.mount(new_line)
+
+            # Bottom bar: Run Playbook enabled only if profile selected
+            action_btn.label = "Run Playbook"
+            action_btn.variant = "success"
+            action_btn.disabled = self._selected_credential is None
+
+            cancel_btn.label = "Back"
+
         else:
+            # ── FORM VIEW ──────────────────────────────────────────────
+            content.update("")
             self._mount_new_credential_form(scroll)
 
-        # Update action / cancel buttons
-        action_btn = self.query_one("#run-action-btn", Button)
-        action_btn.label = "Run Playbook"
-        action_btn.variant = "success"
-        action_btn.disabled = self._selected_credential is None
+            action_btn.label = "Run Playbook"
+            action_btn.variant = "success"
+            action_btn.disabled = True
 
-        cancel_btn = self.query_one("#run-cancel-btn", Button)
-        cancel_btn.label = "Back"
+            cancel_btn.label = "Cancel"
 
         self._update_cred_status()
 
@@ -688,10 +859,34 @@ class AnsibleRunModal(ModalScreen):
         auth = "key" if profile.auth_type == "ssh_key" else "pw"
         name_padded = profile.name.ljust(20)
         user_padded = profile.username.ljust(12)
+        auth_padded = auth.ljust(6)
+
+        # For SSH key profiles, show the private_key_path (truncated if long)
+        detail = ""
+        if profile.auth_type == "ssh_key" and getattr(profile, "private_key_path", ""):
+            kp = profile.private_key_path
+            try:
+                home = str(Path.home())
+                if kp.startswith(home):
+                    kp = "~" + kp[len(home):]
+            except Exception:
+                pass
+            if len(kp) > 40:
+                kp = "..." + kp[-37:]
+            detail = kp
+
         if is_cursor:
-            return f" {cursor}  {check}  [bold]{name_padded}[/bold]  [dim]{user_padded}  {auth}[/dim]"
+            return (
+                f" {cursor}  {check}  [bold]{name_padded}[/bold]  "
+                f"[dim]{user_padded}  {auth_padded}[/dim]"
+                f"[dim]{detail}[/dim]"
+            )
         else:
-            return f" {cursor}  {check}  {name_padded}  [dim]{user_padded}  {auth}[/dim]"
+            return (
+                f" {cursor}  {check}  {name_padded}  "
+                f"[dim]{user_padded}  {auth_padded}[/dim]"
+                f"[dim]{detail}[/dim]"
+            )
 
     def _format_new_cred_line(self) -> str:
         """Build the markup for the '+ New Profile' line."""
@@ -729,17 +924,48 @@ class AnsibleRunModal(ModalScreen):
     def _update_cred_status(self) -> None:
         """Update status bar and action button for credential phase."""
         action_btn = self.query_one("#run-action-btn", Button)
-        action_btn.disabled = self._selected_credential is None
 
         status = self.query_one("#run-status", Static)
-        if self._selected_credential:
+        if self._show_new_credential_form:
+            auth_label = "SSH Key" if self._new_cred_auth_type == "ssh_key" else "Password"
+            status.update(
+                f"[dim]Auth: {auth_label} \u2014 "
+                f"Tab to fields, up/down for items, Enter to activate[/dim]"
+            )
+            action_btn.disabled = True
+        elif self._selected_credential:
+            action_btn.disabled = False
             status.update(
                 f"[dim]Selected: {self._selected_credential.name} "
-                f"({self._selected_credential.username}) — "
+                f"({self._selected_credential.username}) \u2014 "
                 f"Enter to run, Space to deselect[/dim]"
             )
         else:
+            action_btn.disabled = True
             status.update("[dim]Navigate with arrows, Space to select, Enter on profile to run[/dim]")
+
+    def _apply_cred_field_visibility(self) -> None:
+        """Show/hide password vs SSH-key widgets based on ``_new_cred_auth_type``."""
+        is_pw = self._new_cred_auth_type == "password"
+        for w in self.query(".cred-pw-field"):
+            w.display = is_pw
+        for w in self.query(".cred-key-field"):
+            w.display = not is_pw
+
+    def _toggle_cred_auth_type(self) -> None:
+        """Toggle the credential form between password and SSH key modes.
+
+        Rebuilds the form items list, updates navigable Static labels,
+        and shows/hides the appropriate input fields.
+        """
+        self._form_items = self._build_form_items()
+
+        if self._form_cursor >= len(self._form_items):
+            self._form_cursor = max(0, len(self._form_items) - 1)
+
+        self._apply_cred_field_visibility()
+        self._refresh_form_items()
+        self._update_cred_status()
 
     def _remove_cred_lines(self) -> None:
         """Remove all credential line widgets from the DOM."""
@@ -747,10 +973,30 @@ class AnsibleRunModal(ModalScreen):
             w.remove()
 
     def _mount_new_credential_form(self, scroll: VerticalScroll) -> None:
-        """Mount inline form widgets for creating a new credential."""
+        """Mount inline form widgets for creating a new credential.
+
+        Uses ONLY Static and Input widgets — no Button widgets.
+        All selectable/navigable items are Static with class ``cred-form-item``.
+        """
+        # Detect SSH keys eagerly so we know how many form items to build
+        if not self._detected_keys:
+            self._detected_keys = self._detect_ssh_keys()
+            if self._detected_keys and self._detected_key_cursor == -1:
+                self._detected_key_cursor = 0
+
+        # Header
         scroll.mount(
             Static(
-                "\n[bold]New Credential Profile[/bold]",
+                "\n[bold]CREATE NEW PROFILE[/bold]",
+                markup=True,
+                classes="cred-widget",
+            )
+        )
+
+        # Profile name
+        scroll.mount(
+            Static(
+                "\n [dim]Profile name:[/dim]",
                 markup=True,
                 classes="cred-widget",
             )
@@ -762,6 +1008,15 @@ class AnsibleRunModal(ModalScreen):
                 classes="cred-widget",
             )
         )
+
+        # Username
+        scroll.mount(
+            Static(
+                " [dim]Username:[/dim]",
+                markup=True,
+                classes="cred-widget",
+            )
+        )
         scroll.mount(
             Input(
                 placeholder="Username (default: root)",
@@ -770,94 +1025,228 @@ class AnsibleRunModal(ModalScreen):
             )
         )
 
-        # Auth type toggle
+        # Auth type section header
         scroll.mount(
             Static(
-                "[bold]Auth Type:[/bold]",
+                "\n [bold]AUTH TYPE[/bold]  [dim]Enter to toggle[/dim]",
                 markup=True,
                 classes="cred-widget",
             )
         )
-        pw_variant = "primary" if self._new_cred_auth_type == "password" else "default"
-        key_variant = "primary" if self._new_cred_auth_type == "ssh_key" else "default"
+
+        # Auth type: Password — navigable Static
         scroll.mount(
-            Button(
-                "Password",
-                variant=pw_variant,
-                id="cred-auth-type-pw",
-                classes="cred-widget",
+            Static(
+                "",
+                markup=True,
+                id="cred-form-auth-pw",
+                classes="cred-widget cred-form-item",
             )
         )
+        # Auth type: SSH Key — navigable Static
         scroll.mount(
-            Button(
-                "SSH Key",
-                variant=key_variant,
-                id="cred-auth-type-key",
-                classes="cred-widget",
+            Static(
+                "",
+                markup=True,
+                id="cred-form-auth-key",
+                classes="cred-widget cred-form-item",
             )
         )
 
-        if self._new_cred_auth_type == "password":
-            scroll.mount(
-                Input(
-                    placeholder="Password",
-                    password=True,
-                    id="cred-pass-input",
-                    classes="cred-widget",
-                )
+        # --- Password-mode field (visibility toggled) ---
+        scroll.mount(
+            Static(
+                "\n [dim]Password:[/dim]",
+                markup=True,
+                classes="cred-widget cred-pw-field",
             )
-        else:
-            scroll.mount(
-                Input(
-                    placeholder="Private key path (or generate below)",
-                    id="cred-keypath-input",
-                    classes="cred-widget",
-                )
+        )
+        scroll.mount(
+            Input(
+                placeholder="Password",
+                password=True,
+                id="cred-pass-input",
+                classes="cred-widget cred-pw-field",
             )
-            scroll.mount(
-                Input(
-                    placeholder="Key passphrase (optional)",
-                    password=True,
-                    id="cred-passphrase-input",
-                    classes="cred-widget",
-                )
-            )
-            scroll.mount(
-                Button(
-                    "Generate New SSH Key",
-                    variant="warning",
-                    id="run-cred-genkey-btn",
-                    classes="cred-widget",
-                )
-            )
+        )
 
-            if self._generated_pubkey:
+        # --- SSH-key-mode fields (visibility toggled) ---
+        if self._detected_keys:
+            scroll.mount(
+                Static(
+                    "\n [bold]DETECTED KEYS[/bold]  [dim]Enter to select[/dim]",
+                    markup=True,
+                    id="cred-detected-keys-header",
+                    classes="cred-widget cred-key-field",
+                )
+            )
+            for idx, (_kpath, _klabel) in enumerate(self._detected_keys):
                 scroll.mount(
                     Static(
-                        f"\n[bold green]Public key (copy to target hosts):[/bold green]\n"
-                        f"[dim]{self._generated_pubkey}[/dim]",
+                        "",
                         markup=True,
-                        id="run-cred-pubkey-display",
-                        classes="cred-widget",
+                        id=f"cred-form-key-{idx}",
+                        classes="cred-widget cred-key-field cred-form-item",
                     )
                 )
 
+        # Key path input
+        default_keypath = ""
+        if self._detected_keys and 0 <= self._detected_key_cursor < len(self._detected_keys):
+            default_keypath = self._detected_keys[self._detected_key_cursor][0]
+
         scroll.mount(
-            Button(
-                "Save Profile",
-                variant="success",
-                id="run-cred-save-btn",
-                classes="cred-widget",
+            Static(
+                "\n [dim]Key path:[/dim]",
+                markup=True,
+                classes="cred-widget cred-key-field",
             )
         )
         scroll.mount(
-            Button(
-                "Cancel",
-                variant="default",
-                id="run-cred-cancel-btn",
+            Input(
+                placeholder="Private key path (or select above / generate below)",
+                value=default_keypath,
+                id="cred-keypath-input",
+                classes="cred-widget cred-key-field",
+            )
+        )
+
+        # Passphrase input
+        scroll.mount(
+            Static(
+                " [dim]Passphrase:[/dim]",
+                markup=True,
+                classes="cred-widget cred-key-field",
+            )
+        )
+        scroll.mount(
+            Input(
+                placeholder="Key passphrase (optional)",
+                password=True,
+                id="cred-passphrase-input",
+                classes="cred-widget cred-key-field",
+            )
+        )
+
+        # Generate new key — navigable Static
+        scroll.mount(
+            Static(
+                "",
+                markup=True,
+                id="cred-form-genkey",
+                classes="cred-widget cred-key-field cred-form-item",
+            )
+        )
+
+        # Generated public key display (if any)
+        if self._generated_pubkey:
+            scroll.mount(
+                Static(
+                    f"\n[bold green]Public key (copy to target hosts):[/bold green]\n"
+                    f"[dim]{self._generated_pubkey}[/dim]",
+                    markup=True,
+                    id="run-cred-pubkey-display",
+                    classes="cred-widget cred-key-field",
+                )
+            )
+
+        # Separator
+        scroll.mount(
+            Static(
+                "\n [dim]\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/dim]",
+                markup=True,
                 classes="cred-widget",
             )
         )
+
+        # Save Profile — navigable Static
+        scroll.mount(
+            Static(
+                "",
+                markup=True,
+                id="cred-form-save",
+                classes="cred-widget cred-form-item",
+            )
+        )
+        # Cancel — navigable Static
+        scroll.mount(
+            Static(
+                "",
+                markup=True,
+                id="cred-form-cancel",
+                classes="cred-widget cred-form-item",
+            )
+        )
+
+        # Build the navigable items list and set initial cursor
+        self._form_items = self._build_form_items()
+        self._form_cursor = 0
+
+        # Apply initial visibility based on current auth type
+        self._apply_cred_field_visibility()
+
+        # Set all form item labels via refresh
+        self._refresh_form_items()
+
+    def _format_form_item(self, item_id: str, is_cursor: bool) -> str:
+        """Format a single navigable form item as a Rich-markup line."""
+        cursor = ">" if is_cursor else " "
+
+        labels = {
+            "cred-form-auth-pw": "Password",
+            "cred-form-auth-key": "SSH Key",
+            "cred-form-save": "Save Profile",
+            "cred-form-cancel": "Cancel",
+            "cred-form-genkey": "Generate New SSH Key",
+        }
+
+        # Detected key items
+        if item_id.startswith("cred-form-key-"):
+            idx = int(item_id.split("-")[-1])
+            if 0 <= idx < len(self._detected_keys):
+                _, klabel = self._detected_keys[idx]
+                is_active = idx == self._detected_key_cursor
+                if is_active:
+                    prefix = "[green]*[/green]"
+                else:
+                    prefix = "[dim].[/dim]"
+                if is_cursor:
+                    return f" {cursor}  {prefix} [bold]{klabel}[/bold]"
+                return f" {cursor}  {prefix} {klabel}"
+            return f" {cursor}  ???"
+
+        label = labels.get(item_id, item_id)
+
+        # Highlight active auth type with radio-button indicators
+        if item_id == "cred-form-auth-pw" and self._new_cred_auth_type == "password":
+            label = f"[green]\u25cf[/green] {label}"
+        elif item_id == "cred-form-auth-key" and self._new_cred_auth_type == "ssh_key":
+            label = f"[green]\u25cf[/green] {label}"
+        elif item_id in ("cred-form-auth-pw", "cred-form-auth-key"):
+            label = f"[dim]\u25cb[/dim] {label}"
+
+        if is_cursor:
+            return f" {cursor}  [bold]{label}[/bold]"
+        return f" {cursor}  {label}"
+
+    def _refresh_form_items(self) -> None:
+        """Update all navigable form item labels (cursor highlight, radio state)."""
+        for i, item_id in enumerate(self._form_items):
+            try:
+                w = self.query_one(f"#{item_id}", Static)
+                w.update(self._format_form_item(item_id, i == self._form_cursor))
+            except Exception:
+                pass
+
+    def _build_form_items(self) -> list[str]:
+        """Build the ordered list of navigable form-item IDs."""
+        items: list[str] = ["cred-form-auth-pw", "cred-form-auth-key"]
+        if self._new_cred_auth_type == "ssh_key":
+            for idx in range(len(self._detected_keys)):
+                items.append(f"cred-form-key-{idx}")
+            items.append("cred-form-genkey")
+        items.extend(["cred-form-save", "cred-form-cancel"])
+        return items
 
     def _render_execution(self) -> None:
         title = self.query_one("#run-title", Static)
@@ -987,8 +1376,46 @@ class AnsibleRunModal(ModalScreen):
         self._scan_done = 0
         self._scan_alive = 0
         self._is_scanning = True
+        self._skipped_scan = False
         self._render_phase()
         self._run_ping_sweep()
+
+    def _use_direct_hosts(self) -> None:
+        """Parse the direct hosts input and skip straight to credentials."""
+        try:
+            direct_input = self.query_one("#run-direct-input", Input)
+            text = direct_input.value.strip()
+        except Exception:
+            self._set_status("[bold red]No input available[/bold red]")
+            return
+
+        if not text:
+            self._set_status(
+                "[bold red]Enter at least one host or IP[/bold red]"
+            )
+            return
+
+        try:
+            ips = parse_ip_ranges(text)
+        except Exception as e:
+            self._set_status(f"[bold red]Invalid input: {e}[/bold red]")
+            return
+
+        if not ips:
+            self._set_status("[bold red]No valid hosts in input[/bold red]")
+            return
+
+        # Treat all direct hosts as alive — skip the ping sweep
+        self._resolved_ips = ips
+        self._alive_ips = ips
+        self._dead_ips = []
+        self._host_included = {ip: True for ip in ips}
+        self._host_info = {ip: HostInfo(ip=ip) for ip in ips}
+        self._is_scanning = False
+        self._skipped_scan = True
+
+        # Skip phase 1 (scan), go straight to credentials
+        self._transition_to_credentials()
 
     @work(thread=True, exclusive=True, group="ansible-scan")
     def _run_ping_sweep(self) -> None:
@@ -1377,6 +1804,58 @@ class AnsibleRunModal(ModalScreen):
     # ------------------------------------------------------------------
     # Phase 2: Credential CRUD
     # ------------------------------------------------------------------
+
+    def _detect_ssh_keys(self) -> list[tuple[str, str]]:
+        """Scan ~/.ssh/ and ~/.config/infraforge/ssh_keys/ for private keys.
+
+        Returns list of (path, label) tuples.
+        """
+        keys: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        search_dirs = [
+            Path.home() / ".ssh",
+            Path.home() / ".config" / "infraforge" / "ssh_keys",
+        ]
+
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.iterdir()):
+                if not f.is_file():
+                    continue
+                # Skip public keys, known_hosts, config, authorized_keys
+                if f.suffix == ".pub" or f.name in (
+                    "known_hosts", "known_hosts.old", "config",
+                    "authorized_keys", "authorized_keys2",
+                ):
+                    continue
+                # Heuristic: private keys start with "-----BEGIN" or are common names
+                try:
+                    head = f.read_bytes()[:40]
+                    if b"BEGIN" in head or f.name.startswith("id_"):
+                        path_str = str(f)
+                        if path_str not in seen:
+                            seen.add(path_str)
+                            # Label: "id_ed25519 (~/.ssh/)"
+                            rel = f"~/{f.relative_to(Path.home())}"
+                            keys.append((path_str, f"{f.name}  [dim]{rel}[/dim]"))
+                except (OSError, ValueError):
+                    continue
+
+        return keys
+
+    def _select_detected_key(self, idx: int) -> None:
+        """Fill the key path input with the selected detected key."""
+        if 0 <= idx < len(self._detected_keys):
+            path, _ = self._detected_keys[idx]
+            self._detected_key_cursor = idx
+            try:
+                keypath_input = self.query_one("#cred-keypath-input", Input)
+                keypath_input.value = path
+            except Exception:
+                pass
+            self._set_status(f"[green]Selected key: {path}[/green]")
 
     def _save_new_credential(self) -> None:
         """Collect form inputs and save a new credential profile."""

@@ -13,6 +13,7 @@ from infraforge.screens.ansible_screen import AnsibleScreen
 from infraforge.screens.ansible_run_modal import AnsibleRunModal
 from infraforge.screens.ai_settings_screen import AISettingsScreen
 from infraforge.screens.ai_chat_modal import AIChatModal
+from infraforge.screens.provision_menu import ProvisionMenuScreen
 
 __all__ = [
     "DashboardScreen",
@@ -28,4 +29,5 @@ __all__ = [
     "AnsibleRunModal",
     "AISettingsScreen",
     "AIChatModal",
+    "ProvisionMenuScreen",
 ]
