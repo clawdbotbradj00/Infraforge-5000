@@ -26,6 +26,34 @@ from infraforge.models import TemplateType
 
 PHASE_NAMES = ["Select", "Configure", "Clone", "Update", "Finalize"]
 
+SORT_FIELDS = ["name", "node", "vmid"]
+SORT_LABELS = ["Name", "Node", "VMID"]
+GROUP_MODES = ["none", "node"]
+GROUP_LABELS = ["None", "Node"]
+
+_VMID_W = 8
+_NAME_W = 36
+_NODE_W = 14
+
+
+def _tmpl_label(t, show_node: bool = True) -> str:
+    """Build a colored, columnar label for a VM template."""
+    vmid = str(t.vmid or "—").ljust(_VMID_W)
+    name = t.name
+    if len(name) > _NAME_W:
+        name = name[: _NAME_W - 2] + ".."
+    name = name.ljust(_NAME_W)
+    size = t.size_display
+    parts = (
+        f"[bold yellow]{vmid}[/bold yellow]"
+        f"[bold bright_white]{name}[/bold bright_white]"
+    )
+    if show_node:
+        node = t.node.ljust(_NODE_W)
+        parts += f"  [cyan]{node}[/cyan]"
+    parts += f"  [green]{size}[/green]"
+    return parts
+
 
 @dataclass
 class WizItem:
@@ -45,6 +73,8 @@ class TemplateUpdateScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "handle_escape", "Back/Cancel", show=True),
+        Binding("s", "cycle_sort", "Sort", show=True),
+        Binding("g", "cycle_group", "Group", show=True),
     ]
 
     def __init__(self, template=None):
@@ -75,6 +105,9 @@ class TemplateUpdateScreen(Screen):
         self._editing_key = ""
         self._orphaned_vms: list[dict] = []
         self._resuming = False
+        self._sort_index = 0
+        self._sort_reverse = False
+        self._group_index = 1  # default: group by node
 
     # ------------------------------------------------------------------
     # Compose
@@ -548,12 +581,29 @@ class TemplateUpdateScreen(Screen):
 
     def _update_phase_hint(self):
         hints = {
-            0: "Select a QEMU VM template  |  Space/Enter select",
+            0: "Space/Enter select  |  s=sort  g=group",
             1: "Space to edit  |  Enter confirm  |  Backspace back",
             3: ("Press Enter when updates are complete  |  "
                 "Escape to abort (keeps staging VM)"),
         }
         self._set_hint(hints.get(self._phase, ""))
+
+    def action_cycle_sort(self):
+        if self._phase != 0 or self._working:
+            return
+        old = self._sort_index
+        self._sort_index = (old + 1) % len(SORT_FIELDS)
+        if self._sort_index == old:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_reverse = False
+        self._render_phase()
+
+    def action_cycle_group(self):
+        if self._phase != 0 or self._working:
+            return
+        self._group_index = (self._group_index + 1) % len(GROUP_MODES)
+        self._render_phase()
 
     # ------------------------------------------------------------------
     # Phase 0: Select Template
@@ -570,10 +620,17 @@ class TemplateUpdateScreen(Screen):
             ))
             for vm in self._orphaned_vms:
                 status_color = "green" if vm["status"] == "running" else "yellow"
+                vmid_col = str(vm["vmid"]).ljust(_VMID_W)
+                name_col = vm["name"]
+                if len(name_col) > _NAME_W:
+                    name_col = name_col[: _NAME_W - 2] + ".."
+                name_col = name_col.ljust(_NAME_W)
+                node_col = vm["node"].ljust(_NODE_W)
                 lbl = (
-                    f"{vm['name']}  [{status_color}]{vm['status']}"
-                    f"[/{status_color}]"
-                    f"  [dim](VMID {vm['vmid']} on {vm['node']})[/dim]"
+                    f"[bold yellow]{vmid_col}[/bold yellow]"
+                    f"[bold bright_white]{name_col}[/bold bright_white]"
+                    f"  [cyan]{node_col}[/cyan]"
+                    f"  [{status_color}]{vm['status']}[/{status_color}]"
                 )
                 items.append(WizItem(
                     kind="option",
@@ -593,31 +650,92 @@ class TemplateUpdateScreen(Screen):
                 ))
             items.append(WizItem(kind="info", label=""))
 
-        items.append(WizItem(kind="header", label="SELECT TEMPLATE TO UPDATE"))
+        # Sort/group status line
+        sort_arrow = "▼" if self._sort_reverse else "▲"
+        sort_lbl = SORT_LABELS[self._sort_index]
+        group_lbl = GROUP_LABELS[self._group_index]
+        items.append(WizItem(
+            kind="info",
+            label=(
+                f"[bold]Sort:[/bold] [cyan]{sort_lbl}[/cyan] {sort_arrow}"
+                f"    [bold]Group:[/bold] [cyan]{group_lbl}[/cyan]"
+                f"    [dim](s=sort  g=group)[/dim]"
+            ),
+        ))
 
         vm_templates = [
             t for t in self._templates
             if t.template_type == TemplateType.VM
         ]
 
-        if vm_templates:
+        # Sort
+        sort_field = SORT_FIELDS[self._sort_index]
+        def _sort_key(t):
+            if sort_field == "name":
+                return t.name.lower()
+            elif sort_field == "node":
+                return t.node.lower()
+            elif sort_field == "vmid":
+                return t.vmid or 0
+            return ""
+        vm_templates = sorted(vm_templates, key=_sort_key, reverse=self._sort_reverse)
+
+        # Group
+        group_mode = GROUP_MODES[self._group_index]
+        if group_mode == "node" and vm_templates:
+            nodes_seen: list[str] = []
+            by_node: dict[str, list] = {}
+            for t in vm_templates:
+                if t.node not in by_node:
+                    by_node[t.node] = []
+                    nodes_seen.append(t.node)
+                by_node[t.node].append(t)
+            for ni, node_name in enumerate(nodes_seen):
+                items.append(WizItem(
+                    kind="header",
+                    label=f"NODE: {node_name}  [dim]({len(by_node[node_name])} templates)[/dim]",
+                ))
+                if ni == 0:
+                    hdr = (
+                        f"   [dim]{'VMID'.ljust(_VMID_W)}"
+                        f"{'Name'.ljust(_NAME_W)}"
+                        f"  Size[/dim]"
+                    )
+                    items.append(WizItem(kind="info", label=hdr))
+                for t in by_node[node_name]:
+                    sel = (
+                        self._selected_template is not None
+                        and self._selected_template.get("vmid") == t.vmid
+                    )
+                    items.append(WizItem(
+                        kind="option",
+                        label=_tmpl_label(t, show_node=False),
+                        key=f"tmpl:{t.vmid}",
+                        group="template",
+                        selected=sel,
+                        meta={"name": t.name, "vmid": t.vmid, "node": t.node},
+                    ))
+        elif vm_templates:
+            # Column headers (3 extra spaces to align with option prefix)
+            hdr = (
+                f"   [dim]{'VMID'.ljust(_VMID_W)}"
+                f"{'Name'.ljust(_NAME_W)}"
+                f"  {'Node'.ljust(_NODE_W)}"
+                f"  Size[/dim]"
+            )
+            items.append(WizItem(kind="info", label=hdr))
             for t in vm_templates:
                 sel = (
                     self._selected_template is not None
                     and self._selected_template.get("vmid") == t.vmid
                 )
-                lbl = f"{t.name}  [dim](VMID {t.vmid} on {t.node})[/dim]"
                 items.append(WizItem(
                     kind="option",
-                    label=lbl,
+                    label=_tmpl_label(t, show_node=True),
                     key=f"tmpl:{t.vmid}",
                     group="template",
                     selected=sel,
-                    meta={
-                        "name": t.name,
-                        "vmid": t.vmid,
-                        "node": t.node,
-                    },
+                    meta={"name": t.name, "vmid": t.vmid, "node": t.node},
                 ))
         elif self._data_loaded:
             items.append(WizItem(
