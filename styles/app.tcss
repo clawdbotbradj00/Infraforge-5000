@@ -639,6 +639,7 @@ DataTable > .datatable--hover {
 
 #wizard-container {
     padding: 1 2;
+    height: 1fr;
 }
 
 #wizard-progress {
@@ -675,6 +676,20 @@ DataTable > .datatable--hover {
     layout: horizontal;
     margin: 1 0 0 0;
     content-align: right middle;
+}
+
+#btn-next.-ready {
+    background: $success;
+    color: $text;
+    text-style: bold;
+    border: tall $success-lighten-2;
+}
+
+#btn-next.-ready:focus {
+    background: $success-lighten-1;
+    color: $text;
+    text-style: bold reverse;
+    border: tall $success-lighten-3;
 }
 
 /* ── Node Info ── */
@@ -899,4 +914,42 @@ AIChatModal {
 #cred-auth-type-key {
     width: auto;
     margin: 0 1 0 0;
+}
+
+/* ── New VM Wizard (cursor-based) ── */
+
+.wiz-line {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+}
+
+#wiz-phase-header {
+    padding: 0 1;
+    margin: 0 0 1 0;
+    color: $accent;
+    text-style: bold;
+}
+
+#wiz-edit-label {
+    padding: 0 2;
+    color: $accent;
+    text-style: bold;
+}
+
+#wiz-edit-input {
+    margin: 0 2 1 2;
+}
+
+#wiz-hint {
+    height: 1;
+    padding: 0 2;
+    color: $text-muted;
+}
+
+#deploy-log {
+    height: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+    margin: 1 0;
 }

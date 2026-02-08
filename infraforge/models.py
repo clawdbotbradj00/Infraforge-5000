@@ -231,23 +231,31 @@ class StorageInfo:
 
 @dataclass
 class NewVMSpec:
-    """Specification for creating a new VM (skeleton for future implementation)."""
+    """Specification for creating a new VM via Terraform provisioning."""
     name: str = ""
     vmid: Optional[int] = None
     node: str = ""
     template: str = ""
-    vm_type: VMType = VMType.QEMU
+    template_volid: str = ""
+    template_vmid: Optional[int] = None
+    vm_type: VMType = VMType.LXC
     cpu_cores: int = 2
     memory_mb: int = 2048
-    disk_gb: int = 20
+    disk_gb: int = 10
     storage: str = "local-lvm"
     network_bridge: str = "vmbr0"
     ip_address: str = ""
+    subnet_mask: int = 24
     gateway: str = ""
     dns_name: str = ""
     dns_domain: str = ""
+    dns_zone: str = ""
     ssh_keys: str = ""
     start_after_create: bool = True
     ansible_playbook: str = ""
     tags: str = ""
     description: str = ""
+    subnet_id: str = ""
+    subnet_cidr: str = ""
+    unprivileged: bool = True
+    vlan_tag: Optional[int] = None

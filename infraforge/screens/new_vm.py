@@ -1,71 +1,97 @@
-"""New VM creation wizard screen for InfraForge."""
+"""New VM creation wizard — keyboard-first, cursor-based navigation.
+
+6-step wizard: Template, Identity, Network, Resources, Access, Review.
+Uses Static line widgets navigated with arrow keys / Space / Enter,
+following the pattern from ansible_run_modal.py.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import (
-    Header, Footer, Static, Input, Select, Button,
-    RadioButton, RadioSet, DataTable, Label,
-)
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual import work, on
+from textual.widgets import Button, Footer, Header, Input, RichLog, Static
+from textual import work
 
-from infraforge.models import NewVMSpec, VMType
+from infraforge.models import NewVMSpec, VMType, TemplateType
 
 
-WIZARD_STEPS = [
-    "Basics",
-    "Template",
-    "Resources",
-    "Network",
-    "IPAM",
-    "DNS",
-    "Provision",
-    "Review",
-]
+WIZARD_STEPS = ["Template", "Identity", "Network", "Resources", "Access", "Review"]
+
+
+@dataclass
+class WizItem:
+    """A single line in the wizard."""
+    kind: str          # header, option, input, toggle, info
+    label: str
+    key: str = ""
+    group: str = ""    # radio-group name (options in same group are exclusive)
+    value: str = ""
+    selected: bool = False
+    enabled: bool = True
+    meta: dict = field(default_factory=dict)
 
 
 class NewVMScreen(Screen):
-    """Guided wizard for creating a new VM."""
+    """Guided wizard for creating a new VM with Terraform provisioning."""
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("backspace", "prev_step", "Back", show=True, priority=True),
+        Binding("escape", "handle_escape", "Back/Cancel", show=True),
     ]
 
-    def __init__(self):
+    def __init__(self, template_name: str = ""):
         super().__init__()
         self._step = 0
         self.spec = NewVMSpec()
-        self._pve_nodes: list[str] = []
-        self._templates = []
-        self._storages = []
-        self._subnets = []  # phpIPAM subnets
-        self._available_ips = []  # Available IPs from IPAM
+        self._cursor = 0
+        self._items: list[WizItem] = []
+        self._editing = False
+        self._editing_key = ""
+        # Data caches
+        self._pve_nodes: list = []
+        self._templates: list = []
+        self._storages: list = []
+        self._subnets: list = []
+        self._available_ips: list[str] = []
+        self._ssh_keys: list[tuple[str, str]] = []
+        self._dns_check_result = None
+        self._dns_check_timer = None
+        self._deploying = False
+        self._initial_template = template_name
+        self._saved_templates: list[dict] = []
+        self._data_loaded = False
+        self._mount_gen = 0
+        self._net_mode = ""  # "ipam" or "manual" — dims the other section
+
+    # ------------------------------------------------------------------
+    # Compose
+    # ------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="wizard-container"):
-            # Step progress bar
             with Horizontal(id="wizard-progress"):
-                for i, step_name in enumerate(WIZARD_STEPS):
-                    classes = "wizard-step"
+                for i, name in enumerate(WIZARD_STEPS):
+                    cls = "wizard-step"
                     if i == 0:
-                        classes += " -active"
-                    yield Static(
-                        f"{i + 1}. {step_name}",
-                        classes=classes,
-                        id=f"step-indicator-{i}",
-                    )
+                        cls += " -active"
+                    yield Static(f" {i + 1}. {name} ", classes=cls, id=f"step-ind-{i}")
 
-            # Step content area
             with VerticalScroll(id="wizard-content"):
-                yield Static("Loading...", id="wizard-step-content", markup=True)
+                yield Static("", id="wiz-phase-header", markup=True)
 
-            # Action buttons
+            yield Static("", id="wiz-edit-label", markup=True, classes="hidden")
+            yield Input(id="wiz-edit-input", classes="hidden")
+            yield Static("", id="wiz-hint", markup=True)
+
             with Horizontal(id="wizard-actions"):
                 yield Button("Cancel", variant="error", id="btn-cancel")
-                yield Button("Back", id="btn-back")
                 yield Button("Next", variant="primary", id="btn-next")
         yield Footer()
 
@@ -74,20 +100,917 @@ class NewVMScreen(Screen):
     # ------------------------------------------------------------------
 
     def on_mount(self):
-        # Apply defaults from config
         defaults = self.app.config.defaults
         self.spec.cpu_cores = defaults.cpu_cores
         self.spec.memory_mb = defaults.memory_mb
-        self.spec.disk_gb = defaults.disk_gb
+        self.spec.disk_gb = 10
         self.spec.storage = defaults.storage
         self.spec.network_bridge = defaults.network_bridge
         self.spec.start_after_create = defaults.start_on_create
-
         if self.app.config.dns.domain:
             self.spec.dns_domain = self.app.config.dns.domain
+        dns_zones = self.app.config.dns.zones
+        if dns_zones:
+            self.spec.dns_zone = dns_zones[0]
+            self.spec.dns_domain = dns_zones[0]
 
-        self._render_step()
         self._load_initial_data()
+        self._load_ipam_subnets()
+        self._scan_ssh_keys()
+        self._load_saved_templates()
+        self._render_step()
+
+    # ------------------------------------------------------------------
+    # Keyboard navigation
+    # ------------------------------------------------------------------
+
+    def on_key(self, event) -> None:
+        if self._editing:
+            if event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                self._cancel_edit()
+            return
+
+        if self._deploying:
+            return
+
+        nav = self._nav_indices()
+        if not nav:
+            return
+
+        if event.key in ("up", "k"):
+            event.prevent_default()
+            event.stop()
+            nxt = self._nav_move(nav, -1)
+            if nxt is not None:
+                self._cursor = nxt
+                self._refresh_lines()
+                self._scroll_to_cursor()
+                self._unfocus_next_btn()
+
+        elif event.key in ("down", "j"):
+            event.prevent_default()
+            event.stop()
+            nxt = self._nav_move(nav, 1)
+            if nxt is not None:
+                self._cursor = nxt
+                self._refresh_lines()
+                self._scroll_to_cursor()
+                self._unfocus_next_btn()
+
+        elif event.key == "space":
+            event.prevent_default()
+            event.stop()
+            if self._cursor >= len(self._items):
+                self._go_next()
+            else:
+                self._activate_item()
+
+        elif event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            # Enter on an item activates it; otherwise go next
+            if 0 <= self._cursor < len(self._items):
+                item = self._items[self._cursor]
+                if item.kind in ("option", "input", "toggle"):
+                    self._activate_item()
+                else:
+                    self._go_next()
+            else:
+                self._go_next()
+
+        elif event.key == "backspace":
+            event.prevent_default()
+            event.stop()
+            if self._step > 0:
+                self._go_back()
+
+    def _nav_indices(self) -> list[int]:
+        return [
+            i for i, it in enumerate(self._items)
+            if it.kind in ("option", "input", "toggle") and it.enabled
+        ]
+
+    def _nav_move(self, nav: list[int], direction: int) -> Optional[int]:
+        if self._cursor in nav:
+            idx = nav.index(self._cursor)
+            new_idx = idx + direction
+            if 0 <= new_idx < len(nav):
+                return nav[new_idx]
+        else:
+            if direction > 0:
+                for n in nav:
+                    if n > self._cursor:
+                        return n
+            else:
+                for n in reversed(nav):
+                    if n < self._cursor:
+                        return n
+        return None
+
+    # ------------------------------------------------------------------
+    # Item activation
+    # ------------------------------------------------------------------
+
+    def _activate_item(self):
+        if self._cursor < 0 or self._cursor >= len(self._items):
+            return
+        item = self._items[self._cursor]
+
+        if item.kind == "option":
+            if item.group:
+                for it in self._items:
+                    if it.group == item.group:
+                        it.selected = False
+            item.selected = True
+            self._apply_selection(item)
+            self._refresh_lines()
+            self._maybe_focus_next()
+
+        elif item.kind == "input":
+            self._start_edit(item)
+
+        elif item.kind == "toggle":
+            item.selected = not item.selected
+            self._apply_toggle(item)
+            self._refresh_lines()
+            self._maybe_focus_next()
+
+    # ------------------------------------------------------------------
+    # Text editing (hidden Input)
+    # ------------------------------------------------------------------
+
+    def _start_edit(self, item: WizItem):
+        self._editing = True
+        self._editing_key = item.key
+        lbl = self.query_one("#wiz-edit-label", Static)
+        inp = self.query_one("#wiz-edit-input", Input)
+        lbl.update(f"[b]{item.label}:[/b]")
+        lbl.remove_class("hidden")
+        inp.value = item.value
+        inp.placeholder = item.meta.get("placeholder", "")
+        inp.remove_class("hidden")
+        inp.focus()
+        self._set_hint("Enter to confirm, Escape to cancel")
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "wiz-edit-input" and self._editing:
+            self._finish_edit(event.input.value)
+
+    def _finish_edit(self, value: str):
+        for item in self._items:
+            if item.key == self._editing_key:
+                item.value = value.strip()
+                self._apply_input_value(item)
+                break
+        self._editing = False
+        self._editing_key = ""
+        self.query_one("#wiz-edit-label", Static).add_class("hidden")
+        inp = self.query_one("#wiz-edit-input", Input)
+        inp.add_class("hidden")
+        inp.blur()
+        self._refresh_lines()
+        self._update_step_hint()
+        self._maybe_focus_next()
+
+    def _cancel_edit(self):
+        self._editing = False
+        self._editing_key = ""
+        self.query_one("#wiz-edit-label", Static).add_class("hidden")
+        inp = self.query_one("#wiz-edit-input", Input)
+        inp.add_class("hidden")
+        inp.blur()
+        self._update_step_hint()
+
+    # ------------------------------------------------------------------
+    # Apply values to spec
+    # ------------------------------------------------------------------
+
+    def _apply_selection(self, item: WizItem):
+        if item.group == "node":
+            new_node = item.key
+            if new_node != self.spec.node:
+                self.spec.node = new_node
+                # Template/storage may differ per node — clear stale picks
+                self.spec.template = ""
+                self.spec.template_volid = ""
+                self._render_step()  # rebuild with filtered templates
+                # Restore cursor to the selected node instead of top
+                for i, it in enumerate(self._items):
+                    if it.group == "node" and it.selected:
+                        self._cursor = i
+                        break
+                self._refresh_lines()
+            return
+        elif item.group == "template":
+            m = item.meta
+            if m.get("type") == "ct":
+                self.spec.vm_type = VMType.LXC
+                self.spec.template_volid = m.get("volid", "")
+                self.spec.template = m.get("name", "")
+            elif m.get("type") == "vm":
+                self.spec.vm_type = VMType.QEMU
+                self.spec.template = m.get("name", "")
+                self.spec.template_vmid = m.get("vmid")
+                self.spec.template_volid = ""
+        elif item.group == "saved_spec":
+            self._apply_saved_template(item.key)
+        elif item.group == "dns_zone":
+            self.spec.dns_zone = item.key
+            self.spec.dns_domain = item.key
+            if self.spec.dns_name:
+                self._trigger_dns_check()
+        elif item.group == "subnet":
+            self._net_mode = "ipam"
+            self._apply_subnet_selection(item)
+        elif item.group == "ip":
+            self._net_mode = "ipam"
+            self.spec.ip_address = item.key
+        elif item.group == "storage":
+            self.spec.storage = item.key
+        elif item.group == "ssh_key":
+            self.spec.ssh_keys = item.meta.get("pubkey", "")
+
+    def _apply_toggle(self, item: WizItem):
+        if item.key == "start_after_create":
+            self.spec.start_after_create = item.selected
+        elif item.key == "unprivileged":
+            self.spec.unprivileged = item.selected
+
+    def _apply_input_value(self, item: WizItem):
+        if item.key == "hostname":
+            hostname = item.value.strip().lower()
+            self.spec.name = hostname
+            self.spec.dns_name = hostname
+            if self._dns_check_timer:
+                self._dns_check_timer.stop()
+            if hostname:
+                self._dns_check_timer = self.set_timer(0.8, self._trigger_dns_check)
+        elif item.key == "manual_ip":
+            self._net_mode = "manual"
+            self.spec.ip_address = item.value.strip()
+        elif item.key == "gateway":
+            self._net_mode = "manual"
+            self.spec.gateway = item.value.strip()
+        elif item.key == "bridge":
+            self._net_mode = "manual"
+            self.spec.network_bridge = item.value.strip()
+        elif item.key == "cpu_cores":
+            try:
+                self.spec.cpu_cores = int(item.value) if item.value else 2
+            except ValueError:
+                pass
+        elif item.key == "memory_mb":
+            try:
+                self.spec.memory_mb = int(item.value) if item.value else 2048
+            except ValueError:
+                pass
+        elif item.key == "disk_gb":
+            try:
+                self.spec.disk_gb = int(item.value) if item.value else 10
+            except ValueError:
+                pass
+        elif item.key == "ssh_key_paste":
+            self.spec.ssh_keys = item.value.strip()
+        elif item.key == "save_spec_name":
+            if item.value.strip():
+                self._save_spec(item.value.strip())
+
+    def _apply_subnet_selection(self, item: WizItem):
+        subnet_id = item.key
+        self.spec.subnet_id = subnet_id
+        for s in self._subnets:
+            if str(s.get("id", "")) == subnet_id:
+                cidr = f"{s.get('subnet', '')}/{s.get('mask', '')}"
+                self.spec.subnet_cidr = cidr
+                self.spec.subnet_mask = int(s.get("mask", 24))
+                subnet_base = s.get("subnet", "")
+                if subnet_base:
+                    parts = subnet_base.split(".")
+                    if len(parts) == 4:
+                        parts[3] = "1"
+                        self.spec.gateway = ".".join(parts)
+                break
+        self._load_available_ips(subnet_id)
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _render_step(self):
+        self._items = []
+        self._cursor = 0
+        self._unfocus_next_btn()
+
+        [
+            self._build_template_items,
+            self._build_identity_items,
+            self._build_network_items,
+            self._build_resources_items,
+            self._build_access_items,
+            self._build_review_items,
+        ][self._step]()
+
+        # Update step indicators
+        for i in range(len(WIZARD_STEPS)):
+            ind = self.query_one(f"#step-ind-{i}")
+            cls = "wizard-step"
+            if i < self._step:
+                cls += " -completed"
+            elif i == self._step:
+                cls += " -active"
+            ind.set_classes(cls)
+
+        # Update nav buttons
+        btn_next = self.query_one("#btn-next", Button)
+        if self._step == len(WIZARD_STEPS) - 1:
+            btn_next.label = "Deploy"
+            btn_next.variant = "success"
+        else:
+            btn_next.label = "Next"
+            btn_next.variant = "primary"
+
+        self._mount_items()
+
+        nav = self._nav_indices()
+        if nav:
+            self._cursor = nav[0]
+        self._refresh_lines()
+        self._update_step_hint()
+
+        # If step is already valid on entry, show button as ready (but keep
+        # cursor on items so the user can still browse/edit optional fields)
+        valid, _ = self._validate_step()
+        if valid:
+            self.query_one("#btn-next", Button).add_class("-ready")
+
+    def _mount_items(self):
+        for w in self.query(".wiz-line"):
+            w.remove()
+        for w in self.query("#deploy-log"):
+            w.remove()
+
+        self._mount_gen += 1
+        gen = self._mount_gen
+
+        scroll = self.query_one("#wizard-content", VerticalScroll)
+        header = self.query_one("#wiz-phase-header", Static)
+        header.update(f"[b]Step {self._step + 1}: {WIZARD_STEPS[self._step]}[/b]")
+
+        for idx, item in enumerate(self._items):
+            line = Static(
+                self._format_line(idx, item),
+                markup=True,
+                id=f"wiz-line-{gen}-{idx}",
+                classes="wiz-line",
+            )
+            scroll.mount(line)
+
+    def _format_line(self, idx: int, item: WizItem) -> str:
+        is_cur = idx == self._cursor
+
+        # Check if this item belongs to a dimmed network section
+        section = item.meta.get("section", "")
+        dimmed = (
+            self._net_mode != ""
+            and section != ""
+            and section != self._net_mode
+        )
+
+        if item.kind == "header":
+            if dimmed:
+                return f" [dim yellow]{item.label}[/dim yellow]"
+            return f" [bold cyan]{item.label}[/bold cyan]"
+
+        if item.kind == "info":
+            return f"   [dim]{item.label}[/dim]"
+
+        cur = "[bold]>[/bold]" if is_cur else " "
+
+        if item.kind == "option":
+            if dimmed:
+                mark = "[dim yellow]\u25cb[/dim yellow]"
+                lbl = f"[dim yellow]{item.label}[/dim yellow]"
+                return f" {cur} {mark}  {lbl}"
+            mark = "[green]\u25cf[/green]" if item.selected else "[dim]\u25cb[/dim]"
+            lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+            return f" {cur} {mark}  {lbl}"
+
+        if item.kind == "input":
+            if dimmed:
+                lbl = f"[dim yellow]{item.label}:[/dim yellow]"
+                val = f"[dim yellow]{item.value or '...'}[/dim yellow]"
+                return f" {cur}    {lbl}  {val}"
+            val = item.value if item.value else f"[dim]{item.meta.get('placeholder', '...')}[/dim]"
+            lbl = f"[bold]{item.label}:[/bold]" if is_cur else f"{item.label}:"
+            return f" {cur}    {lbl}  {val}"
+
+        if item.kind == "toggle":
+            if item.selected:
+                mark = "[bold green]\u2713 ON[/bold green]"
+            else:
+                mark = "[bold red]\u2717 OFF[/bold red]"
+            lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+            return f" {cur} {mark}  {lbl}"
+
+        return f"   {item.label}"
+
+    def _refresh_lines(self):
+        gen = self._mount_gen
+        for idx, item in enumerate(self._items):
+            try:
+                w = self.query_one(f"#wiz-line-{gen}-{idx}", Static)
+                w.update(self._format_line(idx, item))
+            except Exception:
+                pass
+
+    def _scroll_to_cursor(self):
+        gen = self._mount_gen
+        try:
+            self.query_one(f"#wiz-line-{gen}-{self._cursor}", Static).scroll_visible()
+        except Exception:
+            pass
+
+    def _maybe_focus_next(self):
+        """If current step requirements are met, focus the Next/Deploy button."""
+        valid, _ = self._validate_step()
+        if not valid:
+            return
+        self._cursor = len(self._items)  # move past all items
+        self._refresh_lines()            # clear cursor highlight
+        btn = self.query_one("#btn-next", Button)
+        btn.add_class("-ready")
+        btn.focus()
+
+    def _unfocus_next_btn(self):
+        """Remove focus highlight from the Next button when cursor returns to items."""
+        try:
+            btn = self.query_one("#btn-next", Button)
+            btn.remove_class("-ready")
+            btn.blur()
+        except Exception:
+            pass
+
+    def _set_hint(self, text: str):
+        try:
+            self.query_one("#wiz-hint", Static).update(f"[dim]{text}[/dim]")
+        except Exception:
+            pass
+
+    def _update_step_hint(self):
+        hints = {
+            0: "Select node first, then pick a template  |  Space/Enter select",
+            1: "Space to edit  |  Enter confirm  |  Backspace back",
+            2: "Space select subnet/IP  |  Enter confirm  |  Backspace back",
+            3: "Space edit/toggle  |  Enter confirm  |  Backspace back",
+            4: "Space select key  |  Enter confirm  |  Backspace back",
+            5: "Enter to deploy  |  Space to save spec  |  Backspace back",
+        }
+        self._set_hint(hints.get(self._step, ""))
+
+    # ------------------------------------------------------------------
+    # Step 0: Template & Node
+    # ------------------------------------------------------------------
+
+    def _build_template_items(self):
+        items = self._items
+
+        # ── Node selection (pick first) ──
+        items.append(WizItem(kind="header", label="TARGET NODE"))
+        if self._pve_nodes:
+            for n in self._pve_nodes:
+                sel = self.spec.node == n.node or (
+                    not self.spec.node and n == self._pve_nodes[0]
+                )
+                if sel and not self.spec.node:
+                    self.spec.node = n.node
+                items.append(WizItem(
+                    kind="option",
+                    label=f"{n.node}  [dim]cpu: {n.cpu_percent:.0f}%  "
+                          f"mem: {n.mem_percent:.0f}%[/dim]",
+                    key=n.node, group="node", selected=sel,
+                ))
+        else:
+            items.append(WizItem(kind="info", label="Loading nodes..."))
+
+        # ── Templates filtered to selected node ──
+        selected_node = self.spec.node
+        ct = [
+            t for t in self._templates
+            if t.template_type == TemplateType.CONTAINER
+            and t.node == selected_node
+        ]
+        vm = [
+            t for t in self._templates
+            if t.template_type == TemplateType.VM
+            and t.node == selected_node
+        ]
+
+        if ct:
+            items.append(WizItem(
+                kind="header",
+                label=f"CT TEMPLATES  [dim]on {selected_node}[/dim]",
+            ))
+            for t in ct:
+                lbl = t.name
+                if t.storage:
+                    lbl += f"  [dim]({t.storage}  {t.size_display})[/dim]"
+                items.append(WizItem(
+                    kind="option", label=lbl,
+                    key=f"ct:{t.volid or t.name}", group="template",
+                    selected=(
+                        self.spec.template_volid == (t.volid or t.name)
+                        and self.spec.vm_type == VMType.LXC
+                    ),
+                    meta={"type": "ct", "volid": t.volid or t.name,
+                          "name": t.name},
+                ))
+
+        if vm:
+            items.append(WizItem(
+                kind="header",
+                label=f"VM TEMPLATES  [dim]on {selected_node}[/dim]",
+            ))
+            for t in vm:
+                lbl = t.name
+                items.append(WizItem(
+                    kind="option", label=lbl,
+                    key=f"vm:{t.name}:{t.vmid or ''}", group="template",
+                    selected=(
+                        self.spec.template == t.name
+                        and self.spec.vm_type == VMType.QEMU
+                    ),
+                    meta={"type": "vm", "name": t.name, "vmid": t.vmid},
+                ))
+
+        if not ct and not vm:
+            items.append(WizItem(kind="header", label="TEMPLATES"))
+            if self._data_loaded:
+                items.append(WizItem(
+                    kind="info",
+                    label=f"[yellow]No templates on {selected_node}[/yellow]",
+                ))
+                items.append(WizItem(
+                    kind="info",
+                    label="[dim]  Download via pveam or select a "
+                          "different node[/dim]",
+                ))
+            else:
+                items.append(WizItem(
+                    kind="info", label="Loading templates...",
+                ))
+
+        # ── Saved specs (not node-specific) ──
+        if self._saved_templates:
+            items.append(WizItem(kind="header", label="SAVED SPECS"))
+            for t in self._saved_templates:
+                lbl = (
+                    f"{t['name']}  [dim]({t['vm_type'].upper()}, "
+                    f"{t['cpu_cores']}c/{t['memory_mb']}MB/"
+                    f"{t['disk_gb']}GB)[/dim]"
+                )
+                items.append(WizItem(
+                    kind="option", label=lbl,
+                    key=t["name"], group="saved_spec",
+                ))
+
+
+    # ------------------------------------------------------------------
+    # Step 1: Identity & DNS
+    # ------------------------------------------------------------------
+
+    def _build_identity_items(self):
+        items = self._items
+
+        items.append(WizItem(kind="header", label="HOSTNAME"))
+        items.append(WizItem(
+            kind="input", label="Hostname", key="hostname",
+            value=self.spec.name,
+            meta={"placeholder": "e.g. ubuntu-web-01"},
+        ))
+
+        if self.spec.dns_name:
+            if self._dns_check_result is not None:
+                if self._dns_check_result:
+                    ips = ", ".join(self._dns_check_result)
+                    items.append(WizItem(
+                        kind="info",
+                        label=f"[yellow]DNS exists: {self.spec.dns_name} -> {ips}[/yellow]",
+                    ))
+                else:
+                    items.append(WizItem(
+                        kind="info",
+                        label=f"[green]Available — no existing DNS record[/green]",
+                    ))
+
+        dns_zones = self.app.config.dns.zones
+        if dns_zones:
+            items.append(WizItem(kind="header", label="DNS ZONE"))
+            for z in dns_zones:
+                items.append(WizItem(
+                    kind="option", label=z, key=z, group="dns_zone",
+                    selected=self.spec.dns_zone == z,
+                ))
+
+        zone = self.spec.dns_zone or self.spec.dns_domain
+        if self.spec.dns_name and zone:
+            fqdn = f"{self.spec.dns_name}.{zone}"
+            items.append(WizItem(kind="info", label=f"FQDN: [b]{fqdn}[/b]"))
+
+
+    # ------------------------------------------------------------------
+    # Step 2: Network & IPAM
+    # ------------------------------------------------------------------
+
+    def _build_network_items(self):
+        items = self._items
+
+        if self._subnets:
+            items.append(WizItem(
+                kind="header", label="IPAM GUIDED",
+                meta={"section": "ipam"},
+            ))
+            for s in self._subnets:
+                cidr = f"{s.get('subnet', '')}/{s.get('mask', '')}"
+                desc = s.get("description", "")
+                usage = s.get("usage", {})
+                free_pct = usage.get("freehosts_percent", "?")
+                lbl = cidr
+                if desc:
+                    lbl += f"  [dim]{desc}[/dim]"
+                lbl += f"  [dim]({free_pct}% free)[/dim]"
+                items.append(WizItem(
+                    kind="option", label=lbl,
+                    key=str(s.get("id", "")), group="subnet",
+                    selected=self.spec.subnet_id == str(s.get("id", "")),
+                    meta={**s, "section": "ipam"},
+                ))
+        else:
+            items.append(WizItem(
+                kind="header", label="IPAM GUIDED",
+                meta={"section": "ipam"},
+            ))
+            items.append(WizItem(
+                kind="info", label="No IPAM subnets available",
+                meta={"section": "ipam"},
+            ))
+
+        if self._available_ips:
+            items.append(WizItem(
+                kind="header", label="AVAILABLE IPs",
+                meta={"section": "ipam"},
+            ))
+            for ip in self._available_ips[:20]:
+                items.append(WizItem(
+                    kind="option", label=ip, key=ip, group="ip",
+                    selected=self.spec.ip_address == ip,
+                    meta={"section": "ipam"},
+                ))
+
+        items.append(WizItem(
+            kind="header", label="MANUAL NETWORK",
+            meta={"section": "manual"},
+        ))
+        items.append(WizItem(
+            kind="input", label="IP Address", key="manual_ip",
+            value=self.spec.ip_address,
+            meta={"placeholder": "e.g. 10.0.100.50 (empty for DHCP)", "section": "manual"},
+        ))
+        items.append(WizItem(
+            kind="input", label="Gateway", key="gateway",
+            value=self.spec.gateway,
+            meta={"placeholder": "e.g. 10.0.100.1", "section": "manual"},
+        ))
+        items.append(WizItem(
+            kind="input", label="Bridge", key="bridge",
+            value=self.spec.network_bridge,
+            meta={"placeholder": "e.g. vmbr0", "section": "manual"},
+        ))
+
+
+    # ------------------------------------------------------------------
+    # Step 3: Resources
+    # ------------------------------------------------------------------
+
+    def _build_resources_items(self):
+        items = self._items
+
+        items.append(WizItem(kind="header", label="COMPUTE"))
+        items.append(WizItem(
+            kind="input", label="CPU Cores", key="cpu_cores",
+            value=str(self.spec.cpu_cores), meta={"placeholder": "2"},
+        ))
+        items.append(WizItem(
+            kind="input", label="Memory (MB)", key="memory_mb",
+            value=str(self.spec.memory_mb), meta={"placeholder": "2048"},
+        ))
+        items.append(WizItem(
+            kind="input", label="Disk (GB)", key="disk_gb",
+            value=str(self.spec.disk_gb), meta={"placeholder": "10"},
+        ))
+
+        items.append(WizItem(
+            kind="header",
+            label=f"STORAGE POOL  [dim]on {self.spec.node}[/dim]",
+        ))
+        node_storages = [
+            s for s in self._storages
+            if s.node == self.spec.node or s.shared
+        ]
+        if node_storages:
+            seen: set[str] = set()
+            for s in node_storages:
+                if s.storage not in seen:
+                    seen.add(s.storage)
+                    lbl = (f"{s.storage}  [dim]({s.storage_type}  "
+                           f"{s.avail_display} free)[/dim]")
+                    items.append(WizItem(
+                        kind="option", label=lbl,
+                        key=s.storage, group="storage",
+                        selected=self.spec.storage == s.storage,
+                    ))
+        elif self._storages:
+            items.append(WizItem(
+                kind="info",
+                label=f"[yellow]No storage pools on "
+                      f"{self.spec.node}[/yellow]",
+            ))
+        else:
+            items.append(WizItem(kind="info", label="Loading storage..."))
+
+        items.append(WizItem(kind="header", label="OPTIONS"))
+        items.append(WizItem(
+            kind="toggle", label="Start after create",
+            key="start_after_create", selected=self.spec.start_after_create,
+        ))
+        if self.spec.vm_type == VMType.LXC:
+            items.append(WizItem(
+                kind="toggle", label="Unprivileged container",
+                key="unprivileged", selected=self.spec.unprivileged,
+            ))
+
+
+    # ------------------------------------------------------------------
+    # Step 4: SSH Access
+    # ------------------------------------------------------------------
+
+    def _build_access_items(self):
+        items = self._items
+
+        items.append(WizItem(kind="header", label="SSH KEYS"))
+        if self._ssh_keys:
+            for label, pubkey in self._ssh_keys:
+                short = pubkey[:60] + "..." if len(pubkey) > 60 else pubkey
+                items.append(WizItem(
+                    kind="option",
+                    label=f"{label}  [dim]{short}[/dim]",
+                    key=label, group="ssh_key",
+                    selected=self.spec.ssh_keys == pubkey,
+                    meta={"pubkey": pubkey},
+                ))
+        else:
+            items.append(WizItem(kind="info", label="No SSH keys found in ~/.ssh/"))
+
+        items.append(WizItem(kind="header", label="PASTE KEY"))
+        items.append(WizItem(
+            kind="input", label="SSH Public Key", key="ssh_key_paste",
+            value="" if (self._ssh_keys and self.spec.ssh_keys) else self.spec.ssh_keys,
+            meta={"placeholder": "ssh-ed25519 AAAA... or ssh-rsa AAAA..."},
+        ))
+
+
+    # ------------------------------------------------------------------
+    # Step 5: Review & Deploy
+    # ------------------------------------------------------------------
+
+    def _build_review_items(self):
+        items = self._items
+        s = self.spec
+        node = s.node or "(not set)"
+        name = s.name or "(not set)"
+        template = s.template or s.template_volid or "(not set)"
+        vm_type = "LXC Container" if s.vm_type == VMType.LXC else "QEMU VM"
+        ip = s.ip_address or "DHCP"
+        gw = s.gateway or "Auto"
+        bridge = s.network_bridge
+        zone = s.dns_zone or s.dns_domain
+        fqdn = f"{s.dns_name}.{zone}" if s.dns_name and zone else "(none)"
+        ssh = "Yes" if s.ssh_keys else "No"
+        start = "Yes" if s.start_after_create else "No"
+        mem_gb = s.memory_mb / 1024
+        ip_display = f"{ip}/{s.subnet_mask}" if s.ip_address else ip
+
+        items.append(WizItem(kind="header", label="VM SPECIFICATION"))
+        items.append(WizItem(kind="info", label=f"Hostname:     [b]{name}[/b]"))
+        items.append(WizItem(kind="info", label=f"Node:         [b]{node}[/b]"))
+        items.append(WizItem(kind="info", label=f"Type:         [b]{vm_type}[/b]"))
+        items.append(WizItem(kind="info", label=f"Template:     [b]{template}[/b]"))
+
+        items.append(WizItem(kind="header", label="RESOURCES"))
+        items.append(WizItem(kind="info", label=f"CPU:          [b]{s.cpu_cores} cores[/b]"))
+        items.append(WizItem(kind="info", label=f"Memory:       [b]{s.memory_mb} MB ({mem_gb:.1f} GB)[/b]"))
+        items.append(WizItem(kind="info", label=f"Disk:         [b]{s.disk_gb} GB[/b]"))
+        items.append(WizItem(kind="info", label=f"Storage:      [b]{s.storage}[/b]"))
+
+        items.append(WizItem(kind="header", label="NETWORK"))
+        items.append(WizItem(kind="info", label=f"Bridge:       [b]{bridge}[/b]"))
+        items.append(WizItem(kind="info", label=f"IP Address:   [b]{ip_display}[/b]"))
+        items.append(WizItem(kind="info", label=f"Gateway:      [b]{gw}[/b]"))
+        items.append(WizItem(kind="info", label=f"FQDN:         [b]{fqdn}[/b]"))
+
+        items.append(WizItem(kind="header", label="ACCESS"))
+        items.append(WizItem(kind="info", label=f"SSH Key:      [b]{ssh}[/b]"))
+        items.append(WizItem(kind="info", label=f"Auto-start:   [b]{start}[/b]"))
+
+        try:
+            from infraforge.terraform_manager import TerraformManager
+            tf = TerraformManager(self.app.config)
+            tf_preview = tf.get_deployment_tf(s)
+            items.append(WizItem(kind="header", label="TERRAFORM CONFIGURATION"))
+            for line in tf_preview.split("\n"):
+                items.append(WizItem(kind="info", label=f"[dim]{line}[/dim]"))
+        except Exception:
+            pass
+
+        items.append(WizItem(kind="header", label="SAVE"))
+        items.append(WizItem(
+            kind="input", label="Save as Spec", key="save_spec_name",
+            value="", meta={"placeholder": "Enter spec name to save..."},
+        ))
+
+    # ------------------------------------------------------------------
+    # Navigation
+    # ------------------------------------------------------------------
+
+    def _go_next(self):
+        if self._step < len(WIZARD_STEPS) - 1:
+            valid, msg = self._validate_step()
+            if not valid:
+                self.notify(msg, severity="error")
+                return
+            self._step += 1
+            self._render_step()
+        else:
+            self._deploy()
+
+    def _go_back(self):
+        if self._step > 0:
+            self._step -= 1
+            self._render_step()
+
+    def action_handle_escape(self):
+        if self._editing:
+            self._cancel_edit()
+        elif self._deploying:
+            self.notify("Deployment in progress...", severity="warning")
+        elif self._step > 0:
+            self._go_back()
+        else:
+            self.app.pop_screen()
+
+    def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "btn-cancel":
+            if self._deploying:
+                self.notify("Deployment in progress...", severity="warning")
+                return
+            self.app.pop_screen()
+        elif event.button.id == "btn-next":
+            if not self._deploying:
+                self._go_next()
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def _validate_step(self) -> tuple[bool, str]:
+        if self._step == 0:
+            if not self.spec.node:
+                return False, "Please select a target node"
+            if not self.spec.template and not self.spec.template_volid:
+                return False, "Please select a template"
+            return True, ""
+        elif self._step == 1:
+            if not self.spec.name:
+                return False, "Please enter a hostname"
+            if len(self.spec.name) > 1:
+                if not re.match(r'^[a-z0-9][a-z0-9\-]*[a-z0-9]$', self.spec.name):
+                    return False, "Hostname: lowercase alphanumeric + hyphens only"
+            elif len(self.spec.name) == 1:
+                if not self.spec.name.isalnum():
+                    return False, "Hostname must start with a letter or digit"
+            return True, ""
+        elif self._step == 3:
+            if self.spec.cpu_cores < 1:
+                return False, "CPU cores must be at least 1"
+            if self.spec.memory_mb < 128:
+                return False, "Memory must be at least 128 MB"
+            if self.spec.disk_gb < 1:
+                return False, "Disk must be at least 1 GB"
+            if not self.spec.storage:
+                return False, "Please select a storage pool"
+            return True, ""
+        return True, ""
 
     # ------------------------------------------------------------------
     # Background data loaders
@@ -95,569 +1018,331 @@ class NewVMScreen(Screen):
 
     @work(thread=True)
     def _load_initial_data(self):
-        """Pre-load data needed across multiple wizard steps."""
         try:
-            nodes = self.app.proxmox.get_node_info()
-            self._pve_nodes = [n.node for n in nodes]
-
-            templates = (
+            self._pve_nodes = self.app.proxmox.get_node_info()
+            self._templates = (
                 self.app.proxmox.get_vm_templates()
                 + self.app.proxmox.get_downloaded_templates()
             )
-            self._templates = templates
-
-            storages = self.app.proxmox.get_storage_info()
-            self._storages = storages
-
-            # If we are still on the first step, re-render with loaded data
-            if self._step == 0:
-                self.app.call_from_thread(self._render_step)
+            self._storages = self.app.proxmox.get_storage_info()
+            self._data_loaded = True
+            self.app.call_from_thread(self._on_data_loaded)
         except Exception:
             pass
 
+    def _on_data_loaded(self):
+        if self._step == 0:
+            self._render_step()
+
     @work(thread=True)
     def _load_ipam_subnets(self):
-        """Load subnets from phpIPAM."""
+        ipam_cfg = self.app.config.ipam
+        if not ipam_cfg.url:
+            return
         try:
-            from infraforge.ipam_client import IPAMClient  # type: ignore[import-untyped]
+            from infraforge.ipam_client import IPAMClient
             ipam = IPAMClient(self.app.config)
-            subnets = ipam.get_subnets()
-            self._subnets = subnets
-            self.app.call_from_thread(self._render_step)
+            self._subnets = ipam.get_subnets()
+            if self._step == 2:
+                self.app.call_from_thread(self._render_step)
         except Exception:
             self._subnets = []
-            self.app.call_from_thread(self._render_step)
 
     @work(thread=True)
     def _load_available_ips(self, subnet_id: str):
-        """Load available IPs for a given subnet from phpIPAM."""
         try:
-            from infraforge.ipam_client import IPAMClient  # type: ignore[import-untyped]
+            from infraforge.ipam_client import IPAMClient
             ipam = IPAMClient(self.app.config)
             ips = ipam.get_available_ips(subnet_id)
             self._available_ips = ips
-            self.app.call_from_thread(self._render_step)
+            if ips:
+                self.spec.ip_address = ips[0]
+            if self._step == 2:
+                self.app.call_from_thread(self._render_step)
         except Exception:
             self._available_ips = []
-            self.app.call_from_thread(self._render_step)
+
+    def _scan_ssh_keys(self):
+        keys: list[tuple[str, str]] = []
+        ssh_dir = Path.home() / ".ssh"
+        if ssh_dir.exists():
+            for pub in sorted(ssh_dir.glob("*.pub")):
+                try:
+                    content = pub.read_text().strip()
+                    if content:
+                        keys.append((pub.name, content))
+                except Exception:
+                    pass
+        infra_keys_dir = Path.home() / ".config" / "infraforge" / "ssh_keys"
+        if infra_keys_dir.exists():
+            for priv in sorted(infra_keys_dir.glob("*_rsa")):
+                pub_path = priv.parent / (priv.name + ".pub")
+                if not pub_path.exists():
+                    continue
+                try:
+                    content = pub_path.read_text().strip()
+                    if content:
+                        keys.append((f"infraforge: {priv.stem}", content))
+                except Exception:
+                    pass
+        self._ssh_keys = keys
+
+    def _load_saved_templates(self):
+        try:
+            from infraforge.terraform_manager import TerraformManager
+            tf = TerraformManager(self.app.config)
+            self._saved_templates = tf.list_templates()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
-    # Step rendering
+    # DNS collision check
     # ------------------------------------------------------------------
 
-    def _render_step(self):
-        """Render the current wizard step content."""
-        content = self.query_one("#wizard-step-content", Static)
-
-        # Update step indicators
-        for i in range(len(WIZARD_STEPS)):
-            indicator = self.query_one(f"#step-indicator-{i}", Static)
-            classes = "wizard-step"
-            if i < self._step:
-                classes += " -completed"
-            elif i == self._step:
-                classes += " -active"
-            indicator.set_classes(classes)
-
-        # Update navigation buttons
-        btn_back = self.query_one("#btn-back", Button)
-        btn_next = self.query_one("#btn-next", Button)
-        btn_back.disabled = self._step == 0
-
-        if self._step == len(WIZARD_STEPS) - 1:
-            btn_next.label = "Create VM"
-            btn_next.variant = "success"
-        else:
-            btn_next.label = "Next"
-            btn_next.variant = "primary"
-
-        # Dispatch to per-step renderer
-        step_renderers = [
-            self._render_basics,
-            self._render_template,
-            self._render_resources,
-            self._render_network,
-            self._render_ipam,
-            self._render_dns,
-            self._render_provision,
-            self._render_review,
-        ]
-
-        text = step_renderers[self._step]()
-        content.update(text)
-
-    # -- Step 1: Basics ----------------------------------------------------
-
-    def _render_basics(self) -> str:
-        lines = [
-            "[bold cyan]Step 1: Basic Information[/bold cyan]\n",
-            "[bold]VM Name:[/bold]",
-            f"  Current: [green]{self.spec.name or '(not set)'}[/green]",
-            "  [dim]Press 'e' to edit, or type in the field below[/dim]\n",
-            "[bold]VM Type:[/bold]",
-            f"  Current: [green]{self.spec.vm_type.value.upper()}[/green]",
-            "  [dim]Options: QEMU (full VM) or LXC (container)[/dim]\n",
-            "[bold]Target Node:[/bold]",
-        ]
-        if self._pve_nodes:
-            lines.append(
-                f"  Current: [green]{self.spec.node or self._pve_nodes[0]}[/green]"
-            )
-            lines.append(f"  Available: {', '.join(self._pve_nodes)}")
-        else:
-            lines.append("  [yellow]Loading nodes...[/yellow]")
-
-        lines.extend([
-            "\n[bold]VMID:[/bold]",
-            f"  Current: [green]{self.spec.vmid or 'Auto-assign'}[/green]",
-            "  [dim]Leave empty for automatic assignment[/dim]",
-            "\n[dim]--- Use the input fields that will appear here ---[/dim]",
-            "[dim]This is a preview of the wizard flow. Interactive inputs[/dim]",
-            "[dim]will be wired up when Terraform integration is complete.[/dim]",
-        ])
-        return "\n".join(lines)
-
-    # -- Step 2: Template --------------------------------------------------
-
-    def _render_template(self) -> str:
-        lines = [
-            "[bold cyan]Step 2: Template Selection[/bold cyan]\n",
-            f"[bold]Selected:[/bold] [green]{self.spec.template or '(none)'}[/green]\n",
-        ]
-
-        if self._templates:
-            lines.append("[bold]Available Templates:[/bold]\n")
-
-            vm_tmpls = [
-                t for t in self._templates if t.template_type.value == "vm"
-            ]
-            ct_tmpls = [
-                t for t in self._templates if t.template_type.value == "container"
-            ]
-            iso_tmpls = [
-                t for t in self._templates if t.template_type.value == "iso"
-            ]
-
-            if vm_tmpls:
-                lines.append("  [bold]VM Templates:[/bold]")
-                for t in vm_tmpls:
-                    lines.append(
-                        f"    * {t.name} (VMID: {t.vmid}, Node: {t.node})"
-                    )
-
-            if ct_tmpls:
-                lines.append("\n  [bold]Container Templates:[/bold]")
-                for t in ct_tmpls:
-                    lines.append(
-                        f"    * {t.name} ({t.storage}, {t.size_display})"
-                    )
-
-            if iso_tmpls:
-                lines.append("\n  [bold]ISO Images:[/bold]")
-                for t in iso_tmpls:
-                    lines.append(
-                        f"    * {t.name} ({t.storage}, {t.size_display})"
-                    )
-        else:
-            lines.append("[yellow]Loading templates...[/yellow]")
-
-        return "\n".join(lines)
-
-    # -- Step 3: Resources -------------------------------------------------
-
-    def _render_resources(self) -> str:
-        mem_gb = self.spec.memory_mb / 1024
-        lines = [
-            "[bold cyan]Step 3: Resources[/bold cyan]\n",
-            f"[bold]CPU Cores:[/bold]     [green]{self.spec.cpu_cores}[/green]",
-            f"[bold]Memory:[/bold]        [green]{self.spec.memory_mb} MB[/green] ({mem_gb:.1f} GB)",
-            f"[bold]Disk Size:[/bold]     [green]{self.spec.disk_gb} GB[/green]",
-            f"[bold]Storage Pool:[/bold]  [green]{self.spec.storage}[/green]",
-        ]
-
-        if self._storages:
-            lines.append("\n[bold]Available Storage Pools:[/bold]")
-            for s in self._storages:
-                if s.total > 0:
-                    lines.append(
-                        f"    * {s.storage} ({s.storage_type}) -- "
-                        f"{s.avail_display} available of {s.total_display}"
-                    )
-                else:
-                    lines.append(f"    * {s.storage} ({s.storage_type})")
-
-        start_label = "Yes" if self.spec.start_after_create else "No"
-        lines.append(
-            f"\n[bold]Start on Create:[/bold] [green]{start_label}[/green]"
-        )
-
-        return "\n".join(lines)
-
-    # -- Step 4: Network ---------------------------------------------------
-
-    def _render_network(self) -> str:
-        ip_display = self.spec.ip_address or "Not set (DHCP)"
-        gw_display = self.spec.gateway or "Not set"
-        lines = [
-            "[bold cyan]Step 4: Network Configuration[/bold cyan]\n",
-            f"[bold]Network Bridge:[/bold]  [green]{self.spec.network_bridge}[/green]",
-            "  [dim]Common: vmbr0 (default), vmbr1, etc.[/dim]\n",
-            "[bold]VLAN Tag:[/bold]        [green](none)[/green]",
-            "  [dim]Optional -- leave empty for untagged[/dim]\n",
-            "[bold]IP Assignment:[/bold]",
-            "  [dim]* DHCP (automatic)[/dim]",
-            "  [dim]* Static (manual entry)[/dim]",
-            "  [dim]* IPAM (phpIPAM -- configure in next step)[/dim]\n",
-            f"[bold]IP Address:[/bold]     [green]{ip_display}[/green]",
-            f"[bold]Gateway:[/bold]        [green]{gw_display}[/green]",
-        ]
-        return "\n".join(lines)
-
-    # -- Step 5: IPAM ------------------------------------------------------
-
-    def _render_ipam(self) -> str:
-        ipam_cfg = self.app.config.ipam
-        lines = [
-            "[bold cyan]Step 5: IP Address Management (phpIPAM)[/bold cyan]\n",
-        ]
-
-        if not ipam_cfg.url:
-            lines.extend([
-                "[yellow]phpIPAM is not configured.[/yellow]",
-                "[dim]To enable IPAM integration, add the following to your config:[/dim]\n",
-                "[dim]ipam:[/dim]",
-                "[dim]  provider: phpipam[/dim]",
-                "[dim]  url: https://ipam.example.com[/dim]",
-                "[dim]  app_id: infraforge[/dim]",
-                "[dim]  token: your-api-token[/dim]",
-                "[dim]  verify_ssl: false[/dim]\n",
-                "[dim]You can still enter an IP address manually in the Network step.[/dim]",
-            ])
-        else:
-            lines.extend([
-                f"[bold]IPAM Provider:[/bold]  [green]{ipam_cfg.provider}[/green]",
-                f"[bold]Server:[/bold]         [green]{ipam_cfg.url}[/green]\n",
-            ])
-
-            if self._subnets:
-                lines.append("[bold]Available Subnets:[/bold]\n")
-                for subnet in self._subnets:
-                    desc = subnet.get("description", "")
-                    cidr = (
-                        subnet.get("subnet", "")
-                        + "/"
-                        + str(subnet.get("mask", ""))
-                    )
-                    usage = subnet.get("usage", {})
-                    used = usage.get("used", "?")
-                    total = usage.get("maxhosts", "?")
-                    free_pct = usage.get("freehosts_percent", "?")
-
-                    desc_str = f" -- {desc}" if desc else ""
-                    lines.append(
-                        f"    * [bold]{cidr}[/bold]{desc_str}"
-                        f"  [{used}/{total} used, {free_pct}% free]"
-                    )
-
-                if self._available_ips:
-                    lines.append("\n[bold]Available IP Addresses:[/bold] (first 20)")
-                    for ip in self._available_ips[:20]:
-                        lines.append(f"    * {ip}")
-                else:
-                    lines.append("\n[dim]Select a subnet to see available IPs[/dim]")
-            else:
-                lines.append("[yellow]Loading subnets from phpIPAM...[/yellow]")
-                # Trigger loading in the background
-                self._load_ipam_subnets()
-
-        selected_ip = self.spec.ip_address or "(not selected)"
-        lines.append(
-            f"\n[bold]Selected IP:[/bold]  [green]{selected_ip}[/green]"
-        )
-
-        return "\n".join(lines)
-
-    # -- Step 6: DNS -------------------------------------------------------
-
-    def _render_dns(self) -> str:
-        dns_cfg = self.app.config.dns
-        lines = [
-            "[bold cyan]Step 6: DNS Configuration[/bold cyan]\n",
-        ]
-
-        if not dns_cfg.provider:
-            lines.extend([
-                "[yellow]DNS provider is not configured.[/yellow]",
-                "[dim]To enable DNS management, configure the dns section "
-                "in your config.[/dim]\n",
-            ])
-        else:
-            lines.append(
-                f"[bold]DNS Provider:[/bold]  [green]{dns_cfg.provider}[/green]"
-            )
-            if dns_cfg.server:
-                lines.append(
-                    f"[bold]DNS Server:[/bold]   [green]{dns_cfg.server}:{dns_cfg.port}[/green]"
-                )
-            lines.append(
-                f"[bold]Domain:[/bold]        [green]{dns_cfg.domain}[/green]\n"
-            )
-
-            # Zone picker — show available zones from config
-            if dns_cfg.zones:
-                # Initialize dns_zone on spec if not already set
-                if not getattr(self.spec, "dns_zone", ""):
-                    self.spec.dns_zone = dns_cfg.zones[0] if dns_cfg.zones else ""
-                lines.append("[bold]DNS Zones:[/bold]")
-                for zone in dns_cfg.zones:
-                    marker = " [bold green]<-- selected[/bold green]" if zone == self.spec.dns_zone else ""
-                    lines.append(f"    * {zone}{marker}")
-                lines.append("")
-            else:
-                lines.append("[dim]No zones configured.[/dim]\n")
-
-        hostname_display = self.spec.dns_name or "(not set)"
-        domain_display = self.spec.dns_domain or "(not set)"
-        selected_zone = getattr(self.spec, "dns_zone", "") or "(not set)"
-        lines.extend([
-            f"[bold]Hostname:[/bold]      [green]{hostname_display}[/green]",
-            f"[bold]Zone:[/bold]          [green]{selected_zone}[/green]",
-            f"[bold]Domain:[/bold]        [green]{domain_display}[/green]",
-        ])
-
-        if self.spec.dns_name and self.spec.dns_domain:
-            fqdn = f"{self.spec.dns_name}.{self.spec.dns_domain}"
-            lines.append(f"[bold]FQDN:[/bold]          [green]{fqdn}[/green]")
-
-            # Show DNS record check result if available
-            if hasattr(self, "_dns_check_result"):
-                result = self._dns_check_result
-                if result is None:
-                    lines.append("\n[dim]Checking DNS records...[/dim]")
-                elif result:
-                    lines.append(
-                        f"\n[yellow]Record exists:[/yellow] {fqdn} -> "
-                        f"[yellow]{', '.join(result)}[/yellow]"
-                    )
-                    lines.append(
-                        "[dim]The existing record will be updated with the new IP.[/dim]"
-                    )
-                else:
-                    lines.append(
-                        f"\n[green]No existing record for {fqdn}[/green] — "
-                        "will be created."
-                    )
-
-            # Trigger a DNS check in background if BIND9 is configured
-            if (
-                dns_cfg.provider == "bind9"
-                and dns_cfg.server
-                and not hasattr(self, "_dns_check_triggered")
-            ):
-                self._dns_check_triggered = True
-                self._dns_check_result = None
-                self._check_dns_record()
-
-        lines.extend([
-            "\n[bold]Record Type:[/bold]   [green]A[/green]  [dim](A, CNAME)[/dim]",
-            "[bold]TTL:[/bold]            [green]3600[/green]  [dim](seconds)[/dim]",
-            "\n[dim]DNS records will be created automatically after VM "
-            "provisioning.[/dim]",
-        ])
-
-        return "\n".join(lines)
+    def _trigger_dns_check(self):
+        if self.spec.dns_name:
+            self._check_dns_collision()
 
     @work(thread=True)
-    def _check_dns_record(self):
-        """Check if a DNS record already exists for the chosen hostname."""
+    def _check_dns_collision(self):
+        dns_cfg = self.app.config.dns
+        if not dns_cfg.provider or not dns_cfg.server:
+            return
         try:
             from infraforge.dns_client import DNSClient
             client = DNSClient.from_config(self.app.config)
-            selected_zone = getattr(self.spec, "dns_zone", "") or self.app.config.dns.domain
-            existing = client.lookup_record(self.spec.dns_name, "A", selected_zone)
+            zone = self.spec.dns_zone or dns_cfg.domain
+            existing = client.lookup_record(self.spec.dns_name, "A", zone)
             self._dns_check_result = existing
-            self.app.call_from_thread(self._render_step)
+            if self._step == 1:
+                self.app.call_from_thread(self._render_step)
         except Exception:
-            self._dns_check_result = []
-            self.app.call_from_thread(self._render_step)
-
-    # -- Step 7: Provisioning ----------------------------------------------
-
-    def _render_provision(self) -> str:
-        tf_cfg = self.app.config.terraform
-        ans_cfg = self.app.config.ansible
-        playbook_display = self.spec.ansible_playbook or "(none -- skip)"
-        ssh_display = self.spec.ssh_keys or "(none)"
-        tags_display = self.spec.tags or "(none)"
-        desc_display = self.spec.description or "(none)"
-
-        lines = [
-            "[bold cyan]Step 7: Provisioning[/bold cyan]\n",
-            "[bold]Infrastructure:[/bold]  Terraform",
-            f"  [dim]Workspace: {tf_cfg.workspace}[/dim]",
-            f"  [dim]Backend: {tf_cfg.state_backend}[/dim]\n",
-            "[bold]Configuration Management:[/bold]  Ansible",
-            f"  [dim]Playbook dir: {ans_cfg.playbook_dir}[/dim]\n",
-            f"[bold]Ansible Playbook:[/bold]  [green]{playbook_display}[/green]",
-            "  [dim]Select a playbook to run after VM creation[/dim]\n",
-            f"[bold]SSH Keys:[/bold]  [green]{ssh_display}[/green]",
-            "  [dim]Public SSH key(s) to inject via cloud-init[/dim]\n",
-            "[bold]Cloud-Init:[/bold]",
-            "  [dim]Cloud-init will be configured based on template type[/dim]",
-            "  [dim]Custom cloud-init configs can be added later[/dim]\n",
-            f"[bold]Tags:[/bold]  [green]{tags_display}[/green]",
-            f"[bold]Description:[/bold]  [green]{desc_display}[/green]",
-        ]
-        return "\n".join(lines)
-
-    # -- Step 8: Review & Confirm ------------------------------------------
-
-    def _render_review(self) -> str:
-        node_display = self.spec.node or (
-            self._pve_nodes[0] if self._pve_nodes else "[red](required)[/red]"
-        )
-        name_display = self.spec.name or "[red](required)[/red]"
-        vmid_display = str(self.spec.vmid) if self.spec.vmid else "Auto-assign"
-        template_display = self.spec.template or "(none)"
-        mem_gb = self.spec.memory_mb / 1024
-        ip_display = self.spec.ip_address or "DHCP"
-        gw_display = self.spec.gateway or "Auto"
-        hostname_display = self.spec.dns_name or "(none)"
-        domain_display = self.spec.dns_domain or "(none)"
-        playbook_display = self.spec.ansible_playbook or "(skip)"
-        ssh_display = "Yes" if self.spec.ssh_keys else "No"
-        start_display = "Yes" if self.spec.start_after_create else "No"
-        tags_display = self.spec.tags or "(none)"
-
-        lines = [
-            "[bold cyan]Step 8: Review & Confirm[/bold cyan]\n",
-            "[bold]=== VM Specification ===[/bold]\n",
-            f"  [bold]Name:[/bold]           {name_display}",
-            f"  [bold]VMID:[/bold]           {vmid_display}",
-            f"  [bold]Type:[/bold]           {self.spec.vm_type.value.upper()}",
-            f"  [bold]Node:[/bold]           {node_display}",
-            f"  [bold]Template:[/bold]       {template_display}",
-            "",
-            "[bold]--- Resources ---[/bold]",
-            f"  [bold]CPU:[/bold]            {self.spec.cpu_cores} cores",
-            f"  [bold]Memory:[/bold]         {self.spec.memory_mb} MB ({mem_gb:.1f} GB)",
-            f"  [bold]Disk:[/bold]           {self.spec.disk_gb} GB",
-            f"  [bold]Storage:[/bold]        {self.spec.storage}",
-            "",
-            "[bold]--- Network ---[/bold]",
-            f"  [bold]Bridge:[/bold]         {self.spec.network_bridge}",
-            f"  [bold]IP Address:[/bold]     {ip_display}",
-            f"  [bold]Gateway:[/bold]        {gw_display}",
-            "",
-            "[bold]--- DNS ---[/bold]",
-            f"  [bold]Hostname:[/bold]       {hostname_display}",
-            f"  [bold]Domain:[/bold]         {domain_display}",
-        ]
-
-        if self.spec.dns_name and self.spec.dns_domain:
-            fqdn = f"{self.spec.dns_name}.{self.spec.dns_domain}"
-            lines.append(f"  [bold]FQDN:[/bold]           {fqdn}")
-
-        lines.extend([
-            "",
-            "[bold]--- Provisioning ---[/bold]",
-            f"  [bold]Playbook:[/bold]       {playbook_display}",
-            f"  [bold]SSH Keys:[/bold]       {ssh_display}",
-            f"  [bold]Auto-start:[/bold]     {start_display}",
-            f"  [bold]Tags:[/bold]           {tags_display}",
-            "",
-            "[bold yellow]VM creation is not yet implemented.[/bold yellow]",
-            "[dim]This wizard will use Terraform to provision the VM and[/dim]",
-            "[dim]Ansible for post-creation configuration in a future update.[/dim]",
-            "",
-            "[dim]Press 'Create VM' to see what would be executed.[/dim]",
-        ])
-
-        return "\n".join(lines)
+            self._dns_check_result = None
 
     # ------------------------------------------------------------------
-    # Button / navigation handlers
+    # Saved template management
     # ------------------------------------------------------------------
 
-    def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id == "btn-cancel":
-            self.action_cancel()
-        elif event.button.id == "btn-back":
-            self.action_prev_step()
-        elif event.button.id == "btn-next":
-            self._next_step()
-
-    def _next_step(self):
-        if self._step < len(WIZARD_STEPS) - 1:
-            self._step += 1
+    def _apply_saved_template(self, name: str):
+        try:
+            from infraforge.terraform_manager import TerraformManager
+            tf = TerraformManager(self.app.config)
+            spec = tf.load_template(name)
+            if not spec:
+                self.notify(f"Spec '{name}' not found", severity="error")
+                return
+            self.spec = spec
+            self.notify(f"Spec '{name}' loaded", severity="information")
             self._render_step()
-        else:
-            # Final step -- trigger the creation preview
-            self._execute_create()
+        except Exception as e:
+            self.notify(f"Failed to load: {e}", severity="error")
 
-    def _execute_create(self):
-        """Placeholder for VM creation execution -- shows an execution plan preview."""
-        content = self.query_one("#wizard-step-content", Static)
-
-        node = self.spec.node or (self._pve_nodes[0] if self._pve_nodes else "node1")
-        vm_name = self.spec.name or "new-vm"
-        template_name = self.spec.template or "base-template"
-        ip_config = self.spec.ip_address or "dhcp"
-        gw_config = self.spec.gateway or "auto"
-        playbook_display = self.spec.ansible_playbook or "(none)"
-        ip_target = self.spec.ip_address or "(pending)"
-        dns_name = self.spec.dns_name or "(none)"
-        dns_domain = self.spec.dns_domain or ""
-
-        plan = (
-            "[bold green]=== Execution Plan (Preview) ===[/bold green]\n"
-            "\n"
-            "[bold]Terraform would execute:[/bold]\n"
-            "\n"
-            f'  resource "proxmox_vm_qemu" "{vm_name}" {{\n'
-            f'    name        = "{vm_name}"\n'
-            f'    target_node = "{node}"\n'
-            f'    clone       = "{template_name}"\n'
-            f"    cores       = {self.spec.cpu_cores}\n"
-            f"    memory      = {self.spec.memory_mb}\n"
-            "\n"
-            "    disk {\n"
-            f'      size    = "{self.spec.disk_gb}G"\n'
-            f'      storage = "{self.spec.storage}"\n'
-            "    }\n"
-            "\n"
-            "    network {\n"
-            f'      bridge = "{self.spec.network_bridge}"\n'
-            "    }\n"
-            "\n"
-            f'    ipconfig0 = "ip={ip_config}/24,gw={gw_config}"\n'
-            "  }\n"
-            "\n"
-            "[bold]Ansible would run:[/bold]\n"
-            f"  Playbook: {playbook_display}\n"
-            f"  Target: {ip_target}\n"
-            "\n"
-            "[bold]DNS would create:[/bold]\n"
-            f"  {dns_name}.{dns_domain} -> {ip_target}\n"
-            "\n"
-            "[bold yellow]This is a preview only. "
-            "Actual execution coming in a future release.[/bold yellow]\n"
-            "\n"
-            "[dim]Press Escape or Back to return to the wizard.[/dim]"
-        )
-
-        content.update(plan)
+    def _save_spec(self, name: str):
+        try:
+            from infraforge.terraform_manager import TerraformManager
+            tf = TerraformManager(self.app.config)
+            tf.save_template(name, self.spec)
+            self.notify(f"Spec '{name}' saved", severity="information")
+            self._load_saved_templates()
+        except Exception as e:
+            self.notify(f"Failed to save: {e}", severity="error")
 
     # ------------------------------------------------------------------
-    # Actions
+    # Deployment
     # ------------------------------------------------------------------
 
-    def action_cancel(self):
-        self.app.pop_screen()
+    @work(thread=True)
+    def _deploy(self):
+        self._deploying = True
 
-    def action_prev_step(self):
-        if self._step > 0:
-            self._step -= 1
-            self._render_step()
-        else:
-            self.app.pop_screen()
+        def log(msg: str):
+            def _update():
+                try:
+                    self.query_one("#deploy-log", RichLog).write(msg)
+                except Exception:
+                    pass
+            self.app.call_from_thread(_update)
+
+        def show_log():
+            def _show():
+                for w in self.query(".wiz-line"):
+                    w.remove()
+                scroll = self.query_one("#wizard-content", VerticalScroll)
+                scroll.mount(RichLog(markup=True, id="deploy-log"))
+                self.query_one("#wiz-phase-header", Static).update(
+                    "[b]Deploying...[/b]"
+                )
+                self.query_one("#btn-next", Button).disabled = True
+                self._set_hint("Deployment in progress...")
+            self.app.call_from_thread(_show)
+
+        def _fail(title: str, output: str = ""):
+            """Log a failure with parsed guidance if available."""
+            log(f"\n[red]{title}[/red]")
+            if output:
+                err_title, guidance = tf.parse_terraform_error(output)
+                if guidance:
+                    log(f"[yellow]{err_title}[/yellow]")
+                    for gline in guidance.split("\n"):
+                        log(f"[yellow]{gline}[/yellow]")
+                else:
+                    log("[dim]Check the error output above for details.[/dim]")
+            self._deploying = False
+
+        show_log()
+
+        try:
+            from infraforge.terraform_manager import TerraformManager
+            tf = TerraformManager(self.app.config)
+
+            # ── Pre-flight Checks ─────────────────────────────────
+            log("[bold]━━━ Pre-flight Checks ━━━[/bold]\n")
+
+            log("[bold]Checking Terraform CLI...[/bold]")
+            installed, version = tf.check_terraform_installed()
+            if not installed:
+                log(f"[red]  ✗ Terraform not found: {version}[/red]")
+                log("[yellow]  Install: https://developer.hashicorp.com/"
+                    "terraform/install[/yellow]")
+                self._deploying = False
+                return
+            log(f"[green]  ✓ {version}[/green]\n")
+
+            log("[bold]Validating Proxmox environment...[/bold]")
+            checks = tf.validate_pre_deploy(self.spec, log_fn=log)
+            all_ok = True
+            for name, passed, detail in checks:
+                if passed:
+                    log(f"[green]  ✓ {name}[/green] — {detail}")
+                else:
+                    log(f"[red]  ✗ {name}[/red]")
+                    for dline in detail.split("\n"):
+                        log(f"[red]    {dline}[/red]")
+                    all_ok = False
+            if not all_ok:
+                log("\n[red]Pre-flight failed. Fix the issues above "
+                    "and retry.[/red]")
+                self._deploying = False
+                return
+            log("")
+
+            # ── API Credential Setup ──────────────────────────────
+            log("[bold]Setting up Terraform API credentials...[/bold]")
+            pve_cfg = self.app.config.proxmox
+            if pve_cfg.auth_method == "password":
+                # Use password auth directly — avoids Telmate provider
+                # token permission-check bugs with root@pam
+                token_id, token_secret = "", ""
+                log(f"[green]  ✓ Using password auth ({pve_cfg.user})[/green]\n")
+            else:
+                token_id, token_secret, token_msg = tf.ensure_terraform_token()
+                if token_id and token_secret:
+                    log(f"[green]  ✓ {token_msg}[/green]\n")
+                else:
+                    log(f"[yellow]  ⚠ {token_msg}[/yellow]")
+                    log("[dim]    Falling back to password auth[/dim]\n")
+                    token_id, token_secret = "", ""
+
+            # ── Terraform Deployment ──────────────────────────────
+            log("[bold]━━━ Terraform Deployment ━━━[/bold]\n")
+
+            log("[bold]Creating deployment files...[/bold]")
+            deploy_dir = tf.create_deployment(
+                self.spec, token_id, token_secret,
+            )
+            log(f"[dim]  {deploy_dir}[/dim]\n")
+
+            log("[bold]Caching provider plugins...[/bold]")
+            ok, output = tf.ensure_provider_mirror(deploy_dir)
+            if output.strip():
+                for line in output.strip().split("\n")[-3:]:
+                    log(f"[dim]  {line}[/dim]")
+            if not ok:
+                _fail("✗ Provider mirror failed!", output)
+                return
+            log("[green]  ✓ Providers cached[/green]\n")
+
+            log("[bold]Running terraform init...[/bold]")
+            ok, output = tf.terraform_init(deploy_dir)
+            if output.strip():
+                for line in output.strip().split("\n")[-5:]:
+                    log(f"[dim]  {line}[/dim]")
+            if not ok:
+                _fail("✗ terraform init failed!", output)
+                return
+            log("[green]  ✓ Init successful[/green]\n")
+
+            log("[bold]Running terraform plan...[/bold]")
+            ok, output = tf.terraform_plan(deploy_dir)
+            if output.strip():
+                for line in output.strip().split("\n")[-10:]:
+                    log(f"[dim]  {line}[/dim]")
+            if not ok:
+                _fail("✗ terraform plan failed!", output)
+                return
+            log("[green]  ✓ Plan successful[/green]\n")
+
+            log("[bold]Running terraform apply...[/bold]")
+            ok, output = tf.terraform_apply(deploy_dir)
+            if output.strip():
+                for line in output.strip().split("\n")[-10:]:
+                    log(f"[dim]  {line}[/dim]")
+            if not ok:
+                _fail("✗ terraform apply failed!", output)
+                return
+            log("\n[bold green]  ✓ VM created successfully![/bold green]\n")
+
+            # ── Post-Deployment ───────────────────────────────────
+            log("[bold]━━━ Post-Deployment ━━━[/bold]\n")
+
+            # DNS record
+            dns_cfg = self.app.config.dns
+            if (
+                dns_cfg.provider and dns_cfg.server
+                and self.spec.dns_name and self.spec.ip_address
+            ):
+                log("[bold]Creating DNS record...[/bold]")
+                try:
+                    from infraforge.dns_client import DNSClient
+                    dns = DNSClient.from_config(self.app.config)
+                    zone = self.spec.dns_zone or dns_cfg.domain
+                    result = dns.ensure_record(
+                        self.spec.dns_name, "A",
+                        self.spec.ip_address, 3600, zone,
+                    )
+                    fqdn = f"{self.spec.dns_name}.{zone}"
+                    log(f"[green]  ✓ DNS {result}: {fqdn} -> "
+                        f"{self.spec.ip_address}[/green]\n")
+                except Exception as e:
+                    log(f"[yellow]  ⚠ DNS failed: {e}[/yellow]\n")
+            else:
+                log("[dim]  DNS: skipped (not configured)[/dim]\n")
+
+            # IPAM reservation
+            ipam_cfg = self.app.config.ipam
+            if ipam_cfg.url and self.spec.ip_address and self.spec.subnet_id:
+                log("[bold]Reserving IP in IPAM...[/bold]")
+                try:
+                    from infraforge.ipam_client import IPAMClient
+                    ipam = IPAMClient(self.app.config)
+                    ipam.create_address(
+                        self.spec.ip_address, self.spec.subnet_id,
+                        hostname=self.spec.name,
+                        description="Created by InfraForge",
+                    )
+                    log(
+                        f"[green]  ✓ IP {self.spec.ip_address} reserved in "
+                        f"{self.spec.subnet_cidr}[/green]\n"
+                    )
+                except Exception as e:
+                    log(f"[yellow]  ⚠ IPAM reservation failed: {e}[/yellow]\n")
+            else:
+                log("[dim]  IPAM: skipped (not configured)[/dim]\n")
+
+            log("\n[bold green]━━━ Deployment Complete! ━━━[/bold green]")
+            log("[dim]Press Escape to return to dashboard.[/dim]")
+
+        except Exception as e:
+            log(f"\n[red]Deployment error: {e}[/red]")
+
+        self._deploying = False
