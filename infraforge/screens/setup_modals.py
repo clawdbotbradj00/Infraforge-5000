@@ -7,7 +7,50 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Select, Static, Switch
-from textual import on
+
+
+# ── Arrow-key navigation mixin for config modals ──────────────────
+
+_FOCUSABLE = (Input, Select, Switch)
+
+
+class _ArrowNavModal(ModalScreen):
+    """Base modal that adds up/down arrow navigation between fields
+    and auto-focuses the first input on mount."""
+
+    def on_mount(self) -> None:
+        fields = list(self.query(_FOCUSABLE[0].__name__))
+        fields += list(self.query(_FOCUSABLE[1].__name__))
+        fields += list(self.query(_FOCUSABLE[2].__name__))
+        if fields:
+            fields[0].focus()
+
+    def _get_focusable_fields(self) -> list:
+        """Return all focusable fields in DOM order."""
+        all_widgets = list(self.query("*"))
+        return [w for w in all_widgets if isinstance(w, _FOCUSABLE)]
+
+    def on_key(self, event) -> None:
+        if event.key == "down":
+            event.prevent_default()
+            event.stop()
+            self._move_field(1)
+        elif event.key == "up":
+            event.prevent_default()
+            event.stop()
+            self._move_field(-1)
+
+    def _move_field(self, direction: int) -> None:
+        fields = self._get_focusable_fields()
+        if not fields:
+            return
+        current = self.app.focused
+        if current in fields:
+            idx = fields.index(current)
+            new_idx = (idx + direction) % len(fields)
+            fields[new_idx].focus()
+        else:
+            fields[0].focus()
 
 
 # ── Shared CSS for all config modals ───────────────────────────────
@@ -61,7 +104,7 @@ def get_config_modal(comp_id: str, full_cfg: dict) -> ModalScreen | None:
 
 # ── Proxmox Config Modal ──────────────────────────────────────────
 
-class ProxmoxConfigModal(ModalScreen):
+class ProxmoxConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -141,7 +184,7 @@ ProxmoxConfigModal {
 
 # ── DNS Config Modal ───────────────────────────────────────────────
 
-class DNSConfigModal(ModalScreen):
+class DNSConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -232,7 +275,7 @@ DNSConfigModal {
 
 # ── IPAM Config Modal ──────────────────────────────────────────────
 
-class IPAMConfigModal(ModalScreen):
+class IPAMConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -301,7 +344,7 @@ IPAMConfigModal {
 
 # ── Terraform Config Modal ─────────────────────────────────────────
 
-class TerraformConfigModal(ModalScreen):
+class TerraformConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -353,7 +396,7 @@ TerraformConfigModal {
 
 # ── Ansible Config Modal ──────────────────────────────────────────
 
-class AnsibleConfigModal(ModalScreen):
+class AnsibleConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -397,7 +440,7 @@ AnsibleConfigModal {
 
 # ── AI Config Modal ────────────────────────────────────────────────
 
-class AIConfigModal(ModalScreen):
+class AIConfigModal(_ArrowNavModal):
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),

@@ -226,6 +226,7 @@ class SetupScreen(Screen):
         super().__init__()
         self._cfg: dict = {}
         self._labels: dict[str, Label] = {}
+        self._testing: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -329,11 +330,15 @@ class SetupScreen(Screen):
         if not comp_id:
             self.notify("Select a component first.", severity="warning")
             return
+        if self._testing:
+            self.notify("A test is already running.", severity="warning")
+            return
         comp_name = next((n for i, n, _ in COMPONENTS if i == comp_id), comp_id)
         self.notify(f"Testing {comp_name}...", title="Testing")
+        self._testing = True
         self._run_test(comp_id, comp_name)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="setup-test")
     def _run_test(self, comp_id: str, comp_name: str) -> None:
         """Run a connection test for the given component in a background thread."""
         title = f"{comp_name} Test"
@@ -354,11 +359,16 @@ class SetupScreen(Screen):
                 body = "[yellow]No test available for this component.[/yellow]"
         except Exception as e:
             body = f"[bold red]Test failed:[/bold red] {e}"
+        finally:
+            self.app.call_from_thread(self._clear_testing)
 
         self.app.call_from_thread(
             self.app.push_screen,
             TestResultModal(title, body),
         )
+
+    def _clear_testing(self) -> None:
+        self._testing = False
 
     # ── Test helpers ───────────────────────────────────────────
 
