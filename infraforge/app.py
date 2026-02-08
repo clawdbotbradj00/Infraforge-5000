@@ -257,13 +257,14 @@ class InfraForgeApp(App):
         Binding("V", "version_list", "Versions", show=False),
     ]
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, start_screen: str | None = None):
         super().__init__()
         self.config = config
         self.proxmox = ProxmoxClient(config)
         self.preferences = Preferences.load()
         self.ai_client: AIClient | None = None
         self._connected = False
+        self._start_screen = start_screen
 
     def on_mount(self):
         for t in _CUSTOM_THEMES:
@@ -314,6 +315,11 @@ class InfraForgeApp(App):
         self.ai_client = AIClient(self.config)
         from infraforge.screens.dashboard import DashboardScreen
         self.push_screen(DashboardScreen())
+
+        # If a specific start screen was requested via CLI, push it now
+        if self._start_screen == "dns-server-wizard":
+            from infraforge.screens.dns_server_wizard import DNSServerWizardScreen
+            self.push_screen(DNSServerWizardScreen())
 
     def _on_connection_error(self, error: str):
         """Called when Proxmox connection fails."""

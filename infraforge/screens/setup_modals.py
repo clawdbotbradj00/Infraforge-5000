@@ -31,13 +31,17 @@ class _ArrowNavModal(ModalScreen):
         return [w for w in all_widgets if isinstance(w, _FOCUSABLE)]
 
     def on_key(self, event) -> None:
+        if event.key not in ("down", "up"):
+            return
+        # Don't intercept arrows when any Select dropdown is expanded
+        for sel in self.query(Select):
+            if sel.expanded:
+                return
+        event.prevent_default()
+        event.stop()
         if event.key == "down":
-            event.prevent_default()
-            event.stop()
             self._move_field(1)
-        elif event.key == "up":
-            event.prevent_default()
-            event.stop()
+        else:
             self._move_field(-1)
 
     def _move_field(self, direction: int) -> None:
@@ -142,13 +146,13 @@ ProxmoxConfigModal {
                 id="f-auth-method",
             )
 
-            yield Label("Token Name [dim](if token auth)[/dim]", classes="field-label", markup=True)
+            yield Label("Token Name", classes="field-label", id="lbl-token-name")
             yield Input(value=s.get("token_name", ""), placeholder="e.g. infraforge", id="f-token-name")
 
-            yield Label("Token Value [dim](secret)[/dim]", classes="field-label", markup=True)
+            yield Label("Token Value", classes="field-label", id="lbl-token-value")
             yield Input(value=s.get("token_value", ""), placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", id="f-token-value", password=True)
 
-            yield Label("Password [dim](if password auth)[/dim]", classes="field-label", markup=True)
+            yield Label("Password", classes="field-label", id="lbl-password")
             yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
 
             yield Label("Verify SSL", classes="field-label")
@@ -160,6 +164,26 @@ ProxmoxConfigModal {
                 classes="modal-hint",
                 markup=True,
             )
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._toggle_auth_fields()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "f-auth-method":
+            self._toggle_auth_fields()
+
+    def _toggle_auth_fields(self) -> None:
+        auth = self.query_one("#f-auth-method", Select).value
+        is_token = auth == "token"
+        # Token fields
+        self.query_one("#f-token-name", Input).display = is_token
+        self.query_one("#lbl-token-name").display = is_token
+        self.query_one("#f-token-value", Input).display = is_token
+        self.query_one("#lbl-token-value").display = is_token
+        # Password field
+        self.query_one("#f-password", Input).display = not is_token
+        self.query_one("#lbl-password").display = not is_token
 
     def action_save(self) -> None:
         host = self.query_one("#f-host", Input).value.strip()

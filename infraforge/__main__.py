@@ -27,6 +27,12 @@ def main():
         run_version_browser()
         return
 
+    # Check for deploy dns-server mode
+    if len(sys.argv) > 2 and sys.argv[1] == "deploy" and sys.argv[2] == "dns-server":
+        start_screen = "dns-server-wizard"
+    else:
+        start_screen = None
+
     # Load config
     try:
         config = Config.load()
@@ -46,7 +52,7 @@ def main():
 
     # Launch the TUI app
     from infraforge.app import InfraForgeApp
-    app = InfraForgeApp(config=config)
+    app = InfraForgeApp(config=config, start_screen=start_screen)
     app.run()
 
 

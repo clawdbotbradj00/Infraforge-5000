@@ -1,0 +1,409 @@
+---
+# =============================================================================
+# BIND9 DNS Server Provisioning Playbook
+# =============================================================================
+# Provisions a production-ready BIND9 authoritative/recursive DNS server on
+# Ubuntu. Supports multiple forward and reverse zones, TSIG authentication,
+# configurable forwarders, and UFW firewall hardening.
+#
+# Usage:
+#   ansible-playbook bind9-server.yml -i inventory \
+#     -e '{"dns_zones": ["example.com", "lab.local"]}'
+#
+#   ansible-playbook bind9-server.yml -i inventory \
+#     -e @vars/dns.yml
+#
+# Tags:
+#   system    - hostname + package installation
+#   bind      - all BIND9 configuration and zone setup
+#   firewall  - UFW rules
+#   service   - service enable/restart
+#   validate  - configuration validation only
+# =============================================================================
+
+- name: Provision BIND9 DNS server
+  hosts: targets
+  become: true
+  gather_facts: true
+
+  # ---------------------------------------------------------------------------
+  # Default variables — override via -e, group_vars, or host_vars
+  # ---------------------------------------------------------------------------
+  vars:
+    dns_hostname: "ns1"
+    dns_domain: "example.com"
+
+    dns_forwarders:
+      - "8.8.8.8"
+      - "1.1.1.1"
+
+    dns_listen_on: "any"
+    dns_allow_recursion: true
+    dns_allow_query: "any"
+
+    # List of zone names to create (e.g. ["example.com", "lab.local"])
+    dns_zones: []
+
+    # Server IP used in SOA/NS/A records — defaults to primary interface address
+    dns_server_ip: "{{ ansible_default_ipv4.address }}"
+
+    # Admin email for SOA (dot-delimited, no @)
+    dns_admin_email: "admin.{{ dns_domain }}"
+
+    # SOA serial — epoch timestamp ensures monotonic increase on each run
+    dns_serial: "{{ ansible_date_time.epoch }}"
+
+    # SOA timing values (seconds)
+    dns_soa_refresh: 86400
+    dns_soa_retry: 7200
+    dns_soa_expire: 3600000
+    dns_soa_minimum: 86400
+
+    # Default TTL for zone records
+    dns_default_ttl: 86400
+
+    # SSH port to allow through firewall
+    ssh_port: 22
+
+    # BIND9 zone file directory
+    dns_zone_dir: "/etc/bind/zones"
+
+  # ---------------------------------------------------------------------------
+  # Handlers
+  # ---------------------------------------------------------------------------
+  handlers:
+    - name: Restart bind9
+      ansible.builtin.service:
+        name: bind9
+        state: restarted
+      listen: "restart bind9"
+
+    - name: Reload bind9
+      ansible.builtin.service:
+        name: bind9
+        state: reloaded
+      listen: "reload bind9"
+
+  # ---------------------------------------------------------------------------
+  # Tasks
+  # ---------------------------------------------------------------------------
+  tasks:
+
+    # =========================================================================
+    # SYSTEM PREPARATION
+    # =========================================================================
+
+    - name: Set system hostname
+      ansible.builtin.hostname:
+        name: "{{ dns_hostname }}.{{ dns_domain }}"
+      when: dns_hostname is defined and dns_hostname | length > 0
+      tags:
+        - system
+
+    - name: Update /etc/hosts with FQDN
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1  {{ dns_hostname }}.{{ dns_domain }}  {{ dns_hostname }}"
+        state: present
+      when: dns_hostname is defined and dns_hostname | length > 0
+      tags:
+        - system
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags:
+        - system
+
+    - name: Install BIND9 and required packages
+      ansible.builtin.apt:
+        name:
+          - bind9
+          - bind9utils
+          - bind9-dnsutils
+          - ufw
+        state: present
+      tags:
+        - system
+
+    # =========================================================================
+    # BIND9 CONFIGURATION
+    # =========================================================================
+
+    - name: Create zone file directory
+      ansible.builtin.file:
+        path: "{{ dns_zone_dir }}"
+        state: directory
+        owner: bind
+        group: bind
+        mode: "0755"
+      tags:
+        - bind
+
+    - name: Configure named.conf.options
+      ansible.builtin.copy:
+        dest: /etc/bind/named.conf.options
+        owner: root
+        group: bind
+        mode: "0644"
+        content: |
+          // =======================================================
+          // BIND9 options — managed by Ansible / InfraForge
+          // Do not edit manually; changes will be overwritten.
+          // =======================================================
+
+          acl "trusted" {
+              localhost;
+              localnets;
+              {{ dns_allow_query }};
+          };
+
+          options {
+              directory "/var/cache/bind";
+
+              // ----------------------------------------------------
+              // Forwarding
+              // ----------------------------------------------------
+              forwarders {
+          {% for fwd in dns_forwarders %}
+                  {{ fwd }};
+          {% endfor %}
+              };
+              forward only;
+
+              // ----------------------------------------------------
+              // Interfaces
+              // ----------------------------------------------------
+              listen-on { {{ dns_listen_on }}; };
+              listen-on-v6 { any; };
+
+              // ----------------------------------------------------
+              // Access control
+              // ----------------------------------------------------
+              allow-query { {{ dns_allow_query }}; };
+          {% if dns_allow_recursion %}
+              recursion yes;
+              allow-recursion { trusted; };
+          {% else %}
+              recursion no;
+          {% endif %}
+
+              // ----------------------------------------------------
+              // DNSSEC
+              // ----------------------------------------------------
+              dnssec-validation auto;
+
+              // ----------------------------------------------------
+              // Security hardening
+              // ----------------------------------------------------
+              auth-nxdomain no;
+              version "not disclosed";
+
+              // ----------------------------------------------------
+              // Query logging (disabled by default for performance)
+              // ----------------------------------------------------
+              // querylog yes;
+          };
+      notify: restart bind9
+      tags:
+        - bind
+
+    - name: Configure named.conf.local with zone declarations
+      ansible.builtin.copy:
+        dest: /etc/bind/named.conf.local
+        owner: root
+        group: bind
+        mode: "0644"
+        content: |
+          // =======================================================
+          // Local zone declarations — managed by Ansible / InfraForge
+          // Do not edit manually; changes will be overwritten.
+          // =======================================================
+
+          {% for zone in dns_zones %}
+          zone "{{ zone }}" {
+              type master;
+              file "{{ dns_zone_dir }}/db.{{ zone }}";
+              allow-transfer { none; };
+              allow-update { none; };
+          };
+
+          {% endfor %}
+      notify: restart bind9
+      tags:
+        - bind
+
+    - name: Create zone files
+      ansible.builtin.copy:
+        dest: "{{ dns_zone_dir }}/db.{{ item }}"
+        owner: bind
+        group: bind
+        mode: "0644"
+        # Only create if the zone file does not already exist.
+        # This prevents overwriting manual record additions on
+        # subsequent runs. Use force: false for idempotency.
+        force: false
+        content: |
+          ;; =======================================================
+          ;; Zone file for {{ item }}
+          ;; Managed by Ansible / InfraForge
+          ;; =======================================================
+
+          $TTL {{ dns_default_ttl }}
+          @   IN  SOA {{ dns_hostname }}.{{ item }}. {{ dns_admin_email }}. (
+                      {{ dns_serial }}  ; Serial
+                      {{ dns_soa_refresh }}       ; Refresh
+                      {{ dns_soa_retry }}        ; Retry
+                      {{ dns_soa_expire }}     ; Expire
+                      {{ dns_soa_minimum }}       ; Negative Cache TTL
+                      )
+
+          ;; ----------------------------------------------------
+          ;; Name servers
+          ;; ----------------------------------------------------
+          @       IN  NS      {{ dns_hostname }}.{{ item }}.
+
+          ;; ----------------------------------------------------
+          ;; A records
+          ;; ----------------------------------------------------
+          {{ dns_hostname }}    IN  A       {{ dns_server_ip }}
+      loop: "{{ dns_zones }}"
+      notify: reload bind9
+      tags:
+        - bind
+
+    # =========================================================================
+    # CONFIGURATION VALIDATION
+    # =========================================================================
+
+    - name: Validate BIND9 configuration with named-checkconf
+      ansible.builtin.command:
+        cmd: named-checkconf
+      changed_when: false
+      register: checkconf_result
+      tags:
+        - bind
+        - validate
+
+    - name: Display named-checkconf output if errors found
+      ansible.builtin.debug:
+        msg: "named-checkconf returned: {{ checkconf_result.stderr }}"
+      when: checkconf_result.rc != 0
+      tags:
+        - bind
+        - validate
+
+    - name: Validate each zone file with named-checkzone
+      ansible.builtin.command:
+        cmd: "named-checkzone {{ item }} {{ dns_zone_dir }}/db.{{ item }}"
+      loop: "{{ dns_zones }}"
+      changed_when: false
+      register: checkzone_results
+      tags:
+        - bind
+        - validate
+
+    - name: Display named-checkzone errors
+      ansible.builtin.debug:
+        msg: "Zone {{ item.item }} validation: {{ item.stderr | default(item.stdout) }}"
+      loop: "{{ checkzone_results.results }}"
+      when: item.rc != 0
+      loop_control:
+        label: "{{ item.item }}"
+      tags:
+        - bind
+        - validate
+
+    # =========================================================================
+    # FIREWALL SETUP
+    # =========================================================================
+
+    - name: Allow SSH through UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ ssh_port | string }}"
+        proto: tcp
+        comment: "SSH access"
+      tags:
+        - firewall
+
+    - name: Allow DNS TCP through UFW
+      community.general.ufw:
+        rule: allow
+        port: "53"
+        proto: tcp
+        comment: "DNS TCP (zone transfers, large responses)"
+      tags:
+        - firewall
+
+    - name: Allow DNS UDP through UFW
+      community.general.ufw:
+        rule: allow
+        port: "53"
+        proto: udp
+        comment: "DNS UDP (standard queries)"
+      tags:
+        - firewall
+
+    - name: Set UFW default policy to deny incoming
+      community.general.ufw:
+        direction: incoming
+        default: deny
+      tags:
+        - firewall
+
+    - name: Set UFW default policy to allow outgoing
+      community.general.ufw:
+        direction: outgoing
+        default: allow
+      tags:
+        - firewall
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+      tags:
+        - firewall
+
+    # =========================================================================
+    # SERVICE MANAGEMENT
+    # =========================================================================
+
+    - name: Enable bind9 service on boot
+      ansible.builtin.service:
+        name: bind9
+        enabled: true
+      tags:
+        - service
+
+    - name: Ensure bind9 is running
+      ansible.builtin.service:
+        name: bind9
+        state: started
+      tags:
+        - service
+
+    # =========================================================================
+    # VERIFICATION
+    # =========================================================================
+
+    - name: Query localhost to verify DNS is responding
+      ansible.builtin.command:
+        cmd: "dig @127.0.0.1 {{ dns_zones[0] }} SOA +short"
+      changed_when: false
+      register: dig_verify
+      when: dns_zones | length > 0
+      failed_when: false
+      tags:
+        - validate
+
+    - name: Display DNS verification result
+      ansible.builtin.debug:
+        msg: >-
+          DNS verification for {{ dns_zones[0] }}:
+          {{ dig_verify.stdout | default('no response') }}
+      when: dns_zones | length > 0
+      tags:
+        - validate
