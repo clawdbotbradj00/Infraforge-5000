@@ -8,6 +8,7 @@ following the pattern from ansible_run_modal.py.
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -69,6 +70,8 @@ class NewVMScreen(Screen):
         self._data_loaded = False
         self._mount_gen = 0
         self._net_mode = ""  # "ipam" or "manual" — dims the other section
+        self._vm_count = 1
+        self._batch_specs: list[NewVMSpec] = []  # per-VM overrides (name, ip_address, dns_name)
 
     # ------------------------------------------------------------------
     # Compose
@@ -347,7 +350,13 @@ class NewVMScreen(Screen):
             self.spec.unprivileged = item.selected
 
     def _apply_input_value(self, item: WizItem):
-        if item.key == "hostname":
+        if item.key == "vm_count":
+            try:
+                val = int(item.value) if item.value else 1
+                self._vm_count = max(1, min(val, 20))
+            except ValueError:
+                pass
+        elif item.key == "hostname":
             hostname = item.value.strip().lower()
             self.spec.name = hostname
             self.spec.dns_name = hostname
@@ -355,6 +364,18 @@ class NewVMScreen(Screen):
                 self._dns_check_timer.stop()
             if hostname:
                 self._dns_check_timer = self.set_timer(0.8, self._trigger_dns_check)
+            if self._vm_count > 1:
+                self._ensure_batch_specs()
+        elif item.key.startswith("batch_hostname_"):
+            idx = int(item.key.split("_")[-1])
+            if 0 <= idx < len(self._batch_specs):
+                hostname = item.value.strip().lower()
+                self._batch_specs[idx].name = hostname
+                self._batch_specs[idx].dns_name = hostname
+        elif item.key.startswith("batch_ip_"):
+            idx = int(item.key.split("_")[-1])
+            if 0 <= idx < len(self._batch_specs):
+                self._batch_specs[idx].ip_address = item.value.strip()
         elif item.key == "manual_ip":
             self._net_mode = "manual"
             self.spec.ip_address = item.value.strip()
@@ -379,6 +400,9 @@ class NewVMScreen(Screen):
                 self.spec.disk_gb = int(item.value) if item.value else 10
             except ValueError:
                 pass
+        elif item.key == "vlan_tag":
+            val = item.value.strip()
+            self.spec.vlan_tag = int(val) if val else None
         elif item.key == "ssh_key_paste":
             self.spec.ssh_keys = item.value.strip()
         elif item.key == "save_spec_name":
@@ -584,6 +608,14 @@ class NewVMScreen(Screen):
     def _build_template_items(self):
         items = self._items
 
+        # ── VM count ──
+        items.append(WizItem(kind="header", label="VM COUNT"))
+        items.append(WizItem(
+            kind="input", label="Number of VMs", key="vm_count",
+            value=str(self._vm_count),
+            meta={"placeholder": "1"},
+        ))
+
         # ── Node selection (pick first) ──
         items.append(WizItem(kind="header", label="TARGET NODE"))
         if self._pve_nodes:
@@ -691,12 +723,28 @@ class NewVMScreen(Screen):
     def _build_identity_items(self):
         items = self._items
 
-        items.append(WizItem(kind="header", label="HOSTNAME"))
-        items.append(WizItem(
-            kind="input", label="Hostname", key="hostname",
-            value=self.spec.name,
-            meta={"placeholder": "e.g. ubuntu-web-01"},
-        ))
+        if self._vm_count > 1:
+            items.append(WizItem(kind="header", label=f"HOSTNAMES ({self._vm_count} VMs)"))
+            items.append(WizItem(
+                kind="input", label="Base Name", key="hostname",
+                value=self.spec.name,
+                meta={"placeholder": "e.g. web (generates web-01, web-02...)"},
+            ))
+            # Ensure batch_specs list has the right length
+            self._ensure_batch_specs()
+            for i, bs in enumerate(self._batch_specs):
+                items.append(WizItem(
+                    kind="input", label=f"  VM {i+1}", key=f"batch_hostname_{i}",
+                    value=bs.name,
+                    meta={"placeholder": f"{self.spec.name or 'vm'}-{i+1:02d}"},
+                ))
+        else:
+            items.append(WizItem(kind="header", label="HOSTNAME"))
+            items.append(WizItem(
+                kind="input", label="Hostname", key="hostname",
+                value=self.spec.name,
+                meta={"placeholder": "e.g. ubuntu-web-01"},
+            ))
 
         if self.spec.dns_name:
             if self._dns_check_result is not None:
@@ -726,6 +774,35 @@ class NewVMScreen(Screen):
             fqdn = f"{self.spec.dns_name}.{zone}"
             items.append(WizItem(kind="info", label=f"FQDN: [b]{fqdn}[/b]"))
 
+
+    def _ensure_batch_specs(self):
+        """Ensure batch_specs list matches vm_count with auto-generated names/IPs."""
+        base = self.spec.name or "vm"
+        while len(self._batch_specs) < self._vm_count:
+            idx = len(self._batch_specs)
+            s = NewVMSpec()
+            s.name = f"{base}-{idx+1:02d}"
+            s.dns_name = s.name
+            self._batch_specs.append(s)
+        self._batch_specs = self._batch_specs[:self._vm_count]
+        # Regenerate names if base changed
+        for i, bs in enumerate(self._batch_specs):
+            if not bs.name or bs.name.startswith(("vm-", f"{base}-")) or not bs.name.rstrip("0123456789-"):
+                bs.name = f"{base}-{i+1:02d}"
+                bs.dns_name = bs.name
+
+    def _resolve_batch_specs(self) -> list[NewVMSpec]:
+        """Merge shared spec with per-VM overrides for deployment."""
+        self._ensure_batch_specs()
+        resolved = []
+        for bs in self._batch_specs:
+            spec = deepcopy(self.spec)
+            spec.name = bs.name
+            spec.dns_name = bs.dns_name
+            if bs.ip_address:
+                spec.ip_address = bs.ip_address
+            resolved.append(spec)
+        return resolved
 
     # ------------------------------------------------------------------
     # Step 2: Network & IPAM
@@ -795,6 +872,31 @@ class NewVMScreen(Screen):
             value=self.spec.network_bridge,
             meta={"placeholder": "e.g. vmbr0", "section": "manual"},
         ))
+
+        items.append(WizItem(kind="header", label="VLAN"))
+        items.append(WizItem(
+            kind="input", label="VLAN Tag", key="vlan_tag",
+            value=str(self.spec.vlan_tag) if self.spec.vlan_tag else "",
+            meta={"placeholder": "e.g. 30 (optional)"},
+        ))
+
+        if self._vm_count > 1:
+            items.append(WizItem(kind="header", label=f"IP ASSIGNMENTS ({self._vm_count} VMs)"))
+            self._ensure_batch_specs()
+            for i, bs in enumerate(self._batch_specs):
+                # Auto-assign sequential IPs if not manually set
+                if not bs.ip_address and self.spec.ip_address:
+                    try:
+                        parts = self.spec.ip_address.split(".")
+                        parts[3] = str(int(parts[3]) + i)
+                        bs.ip_address = ".".join(parts)
+                    except (IndexError, ValueError):
+                        pass
+                items.append(WizItem(
+                    kind="input", label=f"  {bs.name}", key=f"batch_ip_{i}",
+                    value=bs.ip_address,
+                    meta={"placeholder": "auto"},
+                ))
 
 
     # ------------------------------------------------------------------
@@ -925,7 +1027,20 @@ class NewVMScreen(Screen):
         items.append(WizItem(kind="info", label=f"Bridge:       [b]{bridge}[/b]"))
         items.append(WizItem(kind="info", label=f"IP Address:   [b]{ip_display}[/b]"))
         items.append(WizItem(kind="info", label=f"Gateway:      [b]{gw}[/b]"))
+        vlan_display = str(s.vlan_tag) if s.vlan_tag else "None"
+        items.append(WizItem(kind="info", label=f"VLAN:         [b]{vlan_display}[/b]"))
         items.append(WizItem(kind="info", label=f"FQDN:         [b]{fqdn}[/b]"))
+
+        if self._vm_count > 1:
+            self._ensure_batch_specs()
+            items.append(WizItem(kind="header", label=f"VM ASSIGNMENTS ({self._vm_count} VMs)"))
+            for i, bs in enumerate(self._batch_specs):
+                ip_disp = bs.ip_address or "DHCP"
+                fqdn_disp = f"{bs.dns_name}.{zone}" if bs.dns_name and zone else ""
+                items.append(WizItem(
+                    kind="info",
+                    label=f"  {i+1:>2}.  [b]{bs.name}[/b]  {ip_disp}  [dim]{fqdn_disp}[/dim]",
+                ))
 
         items.append(WizItem(kind="header", label="ACCESS"))
         items.append(WizItem(kind="info", label=f"SSH Key:      [b]{ssh}[/b]"))
@@ -934,7 +1049,11 @@ class NewVMScreen(Screen):
         try:
             from infraforge.terraform_manager import TerraformManager
             tf = TerraformManager(self.app.config)
-            tf_preview = tf.get_deployment_tf(s)
+            if self._vm_count > 1:
+                resolved = self._resolve_batch_specs()
+                tf_preview = tf.get_batch_deployment_tf(resolved)
+            else:
+                tf_preview = tf.get_deployment_tf(s)
             items.append(WizItem(kind="header", label="TERRAFORM CONFIGURATION"))
             for line in tf_preview.split("\n"):
                 items.append(WizItem(kind="info", label=f"[dim]{line}[/dim]"))
@@ -998,6 +1117,8 @@ class NewVMScreen(Screen):
 
     def _validate_step(self) -> tuple[bool, str]:
         if self._step == 0:
+            if self._vm_count < 1 or self._vm_count > 20:
+                return False, "VM count must be between 1 and 20"
             if not self.spec.node:
                 return False, "Please select a target node"
             if not self.spec.template and not self.spec.template_volid:
@@ -1012,6 +1133,15 @@ class NewVMScreen(Screen):
             elif len(self.spec.name) == 1:
                 if not self.spec.name.isalnum():
                     return False, "Hostname must start with a letter or digit"
+            if self._vm_count > 1:
+                self._ensure_batch_specs()
+                for i, bs in enumerate(self._batch_specs):
+                    if not bs.name:
+                        return False, f"VM {i+1}: hostname required"
+                # Check for duplicates
+                names = [bs.name for bs in self._batch_specs]
+                if len(names) != len(set(names)):
+                    return False, "Duplicate hostnames in batch"
             return True, ""
         elif self._step == 3:
             if self.spec.cpu_cores < 1:
@@ -1259,11 +1389,21 @@ class NewVMScreen(Screen):
             # ── Terraform Deployment ──────────────────────────────
             log("[bold]━━━ Terraform Deployment ━━━[/bold]\n")
 
-            log("[bold]Creating deployment files...[/bold]")
-            deploy_dir = tf.create_deployment(
-                self.spec, token_id, token_secret,
-            )
-            log(f"[dim]  {deploy_dir}[/dim]\n")
+            if self._vm_count > 1:
+                resolved_specs = self._resolve_batch_specs()
+                log(f"[bold]━━━ Batch Deployment ({len(resolved_specs)} VMs) ━━━[/bold]\n")
+
+                log("[bold]Creating batch deployment files...[/bold]")
+                deploy_dir = tf.create_batch_deployment(
+                    resolved_specs, token_id, token_secret,
+                )
+                log(f"[dim]  {deploy_dir}[/dim]\n")
+            else:
+                log("[bold]Creating deployment files...[/bold]")
+                deploy_dir = tf.create_deployment(
+                    self.spec, token_id, token_secret,
+                )
+                log(f"[dim]  {deploy_dir}[/dim]\n")
 
             log("[bold]Caching provider plugins...[/bold]")
             ok, output = tf.ensure_provider_mirror(deploy_dir)
@@ -1303,54 +1443,81 @@ class NewVMScreen(Screen):
             if not ok:
                 _fail("✗ terraform apply failed!", output)
                 return
-            log("\n[bold green]  ✓ VM created successfully![/bold green]\n")
+            if self._vm_count > 1:
+                log(f"\n[bold green]  ✓ {len(resolved_specs)} VMs created successfully![/bold green]\n")
+            else:
+                log("\n[bold green]  ✓ VM created successfully![/bold green]\n")
 
             # ── Post-Deployment ───────────────────────────────────
             log("[bold]━━━ Post-Deployment ━━━[/bold]\n")
 
-            # DNS record
             dns_cfg = self.app.config.dns
-            if (
-                dns_cfg.provider and dns_cfg.server
-                and self.spec.dns_name and self.spec.ip_address
-            ):
-                log("[bold]Creating DNS record...[/bold]")
-                try:
-                    from infraforge.dns_client import DNSClient
-                    dns = DNSClient.from_config(self.app.config)
-                    zone = self.spec.dns_zone or dns_cfg.domain
-                    result = dns.ensure_record(
-                        self.spec.dns_name, "A",
-                        self.spec.ip_address, 3600, zone,
-                    )
-                    fqdn = f"{self.spec.dns_name}.{zone}"
-                    log(f"[green]  ✓ DNS {result}: {fqdn} -> "
-                        f"{self.spec.ip_address}[/green]\n")
-                except Exception as e:
-                    log(f"[yellow]  ⚠ DNS failed: {e}[/yellow]\n")
-            else:
-                log("[dim]  DNS: skipped (not configured)[/dim]\n")
-
-            # IPAM reservation
             ipam_cfg = self.app.config.ipam
-            if ipam_cfg.url and self.spec.ip_address and self.spec.subnet_id:
-                log("[bold]Reserving IP in IPAM...[/bold]")
-                try:
-                    from infraforge.ipam_client import IPAMClient
-                    ipam = IPAMClient(self.app.config)
-                    ipam.create_address(
-                        self.spec.ip_address, self.spec.subnet_id,
-                        hostname=self.spec.name,
-                        description="Created by InfraForge",
-                    )
-                    log(
-                        f"[green]  ✓ IP {self.spec.ip_address} reserved in "
-                        f"{self.spec.subnet_cidr}[/green]\n"
-                    )
-                except Exception as e:
-                    log(f"[yellow]  ⚠ IPAM reservation failed: {e}[/yellow]\n")
+
+            if self._vm_count > 1:
+                for rs in resolved_specs:
+                    # DNS
+                    if dns_cfg.provider and dns_cfg.server and rs.dns_name and rs.ip_address:
+                        try:
+                            from infraforge.dns_client import DNSClient
+                            dns = DNSClient.from_config(self.app.config)
+                            zone = rs.dns_zone or dns_cfg.domain
+                            result = dns.ensure_record(rs.dns_name, "A", rs.ip_address, 3600, zone)
+                            fqdn = f"{rs.dns_name}.{zone}"
+                            log(f"[green]  \u2713 DNS: {fqdn} -> {rs.ip_address}[/green]")
+                        except Exception as e:
+                            log(f"[yellow]  \u26a0 DNS {rs.dns_name}: {e}[/yellow]")
+                    # IPAM
+                    if ipam_cfg.url and rs.ip_address and rs.subnet_id:
+                        try:
+                            from infraforge.ipam_client import IPAMClient
+                            ipam = IPAMClient(self.app.config)
+                            ipam.create_address(rs.ip_address, rs.subnet_id, hostname=rs.name, description="Created by InfraForge")
+                            log(f"[green]  \u2713 IPAM: {rs.ip_address} reserved[/green]")
+                        except Exception as e:
+                            log(f"[yellow]  \u26a0 IPAM {rs.ip_address}: {e}[/yellow]")
             else:
-                log("[dim]  IPAM: skipped (not configured)[/dim]\n")
+                # DNS record
+                if (
+                    dns_cfg.provider and dns_cfg.server
+                    and self.spec.dns_name and self.spec.ip_address
+                ):
+                    log("[bold]Creating DNS record...[/bold]")
+                    try:
+                        from infraforge.dns_client import DNSClient
+                        dns = DNSClient.from_config(self.app.config)
+                        zone = self.spec.dns_zone or dns_cfg.domain
+                        result = dns.ensure_record(
+                            self.spec.dns_name, "A",
+                            self.spec.ip_address, 3600, zone,
+                        )
+                        fqdn = f"{self.spec.dns_name}.{zone}"
+                        log(f"[green]  \u2713 DNS {result}: {fqdn} -> "
+                            f"{self.spec.ip_address}[/green]\n")
+                    except Exception as e:
+                        log(f"[yellow]  \u26a0 DNS failed: {e}[/yellow]\n")
+                else:
+                    log("[dim]  DNS: skipped (not configured)[/dim]\n")
+
+                # IPAM reservation
+                if ipam_cfg.url and self.spec.ip_address and self.spec.subnet_id:
+                    log("[bold]Reserving IP in IPAM...[/bold]")
+                    try:
+                        from infraforge.ipam_client import IPAMClient
+                        ipam = IPAMClient(self.app.config)
+                        ipam.create_address(
+                            self.spec.ip_address, self.spec.subnet_id,
+                            hostname=self.spec.name,
+                            description="Created by InfraForge",
+                        )
+                        log(
+                            f"[green]  \u2713 IP {self.spec.ip_address} reserved in "
+                            f"{self.spec.subnet_cidr}[/green]\n"
+                        )
+                    except Exception as e:
+                        log(f"[yellow]  \u26a0 IPAM reservation failed: {e}[/yellow]\n")
+                else:
+                    log("[dim]  IPAM: skipped (not configured)[/dim]\n")
 
             log("\n[bold green]━━━ Deployment Complete! ━━━[/bold green]")
 

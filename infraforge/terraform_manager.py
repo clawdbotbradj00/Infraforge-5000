@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -640,6 +641,17 @@ class TerraformManager:
             resource = self.generate_qemu_resource(spec)
         return f"{provider}\n\n{resource}\n"
 
+    def get_batch_deployment_tf(self, specs: list[NewVMSpec]) -> str:
+        """Get the full terraform config for multiple VMs as a string (for preview)."""
+        provider = self.generate_provider_block()
+        resources = []
+        for spec in specs:
+            if spec.vm_type == VMType.LXC:
+                resources.append(self.generate_lxc_resource(spec))
+            else:
+                resources.append(self.generate_qemu_resource(spec))
+        return f"{provider}\n\n" + "\n\n".join(resources) + "\n"
+
     # ------------------------------------------------------------------
     # Deployment management
     # ------------------------------------------------------------------
@@ -657,6 +669,44 @@ class TerraformManager:
         tf_content = self.get_deployment_tf(spec, token_id, token_secret)
         (deploy_dir / "main.tf").write_text(tf_content)
         return deploy_dir
+
+    def create_batch_deployment(
+        self,
+        specs: list[NewVMSpec],
+        token_id: str,
+        token_secret: str,
+    ) -> str:
+        """Create a batch deployment directory with Terraform config for multiple VMs.
+
+        Args:
+            specs: List of VM specifications to deploy
+            token_id: Proxmox API token ID
+            token_secret: Proxmox API token secret
+
+        Returns:
+            Path to the deployment directory as a string
+        """
+        self.ensure_dirs()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        deploy_dir = self.deployments_dir / f"batch-{timestamp}"
+        deploy_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate provider block once
+        provider = self.generate_provider_block(token_id, token_secret)
+
+        # Generate resource blocks for each spec
+        resources = []
+        for spec in specs:
+            if spec.vm_type == VMType.LXC:
+                resources.append(self.generate_lxc_resource(spec))
+            else:
+                resources.append(self.generate_qemu_resource(spec))
+
+        # Concatenate all blocks into one file
+        tf_content = f"{provider}\n\n" + "\n\n".join(resources) + "\n"
+        (deploy_dir / "main.tf").write_text(tf_content)
+
+        return str(deploy_dir)
 
     def ensure_provider_mirror(self, deploy_dir: Path) -> tuple[bool, str]:
         """Mirror providers locally so init doesn't depend on registry resolution."""
