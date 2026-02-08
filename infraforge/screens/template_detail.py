@@ -15,6 +15,7 @@ class TemplateDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
         Binding("backspace", "go_back", "Back", show=False),
+        Binding("u", "update_template", "Update", show=True),
     ]
 
     def __init__(self, template: Template):
@@ -126,3 +127,8 @@ class TemplateDetailScreen(Screen):
 
     def action_go_back(self):
         self.app.pop_screen()
+
+    def action_update_template(self):
+        """Push the template update screen for this template."""
+        from infraforge.screens.template_update_screen import TemplateUpdateScreen
+        self.app.push_screen(TemplateUpdateScreen(template=self.template))

@@ -37,9 +37,21 @@ class TemplateListPrefs:
 
 
 @dataclass
+class TemplateUpdatePrefs:
+    ip_address: str = ""
+    subnet_mask: int = 24
+    gateway: str = ""
+    dns_server: str = ""
+    vlan_tag: str = ""
+    cpu_cores: int = 2
+    ram_gb: int = 4
+
+
+@dataclass
 class Preferences:
     vm_list: VMListPrefs = field(default_factory=VMListPrefs)
     template_list: TemplateListPrefs = field(default_factory=TemplateListPrefs)
+    template_update: TemplateUpdatePrefs = field(default_factory=TemplateUpdatePrefs)
     theme: str = ""
 
     @classmethod
@@ -86,6 +98,17 @@ class Preferences:
                         sort_reverse=bool(tab_data.get("sort_reverse", False)),
                         group_mode=str(tab_data.get("group_mode", "none")),
                     ))
+        if isinstance(data.get("template_update"), dict):
+            tu = data["template_update"]
+            prefs.template_update = TemplateUpdatePrefs(
+                ip_address=str(tu.get("ip_address", "")),
+                subnet_mask=int(tu.get("subnet_mask", 24)),
+                gateway=str(tu.get("gateway", "")),
+                dns_server=str(tu.get("dns_server", "")),
+                vlan_tag=str(tu.get("vlan_tag", "")),
+                cpu_cores=int(tu.get("cpu_cores", 2)),
+                ram_gb=int(tu.get("ram_gb", 4)),
+            )
         if data.get("theme"):
             prefs.theme = str(data["theme"])
         return prefs

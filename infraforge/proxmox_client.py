@@ -398,6 +398,83 @@ class ProxmoxClient:
             return {}
 
     # ------------------------------------------------------------------
+    # VM management operations
+    # ------------------------------------------------------------------
+
+    def get_next_vmid(self) -> int:
+        """Get the next available VMID from the cluster."""
+        return int(self.api.cluster.nextid.get())
+
+    def clone_vm(self, node: str, vmid: int, newid: int, name: str = "", full: bool = True) -> str:
+        """Clone a VM/template, returns UPID for task tracking."""
+        return self.api.nodes(node).qemu(vmid).clone.post(
+            newid=newid, name=name, full=1 if full else 0,
+        )
+
+    def set_vm_config(self, node: str, vmid: int, **kwargs) -> None:
+        """Set VM configuration (cores, memory, ipconfig0, nameserver, net0, etc.)."""
+        self.api.nodes(node).qemu(vmid).config.put(**kwargs)
+
+    def start_vm(self, node: str, vmid: int) -> str:
+        """Start a VM, returns UPID."""
+        return self.api.nodes(node).qemu(vmid).status.start.post()
+
+    def stop_vm(self, node: str, vmid: int) -> str:
+        """Stop a VM, returns UPID."""
+        return self.api.nodes(node).qemu(vmid).status.stop.post()
+
+    def get_vm_status(self, node: str, vmid: int) -> dict:
+        """Get VM status dict (has 'status' key: 'running'/'stopped')."""
+        return self.api.nodes(node).qemu(vmid).status.current.get()
+
+    def convert_to_template(self, node: str, vmid: int) -> None:
+        """Convert a VM to a template."""
+        self.api.nodes(node).qemu(vmid).template.post()
+
+    def delete_vm(self, node: str, vmid: int) -> str:
+        """Delete a VM, returns UPID."""
+        return self.api.nodes(node).qemu(vmid).delete()
+
+    def get_all_qemu_vms(self) -> list[dict]:
+        """Get all QEMU VMs (non-template) across all nodes.
+
+        Returns list of dicts with keys: vmid, name, node, status, template (0 or 1).
+        Only returns VMs where template != 1.
+        """
+        try:
+            vms = []
+            for node_data in self.api.nodes.get():
+                node_name = node_data.get("node")
+                if not node_name:
+                    continue
+                try:
+                    qemu_list = self.api.nodes(node_name).qemu.get()
+                    for vm in qemu_list:
+                        if vm.get("template", 0) != 1:
+                            vms.append({
+                                "vmid": int(vm.get("vmid", 0)),
+                                "name": str(vm.get("name", "")),
+                                "node": node_name,
+                                "status": str(vm.get("status", "")),
+                            })
+                except Exception:
+                    pass
+            return vms
+        except Exception:
+            return []
+
+    def wait_for_task(self, node: str, upid: str, timeout: int = 120) -> bool:
+        """Poll a Proxmox task until completion. Returns True if OK, False on failure/timeout."""
+        elapsed = 0
+        while elapsed < timeout:
+            status = self.api.nodes(node).tasks(upid).status.get()
+            if status.get("status") == "stopped":
+                return status.get("exitstatus") == "OK"
+            time.sleep(2)
+            elapsed += 2
+        return False
+
+    # ------------------------------------------------------------------
     # Parsing
     # ------------------------------------------------------------------
 

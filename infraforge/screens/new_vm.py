@@ -63,6 +63,7 @@ class NewVMScreen(Screen):
         self._dns_check_result = None
         self._dns_check_timer = None
         self._deploying = False
+        self._deploy_done = False
         self._initial_template = template_name
         self._saved_templates: list[dict] = []
         self._data_loaded = False
@@ -130,6 +131,13 @@ class NewVMScreen(Screen):
                 event.prevent_default()
                 event.stop()
                 self._cancel_edit()
+            return
+
+        if self._deploy_done:
+            if event.key in ("enter", "escape"):
+                event.prevent_default()
+                event.stop()
+                self.app.pop_screen()
             return
 
         if self._deploying:
@@ -960,7 +968,9 @@ class NewVMScreen(Screen):
             self._render_step()
 
     def action_handle_escape(self):
-        if self._editing:
+        if self._deploy_done:
+            self.app.pop_screen()
+        elif self._editing:
             self._cancel_edit()
         elif self._deploying:
             self.notify("Deployment in progress...", severity="warning")
@@ -970,6 +980,9 @@ class NewVMScreen(Screen):
             self.app.pop_screen()
 
     def on_button_pressed(self, event: Button.Pressed):
+        if self._deploy_done:
+            self.app.pop_screen()
+            return
         if event.button.id == "btn-cancel":
             if self._deploying:
                 self.notify("Deployment in progress...", severity="warning")
@@ -1340,9 +1353,23 @@ class NewVMScreen(Screen):
                 log("[dim]  IPAM: skipped (not configured)[/dim]\n")
 
             log("\n[bold green]━━━ Deployment Complete! ━━━[/bold green]")
-            log("[dim]Press Escape to return to dashboard.[/dim]")
 
         except Exception as e:
             log(f"\n[red]Deployment error: {e}[/red]")
 
         self._deploying = False
+        self._deploy_done = True
+
+        def _show_done():
+            self._set_hint("[bold green]Done![/bold green]  Press [b]Enter[/b] to return to dashboard")
+            try:
+                btn = self.query_one("#btn-next", Button)
+                btn.label = "Done"
+                btn.disabled = False
+                btn.variant = "success"
+                btn.add_class("-ready")
+                btn.focus()
+            except Exception:
+                pass
+
+        self.app.call_from_thread(_show_done)

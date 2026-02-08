@@ -127,6 +127,7 @@ class TemplateListScreen(Screen):
         Binding("backspace", "go_back", "Back", show=False),
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
+        Binding("u", "update_template", "Update Template", show=True),
     ]
 
     def __init__(self):
@@ -411,3 +412,14 @@ class TemplateListScreen(Screen):
             "[bold yellow]Refreshing...[/bold yellow]"
         )
         self.load_templates()
+
+    def action_update_template(self):
+        """Push the template update screen for the currently highlighted template."""
+        from infraforge.screens.template_update_screen import TemplateUpdateScreen
+
+        tree = self.query_one("#template-tree", Tree)
+        node = tree.cursor_node
+        template = None
+        if node and node.data and getattr(node.data, "kind", None) == "template":
+            template = node.data.record
+        self.app.push_screen(TemplateUpdateScreen(template=template))
