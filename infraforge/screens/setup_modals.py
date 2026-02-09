@@ -85,7 +85,7 @@ class _ArrowNavModal(ModalScreen):
 
 _BOX_CSS = """
 #config-box {
-    width: 75;
+    width: 90;
     max-height: 85%;
     border: round $accent;
     background: $surface;
@@ -95,6 +95,12 @@ _BOX_CSS = """
     text-style: bold;
     color: $accent;
     margin: 0 0 1 0;
+}
+#bind9-guide {
+    margin: 1 0;
+    padding: 1 2;
+    border: round $primary-background;
+    background: $surface;
 }
 .field-label {
     margin: 1 0 0 0;
@@ -288,6 +294,38 @@ DNSConfigModal {
                 id="f-provider",
             )
 
+            # ── BIND9 guidance ────────────────────────────────────────
+            yield Static(
+                "[bold cyan]BIND9 Setup Guide[/bold cyan]\n"
+                "[dim]Run these commands on your BIND9 server to get the values below.[/dim]\n\n"
+                "[bold]1. Generate a TSIG key[/bold] [dim](if you don't have one)[/dim]\n"
+                "   [bold white on grey23] sudo tsig-keygen infraforge-key > /tmp/infraforge-key.conf [/bold white on grey23]\n"
+                "   [bold white on grey23] sudo mv /tmp/infraforge-key.conf /etc/bind/ [/bold white on grey23]\n"
+                "   [bold white on grey23] sudo chown root:bind /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
+                "   [bold white on grey23] sudo chmod 640 /etc/bind/infraforge-key.conf [/bold white on grey23]\n\n"
+                "[bold]2. Extract key name, secret, and algorithm[/bold]\n"
+                "   [bold white on grey23] cat /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
+                "   [dim]Output looks like:[/dim]\n"
+                '   [dim]key "infraforge-key" \\{[/dim]\n'
+                "   [dim]    algorithm hmac-sha256;[/dim]\n"
+                '   [dim]    secret "R3HI8P6BKw9ZwXwN3VZKuQ==";[/dim]\n'
+                "   [dim]\\};[/dim]\n\n"
+                "[bold]3. List existing keys[/bold] [dim](if you already have one)[/dim]\n"
+                "   [bold white on grey23] sudo rndc tsig-list [/bold white on grey23]\n"
+                '   [bold white on grey23] grep -rA2 \'key "\' /etc/bind/ [/bold white on grey23]\n\n'
+                "[bold]4. Enable dynamic updates for your zone[/bold]\n"
+                "   [dim]Add to /etc/bind/named.conf.local:[/dim]\n"
+                '   [bold white on grey23] include "/etc/bind/infraforge-key.conf"; [/bold white on grey23]\n\n'
+                "   [dim]Then in your zone block, add:[/dim]\n"
+                '   [bold white on grey23] allow-update \\{ key "infraforge-key"; \\}; [/bold white on grey23]\n\n'
+                "[bold]5. Reload BIND9[/bold]\n"
+                "   [bold white on grey23] sudo named-checkconf && sudo rndc reload [/bold white on grey23]\n\n"
+                "[bold]6. List zones[/bold]\n"
+                '   [bold white on grey23] grep -oP \'zone "\\K\[^"]+\' /etc/bind/named.conf.local [/bold white on grey23]\n',
+                id="bind9-guide",
+                markup=True,
+            )
+
             yield Label("Server [dim](BIND9 IP/hostname)[/dim]", classes="field-label", markup=True)
             yield Input(value=s.get("server", ""), placeholder="e.g. 10.0.200.2", id="f-server")
 
@@ -301,9 +339,9 @@ DNSConfigModal {
             yield Input(value=zones_str, placeholder="e.g. lab.local, dev.local", id="f-zones")
 
             yield Label("TSIG Key Name", classes="field-label")
-            yield Input(value=s.get("tsig_key_name", ""), placeholder="e.g. api-control", id="f-tsig-name")
+            yield Input(value=s.get("tsig_key_name", ""), placeholder="e.g. infraforge-key", id="f-tsig-name")
 
-            yield Label("TSIG Key Secret", classes="field-label")
+            yield Label("TSIG Key Secret [dim](base64 from key file)[/dim]", classes="field-label", markup=True)
             with Horizontal(classes="secret-row"):
                 yield Input(value=s.get("tsig_key_secret", ""), placeholder="base64 secret", id="f-tsig-secret", password=True)
                 yield Button("Reveal", id="reveal-f-tsig-secret", classes="reveal-btn")
