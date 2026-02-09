@@ -9,20 +9,37 @@
     nvm_install_url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
 
   tasks:
+    # ── Ensure acl is installed (required for become_user) ────────────
+    - name: Install acl package (Debian/Ubuntu)
+      apt:
+        name: acl
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install acl package (RHEL/CentOS)
+      yum:
+        name: acl
+        state: present
+      when: ansible_os_family == "RedHat"
+
     # ── Gather target users ─────────────────────────────────────────────
-    - name: Get all users with a real login shell
+    - name: Get all users with a real login shell and home directory
       shell: |
         awk -F: '($3 == 0 || $3 >= 1000) && $7 !~ /nologin|false/ { print $1":"$6 }' /etc/passwd
-      register: user_list
+      register: user_list_raw
       changed_when: false
+
+    - name: Filter to users with existing home directories
+      set_fact:
+        user_list: "{{ user_list_raw.stdout_lines | select('search', ':(/root|/home/)') | list }}"
 
     # ── Ensure curl is installed ────────────────────────────────────────
     - name: Install curl (Debian/Ubuntu)
       apt:
         name: curl
         state: present
-        update_cache: yes
-        cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
     - name: Install curl (RHEL/CentOS)
@@ -36,7 +53,7 @@
       stat:
         path: "{{ item.split(':')[1] }}/.nvm/nvm.sh"
       register: nvm_check
-      loop: "{{ user_list.stdout_lines }}"
+      loop: "{{ user_list }}"
       loop_control:
         label: "{{ item.split(':')[0] }}"
 
@@ -65,7 +82,7 @@
       environment:
         HOME: "{{ item.split(':')[1] }}"
       register: node_check
-      loop: "{{ user_list.stdout_lines }}"
+      loop: "{{ user_list }}"
       loop_control:
         label: "{{ item.split(':')[0] }}"
       changed_when: false
@@ -96,7 +113,7 @@
       environment:
         HOME: "{{ item.split(':')[1] }}"
       register: claude_check
-      loop: "{{ user_list.stdout_lines }}"
+      loop: "{{ user_list }}"
       loop_control:
         label: "{{ item.split(':')[0] }}"
       changed_when: false
@@ -128,7 +145,7 @@
         create: true
         owner: "{{ item.split(':')[0] }}"
         mode: "0644"
-      loop: "{{ user_list.stdout_lines }}"
+      loop: "{{ user_list }}"
       loop_control:
         label: "{{ item.split(':')[0] }}"
 
@@ -154,7 +171,7 @@
       environment:
         HOME: "{{ item.split(':')[1] }}"
       register: verify
-      loop: "{{ user_list.stdout_lines }}"
+      loop: "{{ user_list }}"
       loop_control:
         label: "{{ item.split(':')[0] }}"
       changed_when: false
