@@ -507,11 +507,6 @@ class SetupScreen(Screen):
             )
             complete_msg.remove_class("hidden")
             launch_row.remove_class("hidden")
-            # Show the "m" keybinding in the footer
-            for binding in self.BINDINGS:
-                if hasattr(binding, "key") and binding.key == "m":
-                    binding.show = True
-                    break
         else:
             status.update(
                 f"  [bold]{ok_count}[/bold] [dim]of[/dim] [bold]{total}[/bold] [dim]components configured[/dim]  "
@@ -519,10 +514,6 @@ class SetupScreen(Screen):
             )
             complete_msg.add_class("hidden")
             launch_row.add_class("hidden")
-            for binding in self.BINDINGS:
-                if hasattr(binding, "key") and binding.key == "m":
-                    binding.show = False
-                    break
 
     def _get_selected_comp_id(self) -> str | None:
         """Return the comp_id of the currently highlighted ListView row."""
