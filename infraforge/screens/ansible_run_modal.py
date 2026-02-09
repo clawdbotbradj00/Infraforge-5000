@@ -698,7 +698,7 @@ class AnsibleRunModal(ModalScreen):
         except Exception:
             scroll.mount(
                 Input(
-                    placeholder="e.g. 10.0.3.22, dns-test, web01.easypl.net",
+                    placeholder="e.g. 198.51.100.22, dns-test, web01.example.com",
                     id="run-direct-input",
                 )
             )

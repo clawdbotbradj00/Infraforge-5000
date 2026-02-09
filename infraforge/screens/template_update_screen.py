@@ -169,11 +169,11 @@ class TemplateUpdateScreen(Screen):
         self._cpu_cores: int = 2
         self._ram_gb: int = 4
         self._storage: str = ""
-        self._vlan_tag: str = "30"
-        self._ip: str = "10.0.3.251"
+        self._vlan_tag: str = ""
+        self._ip: str = "198.51.100.10"
         self._mask: int = 24
-        self._gateway: str = "10.0.3.1"
-        self._dns: str = "10.0.3.3"
+        self._gateway: str = "198.51.100.1"
+        self._dns: str = "198.51.100.2"
         self._waiting_for_user = False
         self._finalize_done = False
         self._working = False
@@ -950,7 +950,7 @@ class TemplateUpdateScreen(Screen):
         items.append(WizItem(
             kind="input", label="[cyan]IP Address[/cyan]", key="ip_address",
             value=self._ip,
-            meta={"placeholder": "10.0.3.251"},
+            meta={"placeholder": "198.51.100.10"},
         ))
         items.append(WizItem(
             kind="input", label="[cyan]Subnet Mask[/cyan]", key="subnet_mask",
@@ -960,12 +960,12 @@ class TemplateUpdateScreen(Screen):
         items.append(WizItem(
             kind="input", label="[cyan]Gateway[/cyan]", key="gateway",
             value=self._gateway,
-            meta={"placeholder": "10.0.3.1"},
+            meta={"placeholder": "198.51.100.1"},
         ))
         items.append(WizItem(
             kind="input", label="[cyan]DNS Server[/cyan]", key="dns_server",
             value=self._dns,
-            meta={"placeholder": "10.0.3.3"},
+            meta={"placeholder": "198.51.100.2"},
         ))
 
         items.append(WizItem(kind="header", label="STAGING VM"))

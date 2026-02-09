@@ -4,7 +4,7 @@
 #
 # This script configures phpIPAM for headless use with InfraForge:
 #   1. Enables the REST API
-#   2. Creates the "infraforge" API application (rw, no auth)
+#   2. Creates the "infraforge" API application (rw, user token auth)
 #   3. Configures fping scanning
 #   4. Creates the default cron scan agent
 #   5. Sets admin password (if IPAM_ADMIN_HASH env var is provided)
@@ -28,10 +28,10 @@ echo "[infraforge] Bootstrapping phpIPAM for InfraForge..."
 run_sql "UPDATE settings SET api=1, scanPingType='fping', scanMaxThreads=32 WHERE id=1;"
 echo "[infraforge] API enabled, scan type set to fping"
 
-# 2. Create InfraForge API application (read/write, no auth required)
+# 2. Create InfraForge API application (read/write, user token auth)
 run_sql "INSERT INTO api (app_id, app_code, app_permissions, app_security, app_lock)
-         VALUES ('infraforge', 'infraforge_auto', 2, 'none', 0);"
-echo "[infraforge] API app 'infraforge' created (rw, security=none)"
+         VALUES ('infraforge', 'infraforge_auto', 2, 'user', 0);"
+echo "[infraforge] API app 'infraforge' created (rw, security=user)"
 
 # 3. Set scan agent to mysql type (for cron-based scanning)
 run_sql "UPDATE scanAgents SET type='mysql' WHERE id=1;"

@@ -7,10 +7,10 @@ services:
     container_name: infraforge-ipam-db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: "${IPAM_DB_ROOT_PASS:-infraforge_root_pw}"
+      MYSQL_ROOT_PASSWORD: "${IPAM_DB_ROOT_PASS}"
       MYSQL_DATABASE: phpipam
       MYSQL_USER: phpipam
-      MYSQL_PASSWORD: "${IPAM_DB_PASS:-infraforge_ipam_pw}"
+      MYSQL_PASSWORD: "${IPAM_DB_PASS}"
       IPAM_ADMIN_HASH: "${IPAM_ADMIN_HASH:-}"
     volumes:
       - phpipam-db-data:/var/lib/mysql
@@ -35,7 +35,7 @@ services:
       TZ: "UTC"
       IPAM_DATABASE_HOST: phpipam-db
       IPAM_DATABASE_USER: phpipam
-      IPAM_DATABASE_PASS: "${IPAM_DB_PASS:-infraforge_ipam_pw}"
+      IPAM_DATABASE_PASS: "${IPAM_DB_PASS}"
       IPAM_DATABASE_NAME: phpipam
       IPAM_DISABLE_INSTALLER: 1
     ports:
@@ -59,7 +59,7 @@ services:
       TZ: "UTC"
       IPAM_DATABASE_HOST: phpipam-db
       IPAM_DATABASE_USER: phpipam
-      IPAM_DATABASE_PASS: "${IPAM_DB_PASS:-infraforge_ipam_pw}"
+      IPAM_DATABASE_PASS: "${IPAM_DB_PASS}"
       IPAM_DATABASE_NAME: phpipam
       SCAN_INTERVAL: "${SCAN_INTERVAL:-15m}"
     networks:

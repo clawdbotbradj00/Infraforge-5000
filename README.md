@@ -103,13 +103,13 @@ Config lives at `~/.config/infraforge/config.yaml`. The setup wizard pre-populat
 
 ```yaml
 proxmox:
-  host: "10.0.0.50"
+  host: "192.0.2.10"
   port: 8006
   user: "root@pam"
   auth_method: "token"       # "token" or "password"
   token_name: "infraforge"
-  token_value: "your-token-secret"
-  verify_ssl: false
+  token_value: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  verify_ssl: true
 ```
 
 Create an API token in Proxmox: **Datacenter > Permissions > API Tokens**. The token needs at least `PVEAuditor` role for read access.
@@ -119,12 +119,12 @@ Create an API token in Proxmox: **Datacenter > Permissions > API Tokens**. The t
 ```yaml
 dns:
   provider: "bind9"
-  server: "10.0.0.1"
+  server: "198.51.100.1"
   port: 53
   zones:
-    - "lab.local"
-    - "dev.local"
-  domain: "lab.local"
+    - "example.com"
+    - "dev.example.com"
+  domain: "example.com"
   tsig_key_name: "infraforge-key"
   tsig_key_secret: "base64-encoded-secret"
   tsig_algorithm: "hmac-sha256"
@@ -148,8 +148,8 @@ ipam:
   url: "https://localhost:8443"
   app_id: "infraforge"
   username: "admin"
-  password: "your-admin-password"
-  verify_ssl: false
+  password: "CHANGE_ME_PLACEHOLDER"
+  verify_ssl: true
 ```
 
 phpIPAM is deployed automatically by the setup wizard as a Docker stack (web + MariaDB + cron scanner). The bootstrap creates an API app with read/write access and enables fping-based subnet scanning.

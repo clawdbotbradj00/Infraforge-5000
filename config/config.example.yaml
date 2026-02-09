@@ -2,7 +2,7 @@
 # Copy this to ~/.config/infraforge/config.yaml and fill in your values
 
 proxmox:
-  host: "192.168.1.100"
+  host: "192.0.2.10"
   port: 8006
   user: "root@pam"
   # Authentication: use either token OR password (token recommended)
@@ -10,7 +10,7 @@ proxmox:
   token_name: "infraforge"
   token_value: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
   password: ""
-  verify_ssl: false
+  verify_ssl: true
   # For clusters, specify additional nodes (optional)
   # nodes:
   #   - "node1"
@@ -18,12 +18,12 @@ proxmox:
 
 dns:
   provider: "bind9"
-  server: "10.0.0.1"
+  server: "198.51.100.1"
   port: 53
   zones:
-    - "lab.local"
-    - "dev.local"
-  domain: "lab.local"
+    - "example.com"
+    - "dev.example.com"
+  domain: "example.com"
   tsig_key_name: "infraforge-key"
   tsig_key_secret: ""
   tsig_algorithm: "hmac-sha256"
@@ -37,7 +37,7 @@ ipam:
   token: ""
   username: ""
   password: ""
-  verify_ssl: false
+  verify_ssl: true
 
 terraform:
   workspace: "./terraform"

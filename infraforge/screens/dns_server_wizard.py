@@ -844,7 +844,7 @@ class DNSServerWizardScreen(Screen):
         items.append(WizItem(
             kind="input", label="Domain", key="domain",
             value=self.spec.dns_domain,
-            meta={"placeholder": "e.g. easypl.net"},
+            meta={"placeholder": "e.g. example.com"},
         ))
 
         zone = self.spec.dns_zone or self.spec.dns_domain

@@ -880,8 +880,10 @@ deploy_phpipam_docker() {
         prev_port=$(grep -oP 'IPAM_PORT=\K.*' "$DOCKER_DIR/.env" 2>/dev/null || echo "8443")
     fi
     prompt_input "phpIPAM HTTPS port" "$prev_port" IPAM_PORT
-    prompt_secret "phpIPAM admin password (default: admin)" IPAM_ADMIN_PASS
-    IPAM_ADMIN_PASS="${IPAM_ADMIN_PASS:-admin}"
+    local default_admin_pass
+    default_admin_pass="$(generate_password)"
+    prompt_secret "phpIPAM admin password (blank for random: ${default_admin_pass:0:4}...)" IPAM_ADMIN_PASS
+    IPAM_ADMIN_PASS="${IPAM_ADMIN_PASS:-$default_admin_pass}"
 
     DB_PASS="$(generate_password)"
     DB_ROOT_PASS="$(generate_password)"
@@ -1010,7 +1012,7 @@ detect_broken_phpipam() {
 
     # Read root password from .env
     local root_pass
-    root_pass=$(grep -oP 'IPAM_DB_ROOT_PASS=\K.*' "$DOCKER_DIR/.env" 2>/dev/null || echo "infraforge_root_pw")
+    root_pass=$(grep -oP 'IPAM_DB_ROOT_PASS=\K.*' "$DOCKER_DIR/.env" 2>/dev/null || echo "$(generate_password)")
 
     # Check if settings table exists
     if ! docker exec infraforge-ipam-db mysql -u root -p"${root_pass}" phpipam -sN -e "SELECT COUNT(*) FROM settings;" 2>/dev/null | grep -q "[0-9]"; then

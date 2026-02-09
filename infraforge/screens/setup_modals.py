@@ -941,10 +941,9 @@ IPAMConfigModal {{
 
         actual_pass = admin_pass
         if not api_ok and not admin_hash:
-            actual_pass = "ipamadmin"
             self.app.call_from_thread(
                 self.notify,
-                "Could not set admin password — default is 'ipamadmin'",
+                "Could not verify admin password — check phpIPAM web UI to set it",
                 severity="warning",
             )
 

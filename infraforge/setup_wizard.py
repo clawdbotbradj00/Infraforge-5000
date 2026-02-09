@@ -783,7 +783,9 @@ def _configure_ipam_docker(console: Console, prev: dict) -> dict:
     ipam_port = Prompt.ask("phpIPAM HTTPS port", default=prev_port)
 
     # ── Credentials ──
-    admin_password = Prompt.ask("phpIPAM admin password", default="admin", password=True)
+    generated_admin_pw = secrets.token_urlsafe(12)
+    console.print(f"  [dim]Generated random admin password: [bold]{generated_admin_pw}[/bold][/dim]")
+    admin_password = Prompt.ask("phpIPAM admin password (Enter to accept generated)", default=generated_admin_pw, password=False)
     db_pass = secrets.token_urlsafe(16)
 
     # ── Generate admin password hash ──
@@ -1019,7 +1021,7 @@ def _detect_broken_phpipam(console: Console) -> bool:
         # Check if the settings table exists
         result = subprocess.run(
             ["docker", "exec", "infraforge-ipam-db", "mysql", "-u", "root",
-             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', 'infraforge_root_pw')}",
+             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', secrets.token_urlsafe(16))}",
              "phpipam", "-sN", "-e", "SELECT COUNT(*) FROM settings;"],
             capture_output=True, text=True, timeout=10,
         )
@@ -1030,7 +1032,7 @@ def _detect_broken_phpipam(console: Console) -> bool:
         # Check if the API app exists
         result = subprocess.run(
             ["docker", "exec", "infraforge-ipam-db", "mysql", "-u", "root",
-             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', 'infraforge_root_pw')}",
+             f"-p{_read_env_var('IPAM_DB_ROOT_PASS', secrets.token_urlsafe(16))}",
              "phpipam", "-sN", "-e", "SELECT COUNT(*) FROM api WHERE app_id='infraforge';"],
             capture_output=True, text=True, timeout=10,
         )
