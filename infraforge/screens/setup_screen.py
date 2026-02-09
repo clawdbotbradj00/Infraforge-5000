@@ -368,7 +368,8 @@ class SetupScreen(Screen):
             else:
                 body = "[yellow]No test available for this component.[/yellow]"
         except Exception as e:
-            body = f"[bold red]Test failed:[/bold red] {e}"
+            from rich.markup import escape
+            body = f"[bold red]Test failed:[/bold red] {escape(str(e))}"
         finally:
             self.app.call_from_thread(self._clear_testing)
 
@@ -426,7 +427,8 @@ class SetupScreen(Screen):
                 serial = soa.get("serial", "?") if isinstance(soa, dict) else "?"
                 lines.append(f"  [green]\u2713[/green] {zone}  (serial: {serial})")
             except Exception as e:
-                lines.append(f"  [red]\u2717[/red] {zone}  ({e})")
+                from rich.markup import escape
+                lines.append(f"  [red]\u2717[/red] {zone}  ({escape(str(e))})")
         return "\n".join(lines)
 
     def _test_ipam(self) -> str:
@@ -452,7 +454,7 @@ class SetupScreen(Screen):
                 "[bold red]terraform binary not found in PATH[/bold red]\n\n"
                 "  Install Terraform:\n"
                 "  [dim]wget -qO- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg\n"
-                "  echo \"deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main\" "
+                "  echo \"deb \\[signed-by=/usr/share/keyrings/hashicorp.gpg\\] https://apt.releases.hashicorp.com $(lsb_release -cs) main\" "
                 "| sudo tee /etc/apt/sources.list.d/hashicorp.list\n"
                 "  sudo apt update && sudo apt install terraform[/dim]\n\n"
                 "  Or download from: [bold]https://developer.hashicorp.com/terraform/install[/bold]"
@@ -462,10 +464,12 @@ class SetupScreen(Screen):
             ["terraform", "version"], capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            ver = result.stdout.strip().split("\n")[0]
-            workspace = self._cfg.get("terraform", {}).get("workspace", "./terraform")
+            from rich.markup import escape
+            ver = escape(result.stdout.strip().split("\n")[0])
+            workspace = escape(self._cfg.get("terraform", {}).get("workspace", "./terraform"))
             return f"[bold green]Terraform available![/bold green]\n\n  {ver}\n  Workspace: {workspace}"
-        return f"[red]terraform exited with code {result.returncode}[/red]\n{result.stderr}"
+        from rich.markup import escape
+        return f"[red]terraform exited with code {result.returncode}[/red]\n{escape(result.stderr)}"
 
     def _test_ansible(self) -> str:
         if not shutil.which("ansible"):
@@ -481,10 +485,12 @@ class SetupScreen(Screen):
             ["ansible", "--version"], capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            ver = result.stdout.strip().split("\n")[0]
-            pdir = self._cfg.get("ansible", {}).get("playbook_dir", "./ansible/playbooks")
+            from rich.markup import escape
+            ver = escape(result.stdout.strip().split("\n")[0])
+            pdir = escape(self._cfg.get("ansible", {}).get("playbook_dir", "./ansible/playbooks"))
             return f"[bold green]Ansible available![/bold green]\n\n  {ver}\n  Playbook dir: {pdir}"
-        return f"[red]ansible exited with code {result.returncode}[/red]\n{result.stderr}"
+        from rich.markup import escape
+        return f"[red]ansible exited with code {result.returncode}[/red]\n{escape(result.stderr)}"
 
     def _test_ai(self) -> str:
         sec = self._cfg.get("ai", {})
