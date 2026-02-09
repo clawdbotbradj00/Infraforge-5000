@@ -84,23 +84,31 @@ class _ArrowNavModal(ModalScreen):
 # ── Shared CSS for all config modals ───────────────────────────────
 
 _BOX_CSS = """
-#config-box {
-    width: 90;
-    max-height: 85%;
+#config-outer {
+    width: 95%;
+    max-height: 90%;
     border: round $accent;
     background: $surface;
+}
+#config-form {
+    width: 3fr;
     padding: 1 2;
+}
+#config-help {
+    width: 2fr;
+    border-left: tall $accent;
+    padding: 1 2;
+    background: $surface;
 }
 #config-title {
     text-style: bold;
     color: $accent;
     margin: 0 0 1 0;
 }
-#bind9-guide {
-    margin: 1 0;
-    padding: 1 2;
-    border: round $primary-background;
-    background: $surface;
+#help-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
 }
 .field-label {
     margin: 1 0 0 0;
@@ -132,6 +140,181 @@ _BOX_CSS = """
 }
 """
 
+_MODAL_ALIGN = """
+    align: left middle;
+    padding: 0 0 0 2;
+"""
+
+
+# ── Help content for each module ──────────────────────────────────
+
+_PROXMOX_HELP = (
+    "[bold cyan]Proxmox Setup Guide[/bold cyan]\n\n"
+    "[bold]Creating an API Token[/bold]\n"
+    "  1. Log in to the Proxmox web UI\n"
+    "  2. Datacenter > Permissions > API Tokens\n"
+    "  3. Select user (e.g. root@pam), click Add\n"
+    "  4. Enter Token ID (e.g. \"infraforge\")\n"
+    "  5. Uncheck \"Privilege Separation\"\n"
+    "     for full access\n"
+    "  6. Copy the token value immediately\n"
+    "     (shown only once!)\n\n"
+    "[bold]User Format[/bold]\n"
+    "  [dim]user@realm[/dim]  e.g. root@pam, admin@pve\n\n"
+    "[bold]Token vs Password[/bold]\n"
+    "  API tokens are recommended:\n"
+    "  - Don't expire with password changes\n"
+    "  - Can be revoked independently\n"
+    "  - No 2FA prompt issues\n\n"
+    "[bold]SSL Verification[/bold]\n"
+    "  Leave off (default) if Proxmox uses a\n"
+    "  self-signed certificate. Enable only\n"
+    "  with a valid CA-signed cert."
+)
+
+_DNS_HELP = (
+    "[bold cyan]BIND9 Setup Guide[/bold cyan]\n"
+    "[dim]Run these on your BIND9 server.[/dim]\n\n"
+    "[bold]1. Generate a TSIG key[/bold]\n"
+    "   [bold white on grey23] tsig-keygen infraforge-key        [/bold white on grey23]\n"
+    "   [bold white on grey23]   > /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
+    "   [bold white on grey23] chown root:bind                   [/bold white on grey23]\n"
+    "   [bold white on grey23]   /etc/bind/infraforge-key.conf   [/bold white on grey23]\n"
+    "   [bold white on grey23] chmod 640                         [/bold white on grey23]\n"
+    "   [bold white on grey23]   /etc/bind/infraforge-key.conf   [/bold white on grey23]\n\n"
+    "[bold]2. Read the key file[/bold]\n"
+    "   [bold white on grey23] cat /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
+    "   [dim]Output looks like:[/dim]\n"
+    '   [dim]key "infraforge-key" \\{[/dim]\n'
+    "   [dim]    algorithm hmac-sha256;[/dim]\n"
+    '   [dim]    secret "R3HI8P6BKw9ZwX...==";[/dim]\n'
+    "   [dim]\\};[/dim]\n\n"
+    "[bold]3. List existing keys[/bold]\n"
+    "   [bold white on grey23] rndc tsig-list                    [/bold white on grey23]\n"
+    '   [bold white on grey23] grep -rA2 \'key "\' /etc/bind/     [/bold white on grey23]\n\n'
+    "[bold]4. Enable dynamic updates[/bold]\n"
+    "   Add to named.conf.local:\n"
+    '   [bold white on grey23] include "/etc/bind/               [/bold white on grey23]\n'
+    '   [bold white on grey23]   infraforge-key.conf";           [/bold white on grey23]\n\n'
+    "   In your zone block, add:\n"
+    '   [bold white on grey23] allow-update \\{                   [/bold white on grey23]\n'
+    '   [bold white on grey23]   key "infraforge-key"; \\};       [/bold white on grey23]\n\n'
+    "[bold]5. Reload BIND9[/bold]\n"
+    "   [bold white on grey23] named-checkconf && rndc reload    [/bold white on grey23]\n\n"
+    "[bold]6. List zones[/bold]\n"
+    "   [bold white on grey23] grep -oP 'zone \"\\K\\[^\"]+'        [/bold white on grey23]\n"
+    "   [bold white on grey23]   /etc/bind/named.conf.local      [/bold white on grey23]"
+)
+
+_IPAM_HELP = (
+    "[bold cyan]IPAM Setup Guide[/bold cyan]\n\n"
+    "[bold]Docker Deployment[/bold]\n"
+    "  Deploys phpIPAM locally with:\n"
+    "  - MariaDB database container\n"
+    "  - phpIPAM web server (HTTPS)\n"
+    "  - Cron container for subnet scanning\n"
+    "  - Pre-configured API app \"infraforge\"\n"
+    "  - Self-signed SSL certificate\n\n"
+    "  Requires Docker + docker compose.\n"
+    "  Both will be auto-installed if missing.\n\n"
+    "[bold]Connecting to Existing Server[/bold]\n"
+    "  To create an API app in phpIPAM:\n"
+    "  1. Log in to phpIPAM web UI\n"
+    "  2. Administration > API\n"
+    "  3. Click \"Create API key\"\n"
+    "  4. Set App ID to \"infraforge\"\n"
+    "  5. App permissions: Read/Write/Admin\n"
+    "  6. App security: SSL with User token\n"
+    "  7. Copy the generated token\n\n"
+    "[bold]Authentication Methods[/bold]\n"
+    "  - [bold]Token auth:[/bold] App ID + Token\n"
+    "    (preferred, no password needed)\n"
+    "  - [bold]User auth:[/bold] App ID + User + Password\n"
+    "    (uses phpIPAM login credentials)\n\n"
+    "[bold]SSL Note[/bold]\n"
+    "  Leave \"Verify SSL\" off for self-signed\n"
+    "  certs (including Docker deployment)."
+)
+
+_TERRAFORM_HELP = (
+    "[bold cyan]Terraform Setup Guide[/bold cyan]\n\n"
+    "[bold]How InfraForge Uses Terraform[/bold]\n"
+    "  InfraForge generates HCL config files\n"
+    "  and runs terraform init/plan/apply to\n"
+    "  provision VMs and LXC containers on\n"
+    "  your Proxmox cluster.\n\n"
+    "  Provider: Telmate/proxmox (v3.x)\n\n"
+    "[bold]Workspace Directory[/bold]\n"
+    "  Where Terraform files are stored:\n"
+    "  - deployments/{hostname}/main.tf\n"
+    "  - templates/{name}.json\n\n"
+    "  Default: ./terraform\n"
+    "  (relative to InfraForge install dir)\n\n"
+    "[bold]State Backend[/bold]\n"
+    "  - [bold]Local:[/bold] State in workspace dir\n"
+    "    (default, simplest setup)\n"
+    "  - [bold]S3:[/bold] Remote state in AWS S3\n"
+    "    (for team collaboration)\n"
+    "  - [bold]Consul:[/bold] Remote state in Consul\n"
+    "    (for HashiCorp stack users)\n\n"
+    "[bold]Prerequisites[/bold]\n"
+    "  Terraform must be installed and in PATH.\n"
+    "  InfraForge can auto-install it for you\n"
+    "  from the setup screen if missing."
+)
+
+_ANSIBLE_HELP = (
+    "[bold cyan]Ansible Setup Guide[/bold cyan]\n\n"
+    "[bold]Playbook Directory[/bold]\n"
+    "  Path where InfraForge discovers\n"
+    "  playbooks. Each .yml / .yaml file in\n"
+    "  this directory appears in the Ansible\n"
+    "  management screen.\n\n"
+    "  Default: ./ansible/playbooks\n\n"
+    "[bold]Included Playbooks[/bold]\n"
+    "  InfraForge ships with:\n"
+    "  - deploy-ssh-key.yml\n"
+    "    Roll out SSH keys to targets\n"
+    "  - install-claude-code.yml\n"
+    "    Install NVM + Node.js + Claude Code\n\n"
+    "[bold]How Playbooks Run[/bold]\n"
+    "  InfraForge runs ansible-playbook with:\n"
+    "  - Target hosts discovered via IPAM\n"
+    "    subnet scanning or manual entry\n"
+    "  - SSH credentials configured per-run\n"
+    "  - Live output streamed to the TUI\n\n"
+    "[bold]Prerequisites[/bold]\n"
+    "  Ansible must be installed and in PATH.\n"
+    "  InfraForge can auto-install it for you\n"
+    "  from the setup screen if missing."
+)
+
+_AI_HELP = (
+    "[bold cyan]AI Setup Guide[/bold cyan]\n\n"
+    "[bold]Getting an API Key[/bold]\n"
+    "  1. Go to console.anthropic.com\n"
+    "  2. Navigate to Settings > API Keys\n"
+    "  3. Click \"Create Key\"\n"
+    "  4. Copy it (starts with sk-ant-...)\n\n"
+    "[bold]Model Recommendations[/bold]\n"
+    "  - [bold]Opus 4.6:[/bold] Most capable.\n"
+    "    Best for complex infrastructure\n"
+    "    analysis and planning.\n"
+    "  - [bold]Sonnet 4.5:[/bold] Fast + capable.\n"
+    "    Great default for most tasks.\n"
+    "  - [bold]Haiku 4.5:[/bold] Fastest, lowest cost.\n"
+    "    Good for simple queries.\n\n"
+    "[bold]What AI Can Do in InfraForge[/bold]\n"
+    "  - Analyze VM configurations\n"
+    "  - Suggest infrastructure improvements\n"
+    "  - Help troubleshoot issues\n"
+    "  - Generate Terraform / Ansible configs\n"
+    "  - Answer questions about your cluster\n\n"
+    "[bold]Usage[/bold]\n"
+    "  Press [bold]/[/bold] on the dashboard to open\n"
+    "  the AI chat panel."
+)
+
 
 # ── Helper ────────────────────────────────────────────────────────
 
@@ -161,10 +344,10 @@ class ProxmoxConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-ProxmoxConfigModal {
-    align: center middle;
-}
+    DEFAULT_CSS = f"""
+ProxmoxConfigModal {{
+{_MODAL_ALIGN}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -173,49 +356,53 @@ ProxmoxConfigModal {
 
     def compose(self) -> ComposeResult:
         s = self._sec
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]Proxmox Configuration[/bold]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]Proxmox Configuration[/bold]", id="config-title", markup=True)
 
-            yield Label("Host [dim](IP or hostname)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("host", ""), placeholder="e.g. 10.0.200.1", id="f-host")
+                yield Label("Host [dim](IP or hostname)[/dim]", classes="field-label", markup=True)
+                yield Input(value=s.get("host", ""), placeholder="e.g. 10.0.200.1", id="f-host")
 
-            yield Label("Port", classes="field-label")
-            yield Input(value=str(s.get("port", 8006)), placeholder="8006", id="f-port")
+                yield Label("Port", classes="field-label")
+                yield Input(value=str(s.get("port", 8006)), placeholder="8006", id="f-port")
 
-            yield Label("User", classes="field-label")
-            yield Input(value=s.get("user", "root@pam"), placeholder="root@pam", id="f-user")
+                yield Label("User", classes="field-label")
+                yield Input(value=s.get("user", "root@pam"), placeholder="root@pam", id="f-user")
 
-            yield Label("Auth Method", classes="field-label")
-            yield Select(
-                [("API Token (recommended)", "token"), ("Password", "password")],
-                value=s.get("auth_method", "token"),
-                id="f-auth-method",
-            )
+                yield Label("Auth Method", classes="field-label")
+                yield Select(
+                    [("API Token (recommended)", "token"), ("Password", "password")],
+                    value=s.get("auth_method", "token"),
+                    id="f-auth-method",
+                )
 
-            yield Label("Token Name", classes="field-label", id="lbl-token-name")
-            yield Input(value=s.get("token_name", ""), placeholder="e.g. infraforge", id="f-token-name")
+                yield Label("Token Name", classes="field-label", id="lbl-token-name")
+                yield Input(value=s.get("token_name", ""), placeholder="e.g. infraforge", id="f-token-name")
 
-            yield Label("Token Value", classes="field-label", id="lbl-token-value")
-            with Horizontal(classes="secret-row", id="row-token-value"):
-                yield Input(value=s.get("token_value", ""), placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", id="f-token-value", password=True)
-                yield Button("Reveal", id="reveal-f-token-value", classes="reveal-btn")
-                yield Button("Copy", id="copy-f-token-value", classes="copy-btn")
+                yield Label("Token Value", classes="field-label", id="lbl-token-value")
+                with Horizontal(classes="secret-row", id="row-token-value"):
+                    yield Input(value=s.get("token_value", ""), placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", id="f-token-value", password=True)
+                    yield Button("Reveal", id="reveal-f-token-value", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-token-value", classes="copy-btn")
 
-            yield Label("Password", classes="field-label", id="lbl-password")
-            with Horizontal(classes="secret-row", id="row-password"):
-                yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
-                yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
-                yield Button("Copy", id="copy-f-password", classes="copy-btn")
+                yield Label("Password", classes="field-label", id="lbl-password")
+                with Horizontal(classes="secret-row", id="row-password"):
+                    yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+                    yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-password", classes="copy-btn")
 
-            yield Label("Verify SSL", classes="field-label")
-            yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
+                yield Label("Verify SSL", classes="field-label")
+                yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_PROXMOX_HELP, id="help-title", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -267,10 +454,10 @@ class DNSConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-DNSConfigModal {
-    align: center middle;
-}
+    DEFAULT_CSS = f"""
+DNSConfigModal {{
+{_MODAL_ALIGN}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -284,88 +471,60 @@ DNSConfigModal {
             zones = [s["zone"]]
         zones_str = ", ".join(zones) if zones else ""
 
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]DNS Configuration[/bold]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]DNS Configuration[/bold]", id="config-title", markup=True)
 
-            yield Label("Provider", classes="field-label")
-            yield Select(
-                [("BIND9", "bind9"), ("Cloudflare", "cloudflare"), ("Route53", "route53"), ("Custom", "custom")],
-                value=s.get("provider", "bind9"),
-                id="f-provider",
-            )
+                yield Label("Provider", classes="field-label")
+                yield Select(
+                    [("BIND9", "bind9"), ("Cloudflare", "cloudflare"), ("Route53", "route53"), ("Custom", "custom")],
+                    value=s.get("provider", "bind9"),
+                    id="f-provider",
+                )
 
-            # ── BIND9 guidance ────────────────────────────────────────
-            yield Static(
-                "[bold cyan]BIND9 Setup Guide[/bold cyan]\n"
-                "[dim]Run these commands on your BIND9 server to get the values below.[/dim]\n\n"
-                "[bold]1. Generate a TSIG key[/bold] [dim](if you don't have one)[/dim]\n"
-                "   [bold white on grey23] sudo tsig-keygen infraforge-key > /tmp/infraforge-key.conf [/bold white on grey23]\n"
-                "   [bold white on grey23] sudo mv /tmp/infraforge-key.conf /etc/bind/ [/bold white on grey23]\n"
-                "   [bold white on grey23] sudo chown root:bind /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
-                "   [bold white on grey23] sudo chmod 640 /etc/bind/infraforge-key.conf [/bold white on grey23]\n\n"
-                "[bold]2. Extract key name, secret, and algorithm[/bold]\n"
-                "   [bold white on grey23] cat /etc/bind/infraforge-key.conf [/bold white on grey23]\n"
-                "   [dim]Output looks like:[/dim]\n"
-                '   [dim]key "infraforge-key" \\{[/dim]\n'
-                "   [dim]    algorithm hmac-sha256;[/dim]\n"
-                '   [dim]    secret "R3HI8P6BKw9ZwXwN3VZKuQ==";[/dim]\n'
-                "   [dim]\\};[/dim]\n\n"
-                "[bold]3. List existing keys[/bold] [dim](if you already have one)[/dim]\n"
-                "   [bold white on grey23] sudo rndc tsig-list [/bold white on grey23]\n"
-                '   [bold white on grey23] grep -rA2 \'key "\' /etc/bind/ [/bold white on grey23]\n\n'
-                "[bold]4. Enable dynamic updates for your zone[/bold]\n"
-                "   [dim]Add to /etc/bind/named.conf.local:[/dim]\n"
-                '   [bold white on grey23] include "/etc/bind/infraforge-key.conf"; [/bold white on grey23]\n\n'
-                "   [dim]Then in your zone block, add:[/dim]\n"
-                '   [bold white on grey23] allow-update \\{ key "infraforge-key"; \\}; [/bold white on grey23]\n\n'
-                "[bold]5. Reload BIND9[/bold]\n"
-                "   [bold white on grey23] sudo named-checkconf && sudo rndc reload [/bold white on grey23]\n\n"
-                "[bold]6. List zones[/bold]\n"
-                '   [bold white on grey23] grep -oP \'zone "\\K\[^"]+\' /etc/bind/named.conf.local [/bold white on grey23]\n',
-                id="bind9-guide",
-                markup=True,
-            )
+                yield Label("Server [dim](BIND9 IP/hostname)[/dim]", classes="field-label", markup=True)
+                yield Input(value=s.get("server", ""), placeholder="e.g. 10.0.200.2", id="f-server")
 
-            yield Label("Server [dim](BIND9 IP/hostname)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("server", ""), placeholder="e.g. 10.0.200.2", id="f-server")
+                yield Label("Port", classes="field-label")
+                yield Input(value=str(s.get("port", 53)), placeholder="53", id="f-port")
 
-            yield Label("Port", classes="field-label")
-            yield Input(value=str(s.get("port", 53)), placeholder="53", id="f-port")
+                yield Label("Domain [dim](default FQDN domain)[/dim]", classes="field-label", markup=True)
+                yield Input(value=s.get("domain", ""), placeholder="e.g. lab.local", id="f-domain")
 
-            yield Label("Domain [dim](default FQDN domain)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("domain", ""), placeholder="e.g. lab.local", id="f-domain")
+                yield Label("Zones [dim](comma-separated)[/dim]", classes="field-label", markup=True)
+                yield Input(value=zones_str, placeholder="e.g. lab.local, dev.local", id="f-zones")
 
-            yield Label("Zones [dim](comma-separated)[/dim]", classes="field-label", markup=True)
-            yield Input(value=zones_str, placeholder="e.g. lab.local, dev.local", id="f-zones")
+                yield Label("TSIG Key Name", classes="field-label")
+                yield Input(value=s.get("tsig_key_name", ""), placeholder="e.g. infraforge-key", id="f-tsig-name")
 
-            yield Label("TSIG Key Name", classes="field-label")
-            yield Input(value=s.get("tsig_key_name", ""), placeholder="e.g. infraforge-key", id="f-tsig-name")
+                yield Label("TSIG Key Secret [dim](base64 from key file)[/dim]", classes="field-label", markup=True)
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("tsig_key_secret", ""), placeholder="base64 secret", id="f-tsig-secret", password=True)
+                    yield Button("Reveal", id="reveal-f-tsig-secret", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-tsig-secret", classes="copy-btn")
 
-            yield Label("TSIG Key Secret [dim](base64 from key file)[/dim]", classes="field-label", markup=True)
-            with Horizontal(classes="secret-row"):
-                yield Input(value=s.get("tsig_key_secret", ""), placeholder="base64 secret", id="f-tsig-secret", password=True)
-                yield Button("Reveal", id="reveal-f-tsig-secret", classes="reveal-btn")
-                yield Button("Copy", id="copy-f-tsig-secret", classes="copy-btn")
+                yield Label("TSIG Algorithm", classes="field-label")
+                yield Select(
+                    [("hmac-sha256", "hmac-sha256"), ("hmac-sha512", "hmac-sha512"), ("hmac-md5", "hmac-md5")],
+                    value=s.get("tsig_algorithm", "hmac-sha256"),
+                    id="f-tsig-algo",
+                )
 
-            yield Label("TSIG Algorithm", classes="field-label")
-            yield Select(
-                [("hmac-sha256", "hmac-sha256"), ("hmac-sha512", "hmac-sha512"), ("hmac-md5", "hmac-md5")],
-                value=s.get("tsig_algorithm", "hmac-sha256"),
-                id="f-tsig-algo",
-            )
+                yield Label("API Key [dim](Cloudflare/Route53)[/dim]", classes="field-label", markup=True)
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("api_key", ""), placeholder="API key", id="f-api-key", password=True)
+                    yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
 
-            yield Label("API Key [dim](Cloudflare/Route53)[/dim]", classes="field-label", markup=True)
-            with Horizontal(classes="secret-row"):
-                yield Input(value=s.get("api_key", ""), placeholder="API key", id="f-api-key", password=True)
-                yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
-                yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+            with VerticalScroll(id="config-help"):
+                yield Static(_DNS_HELP, id="help-title", markup=True)
 
     def action_save(self) -> None:
         zones_raw = self.query_one("#f-zones", Input).value.strip()
@@ -396,17 +555,17 @@ class IPAMConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-IPAMConfigModal {
-    align: center middle;
-}
-#ipam-docker-fields, #ipam-existing-fields {
+    DEFAULT_CSS = f"""
+IPAMConfigModal {{
+{_MODAL_ALIGN}
+}}
+#ipam-docker-fields, #ipam-existing-fields {{
     height: auto;
-}
-#docker-status {
+}}
+#docker-status {{
     height: auto;
     margin: 1 0 0 0;
-}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -422,68 +581,72 @@ IPAMConfigModal {
         default_method = "existing" if s.get("url") else "docker"
         default_pass = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]IPAM Configuration[/bold]  [dim](phpIPAM)[/dim]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]IPAM Configuration[/bold]  [dim](phpIPAM)[/dim]", id="config-title", markup=True)
 
-            yield Label("Setup Method", classes="field-label")
-            yield Select(
-                [
-                    ("Deploy phpIPAM with Docker (recommended)", "docker"),
-                    ("Connect to existing phpIPAM server", "existing"),
-                ],
-                value=default_method,
-                id="f-ipam-method",
-            )
-
-            # ── Docker deployment fields ──
-            with Vertical(id="ipam-docker-fields"):
-                yield Static(
-                    "[dim]Deploys a local phpIPAM instance with MariaDB, "
-                    "auto-configured API, and self-signed SSL.[/dim]",
-                    markup=True,
-                    classes="field-hint",
+                yield Label("Setup Method", classes="field-label")
+                yield Select(
+                    [
+                        ("Deploy phpIPAM with Docker (recommended)", "docker"),
+                        ("Connect to existing phpIPAM server", "existing"),
+                    ],
+                    value=default_method,
+                    id="f-ipam-method",
                 )
-                yield Label("HTTPS Port", classes="field-label")
-                yield Input(value="8443", placeholder="8443", id="f-docker-port")
-                yield Label("Admin Password", classes="field-label")
-                with Horizontal(classes="secret-row"):
-                    yield Input(value=default_pass, placeholder="auto-generated", id="f-docker-pass", password=True)
-                    yield Button("Reveal", id="reveal-f-docker-pass", classes="reveal-btn")
-                    yield Button("Copy", id="copy-f-docker-pass", classes="copy-btn")
-                yield Static("", id="docker-status", markup=True)
 
-            # ── Existing server fields ──
-            with Vertical(id="ipam-existing-fields"):
-                yield Label("URL", classes="field-label")
-                yield Input(value=s.get("url", ""), placeholder="e.g. https://ipam.example.com", id="f-url")
+                # ── Docker deployment fields ──
+                with Vertical(id="ipam-docker-fields"):
+                    yield Static(
+                        "[dim]Deploys a local phpIPAM instance with MariaDB, "
+                        "auto-configured API, and self-signed SSL.[/dim]",
+                        markup=True,
+                        classes="field-hint",
+                    )
+                    yield Label("HTTPS Port", classes="field-label")
+                    yield Input(value="8443", placeholder="8443", id="f-docker-port")
+                    yield Label("Admin Password", classes="field-label")
+                    with Horizontal(classes="secret-row"):
+                        yield Input(value=default_pass, placeholder="auto-generated", id="f-docker-pass", password=True)
+                        yield Button("Reveal", id="reveal-f-docker-pass", classes="reveal-btn")
+                        yield Button("Copy", id="copy-f-docker-pass", classes="copy-btn")
+                    yield Static("", id="docker-status", markup=True)
 
-                yield Label("App ID", classes="field-label")
-                yield Input(value=s.get("app_id", "infraforge"), placeholder="infraforge", id="f-app-id")
+                # ── Existing server fields ──
+                with Vertical(id="ipam-existing-fields"):
+                    yield Label("URL", classes="field-label")
+                    yield Input(value=s.get("url", ""), placeholder="e.g. https://ipam.example.com", id="f-url")
 
-                yield Label("Token [dim](if token auth)[/dim]", classes="field-label", markup=True)
-                with Horizontal(classes="secret-row"):
-                    yield Input(value=s.get("token", ""), placeholder="API token", id="f-token", password=True)
-                    yield Button("Reveal", id="reveal-f-token", classes="reveal-btn")
-                    yield Button("Copy", id="copy-f-token", classes="copy-btn")
+                    yield Label("App ID", classes="field-label")
+                    yield Input(value=s.get("app_id", "infraforge"), placeholder="infraforge", id="f-app-id")
 
-                yield Label("Username [dim](if user auth)[/dim]", classes="field-label", markup=True)
-                yield Input(value=s.get("username", ""), placeholder="admin", id="f-username")
+                    yield Label("Token [dim](if token auth)[/dim]", classes="field-label", markup=True)
+                    with Horizontal(classes="secret-row"):
+                        yield Input(value=s.get("token", ""), placeholder="API token", id="f-token", password=True)
+                        yield Button("Reveal", id="reveal-f-token", classes="reveal-btn")
+                        yield Button("Copy", id="copy-f-token", classes="copy-btn")
 
-                yield Label("Password [dim](if user auth)[/dim]", classes="field-label", markup=True)
-                with Horizontal(classes="secret-row"):
-                    yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
-                    yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
-                    yield Button("Copy", id="copy-f-password", classes="copy-btn")
+                    yield Label("Username [dim](if user auth)[/dim]", classes="field-label", markup=True)
+                    yield Input(value=s.get("username", ""), placeholder="admin", id="f-username")
 
-                yield Label("Verify SSL", classes="field-label")
-                yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
+                    yield Label("Password [dim](if user auth)[/dim]", classes="field-label", markup=True)
+                    with Horizontal(classes="secret-row"):
+                        yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+                        yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
+                        yield Button("Copy", id="copy-f-password", classes="copy-btn")
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+                    yield Label("Verify SSL", classes="field-label")
+                    yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
+
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_IPAM_HELP, id="help-title", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -820,10 +983,10 @@ class TerraformConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-TerraformConfigModal {
-    align: center middle;
-}
+    DEFAULT_CSS = f"""
+TerraformConfigModal {{
+{_MODAL_ALIGN}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -832,25 +995,29 @@ TerraformConfigModal {
 
     def compose(self) -> ComposeResult:
         s = self._sec
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]Terraform Configuration[/bold]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]Terraform Configuration[/bold]", id="config-title", markup=True)
 
-            yield Label("Workspace Directory", classes="field-label")
-            yield Input(value=s.get("workspace", "./terraform"), placeholder="./terraform", id="f-workspace")
+                yield Label("Workspace Directory", classes="field-label")
+                yield Input(value=s.get("workspace", "./terraform"), placeholder="./terraform", id="f-workspace")
 
-            yield Label("State Backend", classes="field-label")
-            yield Select(
-                [("Local", "local"), ("S3", "s3"), ("Consul", "consul")],
-                value=s.get("state_backend", "local"),
-                id="f-backend",
-            )
+                yield Label("State Backend", classes="field-label")
+                yield Select(
+                    [("Local", "local"), ("S3", "s3"), ("Consul", "consul")],
+                    value=s.get("state_backend", "local"),
+                    id="f-backend",
+                )
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_TERRAFORM_HELP, id="help-title", markup=True)
 
     def action_save(self) -> None:
         result = {
@@ -872,10 +1039,10 @@ class AnsibleConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-AnsibleConfigModal {
-    align: center middle;
-}
+    DEFAULT_CSS = f"""
+AnsibleConfigModal {{
+{_MODAL_ALIGN}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -884,18 +1051,22 @@ AnsibleConfigModal {
 
     def compose(self) -> ComposeResult:
         s = self._sec
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]Ansible Configuration[/bold]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]Ansible Configuration[/bold]", id="config-title", markup=True)
 
-            yield Label("Playbook Directory", classes="field-label")
-            yield Input(value=s.get("playbook_dir", "./ansible/playbooks"), placeholder="./ansible/playbooks", id="f-playbook-dir")
+                yield Label("Playbook Directory", classes="field-label")
+                yield Input(value=s.get("playbook_dir", "./ansible/playbooks"), placeholder="./ansible/playbooks", id="f-playbook-dir")
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_ANSIBLE_HELP, id="help-title", markup=True)
 
     def action_save(self) -> None:
         result = {
@@ -916,10 +1087,10 @@ class AIConfigModal(_ArrowNavModal):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
-    DEFAULT_CSS = """
-AIConfigModal {
-    align: center middle;
-}
+    DEFAULT_CSS = f"""
+AIConfigModal {{
+{_MODAL_ALIGN}
+}}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
@@ -928,32 +1099,36 @@ AIConfigModal {
 
     def compose(self) -> ComposeResult:
         s = self._sec
-        with VerticalScroll(id="config-box"):
-            yield Static("[bold]AI Configuration[/bold]  [dim](Anthropic)[/dim]", id="config-title", markup=True)
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]AI Configuration[/bold]  [dim](Anthropic)[/dim]", id="config-title", markup=True)
 
-            yield Label("API Key", classes="field-label")
-            with Horizontal(classes="secret-row"):
-                yield Input(value=s.get("api_key", ""), placeholder="sk-ant-api03-...", id="f-api-key", password=True)
-                yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
-                yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
+                yield Label("API Key", classes="field-label")
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("api_key", ""), placeholder="sk-ant-api03-...", id="f-api-key", password=True)
+                    yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
 
-            yield Label("Model", classes="field-label")
-            yield Select(
-                [
-                    ("Claude Opus 4.6", "claude-opus-4-6"),
-                    ("Claude Sonnet 4.5", "claude-sonnet-4-5-20250929"),
-                    ("Claude Haiku 4.5", "claude-haiku-4-5-20251001"),
-                ],
-                value=s.get("model", "claude-sonnet-4-5-20250929"),
-                id="f-model",
-            )
+                yield Label("Model", classes="field-label")
+                yield Select(
+                    [
+                        ("Claude Opus 4.6", "claude-opus-4-6"),
+                        ("Claude Sonnet 4.5", "claude-sonnet-4-5-20250929"),
+                        ("Claude Haiku 4.5", "claude-haiku-4-5-20251001"),
+                    ],
+                    value=s.get("model", "claude-sonnet-4-5-20250929"),
+                    id="f-model",
+                )
 
-            yield Static(
-                "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                classes="modal-hint",
-                markup=True,
-            )
+                yield Static(
+                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
+                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
+                    classes="modal-hint",
+                    markup=True,
+                )
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_AI_HELP, id="help-title", markup=True)
 
     def action_save(self) -> None:
         key = self.query_one("#f-api-key", Input).value.strip()
