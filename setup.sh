@@ -1350,6 +1350,13 @@ banner
 check_python
 setup_venv
 
+# If running as root via sudo, fix venv ownership so the real user can manage it
+if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+    info "Fixing venv ownership for $SUDO_USER..."
+    chown -R "$SUDO_USER:$SUDO_USER" "$VENV_DIR"
+    success "Venv ownership set to $SUDO_USER"
+fi
+
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
@@ -1359,8 +1366,13 @@ echo ""
 # Ensure textual is available (should be installed via requirements)
 $PYTHON_CMD -m pip install textual -q 2>/dev/null || true
 
-# Launch the TUI-based setup wizard
-infraforge setup
+# Launch the TUI setup wizard as the calling user (not root) so config
+# is saved to the correct home directory (~user, not /root)
+if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+    sudo -u "$SUDO_USER" infraforge setup
+else
+    infraforge setup
+fi
 
 echo ""
 echo -e "${GREEN}${BOLD}Setup wizard complete!${NC}"
