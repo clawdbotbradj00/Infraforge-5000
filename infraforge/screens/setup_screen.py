@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import Screen, ModalScreen
-from textual.widgets import Footer, Header, Input, Label, ListView, ListItem, Select, Static, Switch
+from textual.widgets import Button, Footer, Header, Input, Label, ListView, ListItem, Select, Static, Switch
 from textual import work
 
 # Config path
@@ -439,6 +439,7 @@ class SetupScreen(Screen):
         Binding("enter", "configure", "Configure", show=True),
         Binding("t", "test", "Test Connection", show=True),
         Binding("s", "save_exit", "Save & Exit", show=True),
+        Binding("m", "launch_main", "Main Menu", show=False),
         Binding("escape", "quit_setup", "Exit", show=True),
     ]
 
@@ -465,6 +466,19 @@ class SetupScreen(Screen):
                 items.append(ListItem(lbl, id=f"setup-{comp_id}"))
             yield ListView(*items, id="setup-list")
             yield Static("", id="setup-status", markup=True)
+            yield Static(
+                "\n[bold green]Setup is complete![/bold green]  "
+                "All modules are configured and ready.\n",
+                id="setup-complete-msg",
+                markup=True,
+                classes="hidden",
+            )
+            yield Button(
+                "\u2713  Launch InfraForge",
+                id="setup-launch-btn",
+                variant="success",
+                classes="hidden",
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -485,16 +499,30 @@ class SetupScreen(Screen):
             if ok:
                 ok_count += 1
         status = self.query_one("#setup-status", Static)
+        complete_msg = self.query_one("#setup-complete-msg", Static)
+        launch_btn = self.query_one("#setup-launch-btn", Button)
         if ok_count == total:
             status.update(
-                f"  [bold green]All {total} components configured![/bold green]  "
-                "Press [bold]s[/bold] to save and exit."
+                f"  [bold green]All {total} components configured![/bold green]"
             )
+            complete_msg.remove_class("hidden")
+            launch_btn.remove_class("hidden")
+            # Show the "m" keybinding in the footer
+            for binding in self.BINDINGS:
+                if hasattr(binding, "key") and binding.key == "m":
+                    binding.show = True
+                    break
         else:
             status.update(
                 f"  [bold]{ok_count}[/bold] [dim]of[/dim] [bold]{total}[/bold] [dim]components configured[/dim]  "
                 f"[dim]\u2502[/dim]  [bold yellow]{total - ok_count} need attention[/bold yellow]"
             )
+            complete_msg.add_class("hidden")
+            launch_btn.add_class("hidden")
+            for binding in self.BINDINGS:
+                if hasattr(binding, "key") and binding.key == "m":
+                    binding.show = False
+                    break
 
     def _get_selected_comp_id(self) -> str | None:
         """Return the comp_id of the currently highlighted ListView row."""
@@ -749,6 +777,20 @@ class SetupScreen(Screen):
             f"  API access confirmed ({len(models)}+ models available)"
         )
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "setup-launch-btn":
+            self.action_launch_main()
+
+    def action_launch_main(self) -> None:
+        """Save config and exit setup to launch the main InfraForge app."""
+        # Check all modules are configured
+        ok_count = sum(1 for cid, _, _ in COMPONENTS if _check_component(self._cfg, cid)[0])
+        if ok_count < len(COMPONENTS):
+            self.notify("Not all modules are configured yet.", severity="warning")
+            return
+        _save_config(self._cfg)
+        self.app.exit(result="launch_main")
+
     def action_save_exit(self) -> None:
         _save_config(self._cfg)
         self.notify("Configuration saved!", title="Saved")
@@ -775,4 +817,16 @@ def run_setup_tui() -> None:
             self.theme = "midnight"
             self.push_screen(SetupScreen())
 
-    _SetupApp().run()
+    result = _SetupApp().run()
+
+    if result == "launch_main":
+        # User chose to launch main app — import and run it
+        from infraforge.config import Config, ConfigError
+        try:
+            config = Config.load()
+        except ConfigError as e:
+            from rich.console import Console
+            Console().print(f"[bold red]Config error:[/bold red] {e}")
+            return
+        from infraforge.app import InfraForgeApp
+        InfraForgeApp(config=config).run()

@@ -1350,93 +1350,18 @@ banner
 check_python
 setup_venv
 
-# ── Setup Method Selection ───────────────────────────────────────
 echo ""
-echo -e "${BOLD}How would you like to configure InfraForge?${NC}"
-echo "  1) Launch the interactive TUI setup wizard (recommended)"
-echo "  2) Continue with command-line setup"
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 echo ""
-read -rp "$(echo -e "${BOLD}Select [1]:${NC} ")" SETUP_METHOD
-SETUP_METHOD=${SETUP_METHOD:-1}
 
-if [ "$SETUP_METHOD" = "1" ]; then
-    echo ""
-    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
-    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-    echo ""
+# Ensure textual is available (should be installed via requirements)
+$PYTHON_CMD -m pip install textual -q 2>/dev/null || true
 
-    # Ensure textual is available (should be installed via requirements)
-    $PYTHON_CMD -m pip install textual -q 2>/dev/null || true
+# Launch the TUI-based setup wizard
+infraforge setup
 
-    # Launch the TUI-based setup wizard
-    $PYTHON_CMD -m infraforge setup
-
-    echo ""
-    echo -e "${GREEN}${BOLD}Setup wizard complete!${NC}"
-    echo -e "Run ${BOLD}infraforge${NC} to start."
-    exit 0
-fi
-
-load_existing_config
-select_setup_mode
-
-if should_configure proxmox; then
-    configure_proxmox
-else
-    echo -e "${DIM}Proxmox: already configured — skipping.${NC}"
-    PVE_HOST="$PREV_PVE_HOST"
-    PVE_PORT="${PREV_PVE_PORT:-8006}"
-    PVE_USER="${PREV_PVE_USER:-root@pam}"
-    PVE_AUTH_METHOD="${PREV_PVE_AUTH:-token}"
-    PVE_TOKEN_NAME="$PREV_PVE_TOKEN_NAME"
-    PVE_TOKEN_VALUE="$PREV_PVE_TOKEN_VALUE"
-    PVE_PASSWORD="$PREV_PVE_PASSWORD"
-    PVE_VERIFY_SSL="${PREV_PVE_VERIFY_SSL:-false}"
-fi
-
-if should_configure dns; then
-    [[ "$SETUP_MODE" == "missing" ]] && export SKIP_DNS_CONFIRM=true
-    configure_dns
-    unset SKIP_DNS_CONFIRM
-else
-    echo -e "${DIM}DNS: already configured — skipping.${NC}"
-    DNS_PROVIDER="$PREV_DNS_PROVIDER"
-    DNS_SERVER="$PREV_DNS_SERVER"
-    DNS_PORT="${PREV_DNS_PORT:-53}"
-    DNS_ZONES="$PREV_DNS_ZONES"
-    DNS_DOMAIN="$PREV_DNS_DOMAIN"
-    DNS_TSIG_KEY_NAME="$PREV_DNS_TSIG_KEY_NAME"
-    DNS_TSIG_KEY_SECRET="$PREV_DNS_TSIG_KEY_SECRET"
-    DNS_TSIG_ALGORITHM="${PREV_DNS_TSIG_ALGORITHM:-hmac-sha256}"
-    DNS_API_KEY="$PREV_DNS_API_KEY"
-fi
-
-check_docker || true
-
-if should_configure ipam; then
-    [[ "$SETUP_MODE" == "missing" ]] && export SKIP_IPAM_CONFIRM=true
-    deploy_phpipam
-    unset SKIP_IPAM_CONFIRM
-else
-    echo -e "${DIM}IPAM: already configured — skipping.${NC}"
-    IPAM_URL="$PREV_IPAM_URL"
-    IPAM_APP_ID=$(cfg_get ipam app_id)
-    IPAM_TOKEN=$(cfg_get ipam token)
-    IPAM_USERNAME=$(cfg_get ipam username)
-    IPAM_PASSWORD=$(cfg_get ipam password)
-    IPAM_VERIFY_SSL=$(cfg_get ipam verify_ssl)
-    [[ -z "$IPAM_VERIFY_SSL" ]] && IPAM_VERIFY_SSL="false"
-fi
-
-check_and_install_terraform || true
-check_and_install_ansible || true
-
-write_config
-
-if should_configure proxmox; then
-    test_connection
-fi
-
-configure_subnets
-print_summary
+echo ""
+echo -e "${GREEN}${BOLD}Setup wizard complete!${NC}"
+echo -e "Run ${BOLD}infraforge${NC} to start."

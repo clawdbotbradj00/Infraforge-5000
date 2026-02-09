@@ -1035,3 +1035,14 @@ AIChatModal {
     color: $text-muted;
     padding: 0 1;
 }
+
+#setup-complete-msg {
+    text-align: center;
+    margin: 2 0 1 0;
+    color: $success;
+}
+
+#setup-launch-btn {
+    width: 40;
+    margin: 1 auto;
+}
