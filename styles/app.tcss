@@ -68,9 +68,9 @@ Screen {
 #ai-setup-banner {
     height: auto;
     margin: 0 0 1 0;
-    background: $primary-background;
-    border: round $primary-background;
-    color: $text-muted;
+    background: $warning 30%;
+    border: round $warning;
+    color: $warning;
     padding: 0 2;
     text-align: center;
 }
@@ -80,7 +80,7 @@ Screen {
     margin: 0 0 1 0;
     background: $error 30%;
     border: round $error;
-    color: $text;
+    color: $error;
     padding: 0 2;
     text-align: center;
     text-style: bold;

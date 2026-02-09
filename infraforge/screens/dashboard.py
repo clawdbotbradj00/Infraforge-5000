@@ -262,9 +262,9 @@ class DashboardScreen(Screen):
             banner = self.query_one("#setup-banner", Static)
             if disabled:
                 banner.update(
-                    "  [bold red]Some modules are not fully configured.[/bold red]  "
+                    "  Some modules are not fully configured.  "
                     "Functionality may be limited.  "
-                    "Run [bold]infraforge setup[/bold] to correct."
+                    "Run infraforge setup to correct."
                 )
                 banner.remove_class("hidden")
             else:
@@ -374,9 +374,9 @@ class DashboardScreen(Screen):
             if not shutil.which("claude"):
                 banner = self.query_one("#ai-setup-banner", Static)
                 banner.update(
-                    "  [dim]AI features available![/dim]  "
-                    "Install Claude Code: [bold white on dark_blue] npm install -g @anthropic-ai/claude-code [/bold white on dark_blue] "
-                    "then press [bold]/[/bold] to chat"
+                    "  AI features available!  "
+                    "Install Claude Code:  npm install -g @anthropic-ai/claude-code  "
+                    "then press / to chat"
                 )
                 banner.remove_class("hidden")
         except Exception:
