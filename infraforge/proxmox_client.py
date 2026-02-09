@@ -504,6 +504,40 @@ class ProxmoxClient:
         except Exception:
             return []
 
+    def get_node_tasks(
+        self,
+        node: str,
+        limit: int = 20,
+        since: float = 0,
+        type_filter: str = "",
+    ) -> list[dict]:
+        """Get recent tasks on a node.
+
+        Args:
+            node: Proxmox node name.
+            limit: Maximum number of tasks to return.
+            since: Unix timestamp — only return tasks started after this time.
+            type_filter: If set, only return tasks whose 'type' contains this string.
+
+        Returns:
+            List of task dicts with keys: upid, node, type, status, starttime,
+            endtime, user, id (VMID if applicable), pid.
+        """
+        try:
+            tasks = self.api.nodes(node).tasks.get(limit=limit)
+        except Exception:
+            return []
+
+        result = []
+        for t in tasks:
+            start_time = int(t.get("starttime", 0))
+            if since and start_time < since:
+                continue
+            if type_filter and type_filter not in t.get("type", ""):
+                continue
+            result.append(t)
+        return result
+
     def get_task_status(self, node: str, upid: str) -> dict:
         """Get status of a task by UPID."""
         return self.api.nodes(node).tasks(upid).status.get()

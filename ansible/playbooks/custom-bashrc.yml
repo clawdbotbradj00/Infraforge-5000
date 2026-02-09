@@ -1,0 +1,64 @@
+---
+- name: Deploy custom bashrc prompt and aliases
+  hosts: targets
+  become: true
+
+  tasks:
+    - name: Deploy prompt script to /etc/profile.d (login shells)
+      copy:
+        src: files/infraforge-prompt.sh
+        dest: /etc/profile.d/infraforge-prompt.sh
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Get all users with a real shell
+      shell: |
+        awk -F: '($3 == 0 || $3 >= 1000) && $7 !~ /nologin|false/ { print $1":"$6 }' /etc/passwd
+      register: user_list
+      changed_when: false
+
+    - name: Source prompt script from each user bashrc (runs last, overrides defaults)
+      blockinfile:
+        path: "{{ item.split(':')[1] }}/.bashrc"
+        marker: "# {mark} InfraForge custom prompt"
+        block: |
+          [ -f /etc/profile.d/infraforge-prompt.sh ] && . /etc/profile.d/infraforge-prompt.sh
+        insertafter: EOF
+        create: true
+        owner: "{{ item.split(':')[0] }}"
+        mode: "0644"
+      loop: "{{ user_list.stdout_lines }}"
+
+    - name: Source prompt script from /etc/skel/.bashrc (future users)
+      blockinfile:
+        path: /etc/skel/.bashrc
+        marker: "# {mark} InfraForge custom prompt"
+        block: |
+          [ -f /etc/profile.d/infraforge-prompt.sh ] && . /etc/profile.d/infraforge-prompt.sh
+        insertafter: EOF
+        create: true
+        mode: "0644"
+
+    - name: Clean up old per-user blocks from previous version
+      blockinfile:
+        path: "{{ item }}/.bashrc"
+        marker: "# {mark} InfraForge custom bashrc"
+        state: absent
+      loop: "{{ old_blocks.stdout_lines | default([]) }}"
+      when: old_blocks.stdout_lines | default([]) | length > 0
+      ignore_errors: true
+
+    - name: Clean up old /etc/bash.bashrc block
+      blockinfile:
+        path: /etc/bash.bashrc
+        marker: "# {mark} InfraForge custom prompt"
+        state: absent
+      ignore_errors: true
+
+  pre_tasks:
+    - name: Find home dirs with old InfraForge blocks to clean up
+      shell: |
+        grep -rl 'InfraForge custom bashrc' /root/.bashrc /home/*/.bashrc /etc/skel/.bashrc 2>/dev/null | sed 's|/.bashrc$||' || true
+      register: old_blocks
+      changed_when: false

@@ -24,7 +24,7 @@ from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from textual import work
 
 from infraforge.models import NewVMSpec, VMType, TemplateType
-from infraforge.ansible_runner import PlaybookInfo, discover_playbooks
+from infraforge.ansible_runner import PlaybookInfo, _parse_playbook, discover_playbooks
 
 
 WIZARD_STEPS = ["Template", "Identity", "Network", "Resources", "Access", "Review"]
@@ -388,6 +388,11 @@ class NewVMScreen(Screen):
                 self.spec.template = m.get("name", "")
                 self.spec.template_vmid = m.get("vmid")
                 self.spec.template_volid = ""
+            elif m.get("type") == "cloud_image":
+                self.spec.vm_type = VMType.QEMU
+                self.spec.template_volid = m.get("volid", "")
+                self.spec.template = m.get("name", "")
+                self.spec.template_vmid = None
         elif item.group == "saved_spec":
             self._apply_saved_template(item.key)
         elif item.group == "dns_zone":
@@ -609,6 +614,17 @@ class NewVMScreen(Screen):
                 return f" {cur} {mark}  {lbl}"
             mark = "[green]\u25cf[/green]" if item.selected else "[dim]\u25cb[/dim]"
             lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+            # Highlight auto-suggested IP in yellow
+            if (
+                item.group == "ip"
+                and item.selected
+                and self._available_ips
+                and item.key == self._available_ips[0]
+            ):
+                if is_cur:
+                    lbl = f"[bold yellow]{item.label}[/bold yellow]  [dim yellow]\u2190 suggested[/dim yellow]"
+                else:
+                    lbl = f"[yellow]{item.label}[/yellow]  [dim yellow]\u2190 suggested[/dim yellow]"
             return f" {cur} {mark}  {lbl}"
 
         if item.kind == "input":
@@ -770,7 +786,35 @@ class NewVMScreen(Screen):
                     meta={"type": "vm", "name": t.name, "vmid": t.vmid},
                 ))
 
-        if not ct and not vm:
+        cloud = [
+            t for t in self._templates
+            if t.template_type == TemplateType.ISO
+            and t.node == selected_node
+            and any(t.name.lower().endswith(ext) for ext in ('.img', '.qcow2'))
+        ]
+
+        if cloud:
+            items.append(WizItem(
+                kind="header",
+                label=f"QEMU CLOUD IMAGES  [dim]on {selected_node}[/dim]",
+            ))
+            for t in cloud:
+                lbl = t.name
+                if t.storage:
+                    lbl += f"  [dim]({t.storage}  {t.size_display})[/dim]"
+                items.append(WizItem(
+                    kind="option", label=lbl,
+                    key=f"cloud:{t.volid or t.name}", group="template",
+                    selected=(
+                        self.spec.template_volid == (t.volid or t.name)
+                        and self.spec.vm_type == VMType.QEMU
+                        and not self.spec.template_vmid
+                    ),
+                    meta={"type": "cloud_image", "volid": t.volid or t.name,
+                          "name": t.name},
+                ))
+
+        if not ct and not vm and not cloud:
             items.append(WizItem(kind="header", label="TEMPLATES"))
             if self._data_loaded:
                 items.append(WizItem(
@@ -1324,8 +1368,20 @@ class NewVMScreen(Screen):
                 self._ip_from_ipam = True
             if self._step == 2:
                 self.app.call_from_thread(self._render_step)
+                self.app.call_from_thread(self._focus_first_available_ip)
         except Exception:
             self._available_ips = []
+
+    def _focus_first_available_ip(self):
+        """Move cursor to the first available IP option after IPs load."""
+        if not self._available_ips:
+            return
+        for i, item in enumerate(self._items):
+            if item.group == "ip" and item.key == self._available_ips[0]:
+                self._cursor = i
+                self._refresh_lines()
+                self._scroll_to_cursor()
+                break
 
     def _scan_ssh_keys(self):
         keys: list[tuple[str, str]] = []
@@ -1558,10 +1614,41 @@ class NewVMScreen(Screen):
             log("[green]  ✓ Plan successful[/green]\n")
 
             log("[bold]Running terraform apply...[/bold]")
-            ok, output = tf.terraform_apply(deploy_dir)
-            if output.strip():
-                for line in output.strip().split("\n")[-10:]:
-                    log(f"[dim]  {line}[/dim]")
+            log("[dim]  Polling Proxmox for real-time task progress...[/dim]")
+
+            # Start Proxmox progress monitor to track clone/create tasks
+            progress_monitor = None
+            try:
+                from infraforge.proxmox_progress import ProxmoxProgressMonitor
+                proxmox_client = self.app.proxmox
+                progress_monitor = ProxmoxProgressMonitor(
+                    proxmox_client,
+                    self.spec.node,
+                    log_fn=log,
+                    poll_interval=2.0,
+                )
+                progress_monitor.start()
+            except Exception:
+                pass  # Monitor is optional — deployment works without it
+
+            def _on_apply_line(line: str):
+                stripped = line.strip()
+                if stripped:
+                    # Escape Rich markup in terraform output
+                    safe = stripped.replace("[", "\\[")
+                    log(f"[dim]  {safe}[/dim]")
+
+            ok, output = tf.terraform_apply_streaming(
+                deploy_dir, line_callback=_on_apply_line,
+            )
+
+            # Stop the progress monitor
+            if progress_monitor is not None:
+                try:
+                    progress_monitor.stop()
+                except Exception:
+                    pass
+
             if not ok:
                 _fail("✗ terraform apply failed!", output)
                 return
@@ -1781,7 +1868,7 @@ class NewVMScreen(Screen):
 
     @work(thread=True)
     def _run_selected_playbook(self, playbook_path_str: str):
-        """Run the selected Ansible playbook against the new VM."""
+        """Launch AnsibleRunModal for the selected playbook against the new VM."""
         self._post_deploy = False
         self._post_deploy_running = True
 
@@ -1792,106 +1879,50 @@ class NewVMScreen(Screen):
             self.app.call_from_thread(self._finish_post_deploy)
             return
 
-        def _show_run_log():
-            for w in self.query(".wiz-line"):
-                w.remove()
-            for w in self.query("#deploy-log"):
-                w.remove()
-            scroll = self.query_one("#wizard-content", VerticalScroll)
-            scroll.mount(RichLog(markup=True, id="deploy-log"))
-            self.query_one("#wiz-phase-header", Static).update(
-                f"[b]Running: {playbook_path.name}[/b]"
-            )
-            try:
-                btn = self.query_one("#btn-next", Button)
-                btn.label = "Running..."
-                btn.disabled = True
-            except Exception:
-                pass
-            self._set_hint("Ansible playbook running...")
-
-        self.app.call_from_thread(_show_run_log)
-
-        def log(msg: str):
-            def _update():
-                try:
-                    self.query_one("#deploy-log", RichLog).write(msg)
-                except Exception:
-                    pass
-            self.app.call_from_thread(_update)
-
-        log(f"[bold]━━━ Ansible Playbook: {playbook_path.name} ━━━[/bold]\n")
-        log(f"[bold]Target:[/bold] {self.spec.name} ({ip})")
-
-        # Determine the SSH private key to use
-        private_key_path = self._find_ssh_private_key()
-        if private_key_path:
-            log(f"[bold]SSH Key:[/bold] {private_key_path}\n")
-        else:
-            log("[dim]SSH Key: none (using ssh-agent or default)[/dim]\n")
-
-        # Build the ansible-playbook command
-        cmd = [
-            "ansible-playbook",
-            str(playbook_path),
-            "-i", f"{ip},",
-            "-u", "root",
-        ]
-        if private_key_path:
-            cmd.extend(["--private-key", private_key_path])
-
-        log(f"[dim]$ {' '.join(cmd)}[/dim]\n")
-
-        run_env = {
-            **os.environ,
-            "ANSIBLE_FORCE_COLOR": "false",
-            "ANSIBLE_HOST_KEY_CHECKING": "False",
-        }
-
-        # Write log to file
-        log_dir = playbook_path.parent / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file_path = log_dir / f"{playbook_path.stem}_{timestamp}.log"
-
-        exit_code = 1
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=run_env,
+        # Build PlaybookInfo from the selected playbook file
+        pb = _parse_playbook(playbook_path, playbook_path.parent / "logs")
+        if not pb:
+            pb = PlaybookInfo(
+                path=playbook_path,
+                filename=playbook_path.name,
+                name=playbook_path.stem,
+                hosts="targets",
+                task_count=0,
+                description="",
+                has_roles=False,
+                last_run=None,
+                last_status="never",
             )
 
-            with open(log_file_path, "w") as lf:
-                lf.write(f"# InfraForge Post-Deploy Ansible Run\n")
-                lf.write(f"# Command: {' '.join(cmd)}\n")
-                lf.write(f"# Target: {self.spec.name} ({ip})\n")
-                lf.write(f"# Started: {datetime.now().isoformat()}\n\n")
+        # Build CredentialProfile from the VM's SSH key
+        from infraforge.credential_manager import CredentialProfile
 
-                for line in proc.stdout:
-                    lf.write(line)
-                    lf.flush()
-                    # Escape Rich markup in raw ansible output
-                    safe_line = line.rstrip("\n").replace("[", "\\[")
-                    log(safe_line)
-
-                proc.wait()
-                exit_code = proc.returncode
-                lf.write(f"\n# Exit code: {exit_code}\n")
-
-        except FileNotFoundError:
-            log("\n[red]ansible-playbook not found. Install Ansible first.[/red]")
-        except Exception as e:
-            log(f"\n[red]Error running playbook: {e}[/red]")
-
-        if exit_code == 0:
-            log(f"\n[bold green]Playbook completed successfully (exit code 0)[/bold green]")
+        private_key = self._find_ssh_private_key()
+        if private_key:
+            cred = CredentialProfile(
+                name="deploy-key",
+                auth_type="ssh_key",
+                username="root",
+                private_key_path=private_key,
+                become=False,
+            )
         else:
-            log(f"\n[bold red]Playbook finished with exit code {exit_code}[/bold red]")
-        log(f"[dim]Log saved to {log_file_path}[/dim]")
+            cred = CredentialProfile(
+                name="deploy-default",
+                auth_type="ssh_key",
+                username="root",
+                become=False,
+            )
+
+        # Push the AnsibleRunModal with pre-populated targets and credential
+        from infraforge.screens.ansible_run_modal import AnsibleRunModal
+
+        modal = AnsibleRunModal(
+            playbook=pb,
+            target_ips=[ip],
+            credential=cred,
+        )
+        self.app.call_from_thread(self.app.push_screen, modal)
 
         self._post_deploy_running = False
         self._deploy_done = True

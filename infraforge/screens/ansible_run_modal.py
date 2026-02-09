@@ -38,6 +38,7 @@ from infraforge.ansible_runner import (
     generate_inventory,
     parse_ip_ranges,
     ping_sweep,
+    resolve_targets,
 )
 from infraforge.credential_manager import CredentialManager, CredentialProfile
 from infraforge.host_enrichment import HostInfo, enrich_hosts, check_nmap_available
@@ -152,7 +153,13 @@ class AnsibleRunModal(ModalScreen):
     }
     """
 
-    def __init__(self, playbook: PlaybookInfo) -> None:
+    def __init__(
+        self,
+        playbook: PlaybookInfo,
+        target_ips: list[str] | None = None,
+        credential: CredentialProfile | None = None,
+        extra_vars: dict | None = None,
+    ) -> None:
         super().__init__()
         self._playbook = playbook
         self._phase: int = 0
@@ -196,6 +203,22 @@ class AnsibleRunModal(ModalScreen):
         self._subnets: list[dict] = []
         self._ipam_loaded: bool = False
         self._skipped_scan: bool = False  # True if user used Direct Hosts
+        # Extra vars for ansible-playbook --extra-vars
+        self._extra_vars = extra_vars or {}
+
+        # Pre-populate targets if provided (skip Phase 0/1)
+        if target_ips is not None:
+            self._resolved_ips = target_ips
+            self._alive_ips = target_ips
+            self._host_included = {ip: True for ip in target_ips}
+            self._host_info = {ip: HostInfo(ip=ip) for ip in target_ips}
+            self._skipped_scan = True
+            self._phase = 2  # skip to credentials
+
+        # Pre-populate credential if provided
+        if credential is not None:
+            self._selected_credential = credential
+            self._credential_profiles = self._credential_mgr.load_profiles()
 
     # ------------------------------------------------------------------
     # Compose / Mount
@@ -650,7 +673,7 @@ class AnsibleRunModal(ModalScreen):
         except Exception:
             scroll.mount(
                 Input(
-                    placeholder="Or type a range to scan: 10.0.1.0/24, 10.0.5.1-100",
+                    placeholder="IP, range, or hostname: 10.0.1.0/24, dns-test, web01",
                     id="run-ip-input",
                 )
             )
@@ -675,7 +698,7 @@ class AnsibleRunModal(ModalScreen):
         except Exception:
             scroll.mount(
                 Input(
-                    placeholder="e.g. 10.0.3.22, 10.0.5.1-10, web-server.local",
+                    placeholder="e.g. 10.0.3.22, dns-test, web01.easypl.net",
                     id="run-direct-input",
                 )
             )
@@ -1304,10 +1327,11 @@ class AnsibleRunModal(ModalScreen):
             scroll.mount(console_input)
             console_input.focus()
         else:
-            action_btn.label = "Close"
-            action_btn.variant = "default"
+            action_btn.label = "Done"
+            action_btn.variant = "primary"
             action_btn.disabled = False
-            cancel_btn.label = "Close"
+            cancel_btn.display = False
+            action_btn.focus()
 
     def _remove_console_input(self) -> None:
         """Remove the interactive console input widget."""
@@ -1328,6 +1352,22 @@ class AnsibleRunModal(ModalScreen):
     # Phase 0 -> 1: Start scan
     # ------------------------------------------------------------------
 
+    def _get_dns_resolver(self) -> tuple:
+        """Return (dns_client_or_None, zones_list) from app config."""
+        dns_client = None
+        dns_zones: list[str] = []
+        try:
+            dns_cfg = getattr(self.app.config, "dns", None)
+            if dns_cfg and getattr(dns_cfg, "server", ""):
+                dns_zones = list(getattr(dns_cfg, "zones", []) or [])
+                if not dns_zones and getattr(dns_cfg, "domain", ""):
+                    dns_zones = [dns_cfg.domain]
+                from infraforge.dns_client import DNSClient
+                dns_client = DNSClient.from_config(self.app.config)
+        except Exception:
+            pass
+        return dns_client, dns_zones
+
     def _start_scan(self, target_override: str | None = None) -> None:
         if target_override:
             text = target_override.strip()
@@ -1342,7 +1382,7 @@ class AnsibleRunModal(ModalScreen):
                 return
         if not text:
             self.query_one("#run-status", Static).update(
-                "[bold red]Enter at least one IP address or range[/bold red]"
+                "[bold red]Enter an IP, range, or hostname[/bold red]"
             )
             return
 
@@ -1352,18 +1392,33 @@ class AnsibleRunModal(ModalScreen):
             return
 
         try:
-            self._resolved_ips = parse_ip_ranges(text)
+            dns_client, dns_zones = self._get_dns_resolver()
+            ips, resolved, unresolved = resolve_targets(
+                text, dns_client=dns_client, dns_zones=dns_zones,
+            )
+            self._resolved_ips = ips
         except Exception as e:
             self.query_one("#run-status", Static).update(
-                f"[bold red]Invalid IP range: {e}[/bold red]"
+                f"[bold red]Invalid target: {e}[/bold red]"
             )
             return
 
         if not self._resolved_ips:
-            self.query_one("#run-status", Static).update(
-                "[bold red]No valid IPs in the given range[/bold red]"
-            )
+            msg = "[bold red]No valid IPs in the given range[/bold red]"
+            if unresolved:
+                msg = (
+                    f"[bold red]Could not resolve: "
+                    f"{', '.join(unresolved)}[/bold red]"
+                )
+            self.query_one("#run-status", Static).update(msg)
             return
+
+        # Show what hostnames resolved to
+        if resolved:
+            parts = [f"{h} → {ip}" for h, ip in resolved.items()]
+            self.query_one("#run-status", Static).update(
+                f"[green]Resolved: {', '.join(parts)}[/green]"
+            )
 
         if len(self._resolved_ips) > 5000:
             self.query_one("#run-status", Static).update(
@@ -1396,14 +1451,27 @@ class AnsibleRunModal(ModalScreen):
             return
 
         try:
-            ips = parse_ip_ranges(text)
+            dns_client, dns_zones = self._get_dns_resolver()
+            ips, resolved, unresolved = resolve_targets(
+                text, dns_client=dns_client, dns_zones=dns_zones,
+            )
         except Exception as e:
             self._set_status(f"[bold red]Invalid input: {e}[/bold red]")
             return
 
         if not ips:
-            self._set_status("[bold red]No valid hosts in input[/bold red]")
+            msg = "[bold red]No valid hosts in input[/bold red]"
+            if unresolved:
+                msg = (
+                    f"[bold red]Could not resolve: "
+                    f"{', '.join(unresolved)}[/bold red]"
+                )
+            self._set_status(msg)
             return
+
+        if resolved:
+            parts = [f"{h} → {ip}" for h, ip in resolved.items()]
+            self._set_status(f"[green]Resolved: {', '.join(parts)}[/green]")
 
         # Treat all direct hosts as alive — skip the ping sweep
         self._resolved_ips = ips
@@ -2185,11 +2253,18 @@ class AnsibleRunModal(ModalScreen):
         if self._selected_credential:
             cred_args, cred_env = build_credential_args(self._selected_credential)
 
+        # Build extra-vars arguments
+        extra_args: list[str] = []
+        if self._extra_vars:
+            import json
+            extra_args.extend(["--extra-vars", json.dumps(self._extra_vars)])
+
         # Create interactive runner with PTY
         runner = PlaybookRunner(
             self._playbook.path,
             inv_path,
             self._log_path,
+            extra_args=extra_args,
             credential_args=cred_args,
             credential_env=cred_env,
         )
@@ -2283,12 +2358,14 @@ class AnsibleRunModal(ModalScreen):
             self._update_phase_content("\n".join(summary_parts))
 
         action_btn = self.query_one("#run-action-btn", Button)
-        action_btn.label = "Close"
-        action_btn.variant = "default"
+        action_btn.label = "Done"
+        action_btn.variant = "primary"
         action_btn.disabled = False
 
         cancel_btn = self.query_one("#run-cancel-btn", Button)
-        cancel_btn.label = "Close"
+        cancel_btn.display = False
+
+        action_btn.focus()
 
         status = self.query_one("#run-status", Static)
         if self._aborted:

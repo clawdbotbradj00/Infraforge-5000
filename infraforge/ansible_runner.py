@@ -208,6 +208,118 @@ def parse_ip_ranges(text: str) -> list[str]:
     return result
 
 
+def resolve_targets(
+    text: str,
+    dns_client=None,
+    dns_zones: list[str] | None = None,
+) -> tuple[list[str], dict[str, str], list[str]]:
+    """Parse targets that may include hostnames, IPs, and CIDR ranges.
+
+    For each comma-separated token:
+    1. Try ``parse_ip_ranges()`` first (handles IPs, CIDRs, ranges).
+    2. If that yields nothing, treat the token as a hostname and attempt
+       DNS resolution — first as-is (FQDN), then with each configured
+       zone appended (e.g. ``dns-test`` → ``dns-test.easypl.net``).
+    3. Falls back to system DNS (``socket.gethostbyname``) if no
+       *dns_client* is available or the client can't resolve it.
+
+    Returns:
+        (ips, resolved, unresolved) where:
+        - *ips*: deduplicated list of resolved IP addresses
+        - *resolved*: mapping of hostname → IP for names that resolved
+        - *unresolved*: list of hostnames that could not be resolved
+    """
+    import socket
+
+    zones = dns_zones or []
+    all_ips: list[str] = []
+    resolved: dict[str, str] = {}
+    unresolved: list[str] = []
+
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+
+    for part in parts:
+        # Try IP parsing first
+        ip_result = parse_ip_ranges(part)
+        if ip_result:
+            all_ips.extend(ip_result)
+            continue
+
+        # Not an IP/range — treat as hostname
+        hostname = part.strip()
+        ip = _resolve_hostname(hostname, dns_client, zones)
+
+        if ip:
+            resolved[hostname] = ip
+            all_ips.append(ip)
+        else:
+            unresolved.append(hostname)
+
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for ip in all_ips:
+        if ip not in seen:
+            seen.add(ip)
+            deduped.append(ip)
+
+    return deduped, resolved, unresolved
+
+
+def _resolve_hostname(
+    hostname: str,
+    dns_client=None,
+    zones: list[str] | None = None,
+) -> str:
+    """Try to resolve a hostname to an IP address.
+
+    Resolution order:
+    1. Query dns_client for hostname as-is (may be FQDN already)
+    2. Query dns_client for hostname + each zone suffix
+    3. Fall back to system DNS (socket.gethostbyname) as-is
+    4. Fall back to system DNS with each zone suffix
+    """
+    import socket
+
+    zones = zones or []
+
+    # --- Try via InfraForge DNS client (configured BIND9 server) ---
+    if dns_client is not None:
+        # Try as-is first (user may have entered a FQDN)
+        try:
+            results = dns_client.lookup_record(hostname, rtype="A")
+            if results:
+                return results[0]
+        except Exception:
+            pass
+
+        # Try with each configured zone appended
+        for zone in zones:
+            fqdn = f"{hostname}.{zone}" if not hostname.endswith(f".{zone}") else hostname
+            try:
+                results = dns_client.lookup_record(fqdn, rtype="A")
+                if results:
+                    return results[0]
+            except Exception:
+                pass
+
+    # --- Fall back to system DNS ---
+    try:
+        return socket.gethostbyname(hostname)
+    except socket.gaierror:
+        pass
+
+    # Try with zone suffixes via system DNS
+    for zone in zones:
+        fqdn = f"{hostname}.{zone}" if not hostname.endswith(f".{zone}") else hostname
+        try:
+            return socket.gethostbyname(fqdn)
+        except socket.gaierror:
+            pass
+
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Ping sweep
 # ---------------------------------------------------------------------------

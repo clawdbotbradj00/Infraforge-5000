@@ -19,7 +19,6 @@ import os
 import re
 import socket
 import subprocess
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -448,6 +447,11 @@ class DNSServerWizardScreen(Screen):
                 self.spec.template = m.get("name", "")
                 self.spec.template_vmid = m.get("vmid")
                 self.spec.template_volid = ""
+            elif m.get("type") == "cloud_image":
+                self.spec.vm_type = VMType.QEMU
+                self.spec.template_volid = m.get("volid", "")
+                self.spec.template = m.get("name", "")
+                self.spec.template_vmid = None
         elif item.group == "subnet":
             self._apply_subnet_selection(item)
         elif item.group == "ip":
@@ -654,6 +658,17 @@ class DNSServerWizardScreen(Screen):
         if item.kind == "option":
             mark = "[green]\u25cf[/green]" if item.selected else "[dim]\u25cb[/dim]"
             lbl = f"[bold]{item.label}[/bold]" if is_cur else item.label
+            # Highlight auto-suggested IP in yellow
+            if (
+                item.group == "ip"
+                and item.selected
+                and self._available_ips
+                and item.key == self._available_ips[0]
+            ):
+                if is_cur:
+                    lbl = f"[bold yellow]{item.label}[/bold yellow]  [dim yellow]\u2190 suggested[/dim yellow]"
+                else:
+                    lbl = f"[yellow]{item.label}[/yellow]  [dim yellow]\u2190 suggested[/dim yellow]"
             return f" {cur} {mark}  {lbl}"
 
         if item.kind == "input":
@@ -964,13 +979,17 @@ class DNSServerWizardScreen(Screen):
         ))
 
         selected_node = self.spec.node
-        # Filter to Ubuntu/Debian templates only
-        ct_templates = [
+
+        # Cloud images (QEMU-bootable .img/.qcow2 from ISO storage)
+        cloud_images = [
             t for t in self._templates
-            if t.template_type == TemplateType.CONTAINER
+            if t.template_type == TemplateType.ISO
             and t.node == selected_node
+            and any(t.name.lower().endswith(ext) for ext in ('.img', '.qcow2'))
             and self._is_ubuntu_or_debian(t.name)
         ]
+
+        # Filter to Ubuntu/Debian VM templates only
         vm_templates = [
             t for t in self._templates
             if t.template_type == TemplateType.VM
@@ -978,23 +997,23 @@ class DNSServerWizardScreen(Screen):
             and self._is_ubuntu_or_debian(t.name)
         ]
 
-        if ct_templates:
+        if cloud_images:
             items.append(WizItem(
                 kind="header",
-                label=f"LXC CONTAINER TEMPLATES  [dim]on {selected_node}[/dim]",
+                label=f"QEMU CLOUD IMAGES  [dim]on {selected_node}[/dim]",
             ))
-            for t in ct_templates:
+            for t in cloud_images:
                 lbl = t.name
                 if t.storage:
                     lbl += f"  [dim]({t.storage}  {t.size_display})[/dim]"
                 items.append(WizItem(
                     kind="option", label=lbl,
-                    key=f"ct:{t.volid or t.name}", group="template",
+                    key=f"cloud:{t.volid or t.name}", group="template",
                     selected=(
                         self.spec.template_volid == (t.volid or t.name)
-                        and self.spec.vm_type == VMType.LXC
+                        and self.spec.vm_type == VMType.QEMU
                     ),
-                    meta={"type": "ct", "volid": t.volid or t.name,
+                    meta={"type": "cloud_image", "volid": t.volid or t.name,
                           "name": t.name},
                 ))
 
@@ -1015,11 +1034,12 @@ class DNSServerWizardScreen(Screen):
                     meta={"type": "vm", "name": t.name, "vmid": t.vmid},
                 ))
 
-        # Also show all templates in case there are no Ubuntu/Debian ones
-        all_ct = [
+        # Also show other templates (non-Ubuntu/Debian) in case needed
+        other_cloud = [
             t for t in self._templates
-            if t.template_type == TemplateType.CONTAINER
+            if t.template_type == TemplateType.ISO
             and t.node == selected_node
+            and any(t.name.lower().endswith(ext) for ext in ('.img', '.qcow2'))
             and not self._is_ubuntu_or_debian(t.name)
         ]
         all_vm = [
@@ -1029,23 +1049,23 @@ class DNSServerWizardScreen(Screen):
             and not self._is_ubuntu_or_debian(t.name)
         ]
 
-        if all_ct or all_vm:
+        if other_cloud or all_vm:
             items.append(WizItem(
                 kind="header",
                 label="OTHER TEMPLATES",
             ))
-            for t in all_ct:
+            for t in other_cloud:
                 lbl = t.name
                 if t.storage:
                     lbl += f"  [dim]({t.storage}  {t.size_display})[/dim]"
                 items.append(WizItem(
                     kind="option", label=lbl,
-                    key=f"ct:{t.volid or t.name}", group="template",
+                    key=f"cloud:{t.volid or t.name}", group="template",
                     selected=(
                         self.spec.template_volid == (t.volid or t.name)
-                        and self.spec.vm_type == VMType.LXC
+                        and self.spec.vm_type == VMType.QEMU
                     ),
-                    meta={"type": "ct", "volid": t.volid or t.name,
+                    meta={"type": "cloud_image", "volid": t.volid or t.name,
                           "name": t.name},
                 ))
             for t in all_vm:
@@ -1060,7 +1080,7 @@ class DNSServerWizardScreen(Screen):
                     meta={"type": "vm", "name": t.name, "vmid": t.vmid},
                 ))
 
-        if not ct_templates and not vm_templates and not all_ct and not all_vm:
+        if not cloud_images and not vm_templates and not other_cloud and not all_vm:
             if self._data_loaded:
                 items.append(WizItem(
                     kind="info",
@@ -1743,8 +1763,20 @@ class DNSServerWizardScreen(Screen):
                 self._ip_from_ipam = True
             if self._step == 2:
                 self.app.call_from_thread(self._render_step)
+                self.app.call_from_thread(self._focus_first_available_ip)
         except Exception:
             self._available_ips = []
+
+    def _focus_first_available_ip(self):
+        """Move cursor to the first available IP option after IPs load."""
+        if not self._available_ips:
+            return
+        for i, item in enumerate(self._items):
+            if item.group == "ip" and item.key == self._available_ips[0]:
+                self._cursor = i
+                self._refresh_lines()
+                self._scroll_to_cursor()
+                break
 
     def _scan_ssh_keys(self):
         keys: list[tuple[str, str]] = []
@@ -2057,10 +2089,40 @@ class DNSServerWizardScreen(Screen):
             log("[green]  Plan successful[/green]\n")
 
             log("[bold]Running terraform apply...[/bold]")
-            ok, output = tf.terraform_apply(deploy_dir)
-            if output.strip():
-                for line in output.strip().split("\n")[-10:]:
-                    log(f"[dim]  {line}[/dim]")
+            log("[dim]  Polling Proxmox for real-time task progress...[/dim]")
+
+            # Start Proxmox progress monitor to track clone/create tasks
+            progress_monitor = None
+            try:
+                from infraforge.proxmox_progress import ProxmoxProgressMonitor
+                proxmox_client = self.app.proxmox
+                progress_monitor = ProxmoxProgressMonitor(
+                    proxmox_client,
+                    self.spec.node,
+                    log_fn=log,
+                    poll_interval=2.0,
+                )
+                progress_monitor.start()
+            except Exception:
+                pass  # Monitor is optional — deployment works without it
+
+            def _on_apply_line(line: str):
+                stripped = line.strip()
+                if stripped:
+                    safe = stripped.replace("[", "\\[")
+                    log(f"[dim]  {safe}[/dim]")
+
+            ok, output = tf.terraform_apply_streaming(
+                deploy_dir, line_callback=_on_apply_line,
+            )
+
+            # Stop the progress monitor
+            if progress_monitor is not None:
+                try:
+                    progress_monitor.stop()
+                except Exception:
+                    pass
+
             if not ok:
                 log("[red]terraform apply failed![/red]")
                 if output:
@@ -2109,15 +2171,18 @@ class DNSServerWizardScreen(Screen):
             log("[bold]============================================[/bold]\n")
 
             if self.spec.ip_address:
-                ansible_success = self._run_ansible_playbook(log_fn=log)
-                self._deploy_results["ansible_ok"] = ansible_success
-                if ansible_success:
-                    log("\n[bold green]  BIND9 configured "
-                        "successfully![/bold green]\n")
+                modal_launched = self._launch_ansible_modal(log_fn=log)
+                if modal_launched:
+                    log("[bold green]  Ansible configuration deferred "
+                        "to modal.[/bold green]")
+                    log("[dim]  The BIND9 playbook will run in the "
+                        "Ansible Run Modal window.[/dim]\n")
+                    self._deploy_results["ansible_ok"] = True
                 else:
-                    log("\n[yellow]  Ansible playbook failed. "
+                    log("\n[yellow]  Could not launch Ansible modal. "
                         "The VM was created but BIND9 may not be "
                         "fully configured.[/yellow]\n")
+                    self._deploy_results["ansible_ok"] = False
             else:
                 log("[yellow]  Skipping Ansible — no IP address "
                     "available.[/yellow]\n")
@@ -2306,11 +2371,15 @@ class DNSServerWizardScreen(Screen):
         except (FileNotFoundError, Exception):
             return False
 
-    def _run_ansible_playbook(self, log_fn=None) -> bool:
-        """Run the bind9-server.yml playbook against the target VM.
+    def _launch_ansible_modal(self, log_fn=None) -> bool:
+        """Launch AnsibleRunModal for the bind9-server.yml playbook.
 
-        Returns True if the playbook succeeds.
+        Builds PlaybookInfo, CredentialProfile, and extra_vars, then pushes
+        the modal.  Returns True if the modal was launched successfully.
         """
+        from infraforge.ansible_runner import PlaybookInfo, _parse_playbook
+        from infraforge.credential_manager import CredentialProfile
+
         playbook_dir = Path(self.app.config.ansible.playbook_dir).resolve()
         playbook_path = playbook_dir / "bind9-server.yml"
 
@@ -2327,7 +2396,22 @@ class DNSServerWizardScreen(Screen):
                 log_fn("[red]  No IP address — cannot run Ansible[/red]")
             return False
 
-        # Build zone list as JSON for --extra-vars
+        # Build PlaybookInfo from the playbook file
+        pb = _parse_playbook(playbook_path, playbook_path.parent / "logs")
+        if not pb:
+            pb = PlaybookInfo(
+                path=playbook_path,
+                filename=playbook_path.name,
+                name=playbook_path.stem,
+                hosts="targets",
+                task_count=0,
+                description="",
+                has_roles=False,
+                last_run=None,
+                last_status="never",
+            )
+
+        # Build extra_vars with DNS configuration
         zones = [
             z.strip()
             for z in self._dns_zones_str.split(",")
@@ -2349,31 +2433,10 @@ class DNSServerWizardScreen(Screen):
             "dns_domain": self.spec.dns_domain,
         }
 
-        # Detect the correct SSH user for the target OS
+        # Build CredentialProfile from the wizard's SSH/auth settings
         ssh_user = self._detect_ssh_user()
+        private_key_path = ""
 
-        # Write a temporary inventory file with the [targets] group
-        # so it matches the playbook's `hosts: targets`
-        inv_fd, inv_path = tempfile.mkstemp(
-            prefix="infraforge_inv_", suffix=".ini", text=True,
-        )
-        with os.fdopen(inv_fd, "w") as inv_f:
-            inv_f.write(f"[targets]\n{ip}\n")
-
-        # Build command
-        cmd = [
-            "ansible-playbook",
-            str(playbook_path),
-            "-i", inv_path,
-            "-u", ssh_user,
-            "--extra-vars", json.dumps(extra_vars),
-        ]
-
-        # Non-root users need privilege escalation for system tasks
-        if ssh_user != "root":
-            cmd.append("--become")
-
-        # SSH key argument
         if self._auth_method == "ssh_key" and self.spec.ssh_keys:
             # Find the private key corresponding to the public key
             for label, pubkey in self._ssh_keys:
@@ -2382,129 +2445,45 @@ class DNSServerWizardScreen(Screen):
                         Path.home() / ".ssh" / label.replace(".pub", "")
                     )
                     if key_file.exists():
-                        cmd.extend([
-                            "--private-key", str(key_file),
-                        ])
+                        private_key_path = str(key_file)
                     break
 
-        # Disable host key checking for new VMs
-        env_vars = {
-            "ANSIBLE_HOST_KEY_CHECKING": "False",
-            "ANSIBLE_PYTHON_INTERPRETER": "auto_silent",
-        }
+        if self._auth_method == "ssh_key":
+            cred = CredentialProfile(
+                name="dns-deploy-key",
+                auth_type="ssh_key",
+                username=ssh_user,
+                private_key_path=private_key_path,
+                become=ssh_user != "root",
+            )
+        else:
+            cred = CredentialProfile(
+                name="dns-deploy-password",
+                auth_type="password",
+                username=ssh_user,
+                password=self._root_password,
+                become=ssh_user != "root",
+            )
 
         if log_fn:
             log_fn(f"[dim]  SSH user: {ssh_user}[/dim]")
             if ssh_user != "root":
-                log_fn("[dim]  Privilege escalation: --become (sudo)[/dim]")
-            safe_cmd = " ".join(cmd)
-            log_fn(f"[dim]  $ {safe_cmd}[/dim]\n")
-
-        try:
-            env = os.environ.copy()
-            env.update(env_vars)
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,
-                env=env,
+                log_fn("[dim]  Privilege escalation: become (sudo)[/dim]")
+            log_fn(f"[dim]  Playbook: {playbook_path.name}[/dim]")
+            log_fn(f"[dim]  Target: {ip}[/dim]")
+            log_fn(
+                "[bold]  Launching Ansible Run Modal...[/bold]\n"
             )
 
-            # Save log file for post-mortem debugging
-            self._save_ansible_log(
-                Path(self.app.config.ansible.playbook_dir).resolve(),
-                result,
-            )
+        # Push the AnsibleRunModal with pre-populated targets, credential, and extra_vars
+        from infraforge.screens.ansible_run_modal import AnsibleRunModal
 
-            # Stream output
-            if log_fn:
-                for line in result.stdout.split("\n"):
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    # Escape Rich markup in raw ansible output
-                    safe = stripped.replace("[", "\\[")
-                    if "ok:" in stripped or "ok=" in stripped:
-                        log_fn(f"[green]  {safe}[/green]")
-                    elif "changed:" in stripped or "changed=" in stripped:
-                        log_fn(f"[yellow]  {safe}[/yellow]")
-                    elif "failed:" in stripped or "fatal:" in stripped.lower():
-                        log_fn(f"[red]  {safe}[/red]")
-                    elif "TASK" in stripped or "PLAY" in stripped:
-                        log_fn(f"[bold]  {safe}[/bold]")
-                    elif "RECAP" in stripped:
-                        log_fn(f"\n[bold]  {safe}[/bold]")
-                    else:
-                        log_fn(f"[dim]  {safe}[/dim]")
+        modal = AnsibleRunModal(
+            playbook=pb,
+            target_ips=[ip],
+            credential=cred,
+            extra_vars=extra_vars,
+        )
+        self.app.call_from_thread(self.app.push_screen, modal)
+        return True
 
-                if result.stderr:
-                    for line in result.stderr.split("\n")[-5:]:
-                        if line.strip():
-                            safe = line.strip().replace("[", "\\[")
-                            log_fn(f"[red]  {safe}[/red]")
-
-                # Show log file path
-                if self._deploy_log_path:
-                    log_fn(
-                        f"\n[dim]  Log saved: {self._deploy_log_path}[/dim]"
-                    )
-
-            return result.returncode == 0
-
-        except subprocess.TimeoutExpired:
-            if log_fn:
-                log_fn("[red]  Ansible timed out after 600s[/red]")
-            return False
-        except FileNotFoundError:
-            if log_fn:
-                log_fn("[red]  ansible-playbook not found[/red]")
-            return False
-        except Exception as e:
-            if log_fn:
-                log_fn(f"[red]  Ansible error: {e}[/red]")
-            return False
-        finally:
-            # Clean up temp inventory file
-            try:
-                os.unlink(inv_path)
-            except OSError:
-                pass
-
-    def _save_ansible_log(
-        self,
-        playbook_dir: Path,
-        result: subprocess.CompletedProcess,
-    ) -> None:
-        """Persist combined stdout+stderr to a timestamped log file.
-
-        Log files are written to ``<playbook_dir>/logs/`` using the naming
-        convention ``bind9-server_YYYYMMDD_HHMMSS.log`` so they are easy to
-        find and sort chronologically.
-        """
-        self._deploy_log_path = None
-        try:
-            log_dir = playbook_dir / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_path = log_dir / f"bind9-server_{ts}.log"
-            ssh_user = self._detect_ssh_user()
-            with open(log_path, "w") as fh:
-                fh.write(f"=== bind9-server.yml  {ts} ===\n")
-                fh.write(f"Target: {self.spec.ip_address}\n")
-                fh.write(f"SSH user: {ssh_user}\n")
-                fh.write(f"Return code: {result.returncode}\n")
-                fh.write("=" * 60 + "\n\n")
-                if result.stdout:
-                    fh.write("--- STDOUT ---\n")
-                    fh.write(result.stdout)
-                    fh.write("\n")
-                if result.stderr:
-                    fh.write("--- STDERR ---\n")
-                    fh.write(result.stderr)
-                    fh.write("\n")
-            self._deploy_log_path = log_path
-        except Exception:
-            # Logging failure must not break the deployment
-            pass

@@ -572,6 +572,14 @@ class TerraformManager:
             escaped = spec.description.replace('\\', '\\\\').replace('"', '\\"')
             lines.append(f'  description = "{escaped}"')
 
+        # Cloud image detection: volid from ISO storage with .img/.qcow2 extension
+        is_cloud_image = (
+            not spec.template_vmid
+            and spec.template_volid
+            and any(spec.template_volid.lower().endswith(ext)
+                    for ext in ('.img', '.qcow2'))
+        )
+
         # Clone from template VM
         if spec.template_vmid:
             lines.extend([
@@ -591,12 +599,30 @@ class TerraformManager:
             '  memory {',
             f'    dedicated = {spec.memory_mb}',
             '  }',
-            '',
-            '  disk {',
-            f'    datastore_id = "{spec.storage}"',
-            '    interface    = "scsi0"',
-            f'    size         = {spec.disk_gb}',
-            '  }',
+        ])
+
+        # Disk block — cloud images use file_id to import the image as a disk
+        if is_cloud_image:
+            lines.extend([
+                '',
+                '  disk {',
+                f'    datastore_id = "{spec.storage}"',
+                f'    file_id      = "{spec.template_volid}"',
+                '    interface    = "scsi0"',
+                f'    size         = {spec.disk_gb}',
+                '  }',
+            ])
+        else:
+            lines.extend([
+                '',
+                '  disk {',
+                f'    datastore_id = "{spec.storage}"',
+                '    interface    = "scsi0"',
+                f'    size         = {spec.disk_gb}',
+                '  }',
+            ])
+
+        lines.extend([
             '',
             '  network_device {',
             f'    bridge = "{spec.network_bridge}"',
@@ -605,10 +631,25 @@ class TerraformManager:
         if spec.vlan_tag:
             lines.append(f'    vlan_id = {spec.vlan_tag}')
 
+        lines.append('  }')
+
+        # Cloud images need a serial console for cloud-init output
+        if is_cloud_image:
+            lines.extend([
+                '',
+                '  serial_device {}',
+            ])
+
         lines.extend([
-            '  }',
             '',
             '  initialization {',
+        ])
+
+        # Cloud images need datastore_id for the cloud-init drive
+        if is_cloud_image:
+            lines.append(f'    datastore_id = "{spec.storage}"')
+
+        lines.extend([
             '    ip_config {',
             '      ipv4 {',
         ])
@@ -807,6 +848,57 @@ class TerraformManager:
             return result.returncode == 0, output
         except subprocess.TimeoutExpired:
             return False, "terraform apply timed out after 300s"
+        except Exception as e:
+            return False, str(e)
+
+    def terraform_apply_streaming(
+        self,
+        deploy_dir: Path,
+        line_callback=None,
+        timeout: int = 300,
+    ) -> tuple[bool, str]:
+        """Run terraform apply with line-by-line streaming output.
+
+        Args:
+            deploy_dir: Deployment directory containing main.tf.
+            line_callback: Optional callback invoked with each output line.
+            timeout: Maximum seconds to wait (default 300).
+
+        Returns:
+            (success, full_output) tuple.
+        """
+        try:
+            proc = subprocess.Popen(
+                ["terraform", "apply", "-auto-approve", "-no-color"],
+                cwd=str(deploy_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            output_lines = []
+            import time as _time
+            start = _time.monotonic()
+
+            for line in proc.stdout:
+                output_lines.append(line)
+                if line_callback:
+                    line_callback(line.rstrip("\n"))
+                if _time.monotonic() - start > timeout:
+                    proc.kill()
+                    proc.wait()
+                    output_lines.append(
+                        f"\nterraform apply timed out after {timeout}s\n"
+                    )
+                    return False, "".join(output_lines)
+
+            proc.wait()
+            full_output = "".join(output_lines)
+            return proc.returncode == 0, full_output
+
+        except FileNotFoundError:
+            return False, "terraform not found in PATH"
         except Exception as e:
             return False, str(e)
 

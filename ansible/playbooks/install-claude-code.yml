@@ -1,0 +1,167 @@
+---
+- name: Install NVM, Node.js v22, and Claude Code for all users
+  hosts: targets
+  become: true
+
+  vars:
+    nvm_version: "v0.40.4"
+    node_version: "v22"
+    nvm_install_url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
+
+  tasks:
+    # ── Gather target users ─────────────────────────────────────────────
+    - name: Get all users with a real login shell
+      shell: |
+        awk -F: '($3 == 0 || $3 >= 1000) && $7 !~ /nologin|false/ { print $1":"$6 }' /etc/passwd
+      register: user_list
+      changed_when: false
+
+    # ── Ensure curl is installed ────────────────────────────────────────
+    - name: Install curl (Debian/Ubuntu)
+      apt:
+        name: curl
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install curl (RHEL/CentOS)
+      yum:
+        name: curl
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # ── Install NVM per user ────────────────────────────────────────────
+    - name: Check if NVM is already installed for each user
+      stat:
+        path: "{{ item.split(':')[1] }}/.nvm/nvm.sh"
+      register: nvm_check
+      loop: "{{ user_list.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+
+    - name: Install NVM for users that do not have it
+      shell: |
+        export HOME="{{ item.item.split(':')[1] }}"
+        export NVM_DIR="$HOME/.nvm"
+        curl -o- {{ nvm_install_url }} | bash
+      args:
+        creates: "{{ item.item.split(':')[1] }}/.nvm/nvm.sh"
+      become_user: "{{ item.item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.item.split(':')[1] }}"
+      loop: "{{ nvm_check.results }}"
+      loop_control:
+        label: "{{ item.item.split(':')[0] }}"
+      when: not item.stat.exists
+
+    # ── Install Node.js v22 per user ────────────────────────────────────
+    - name: Check if Node.js {{ node_version }} is installed for each user
+      shell: |
+        export NVM_DIR="{{ item.split(':')[1] }}/.nvm"
+        . "$NVM_DIR/nvm.sh"
+        nvm ls {{ node_version }} 2>/dev/null | grep -q "{{ node_version }}"
+      become_user: "{{ item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.split(':')[1] }}"
+      register: node_check
+      loop: "{{ user_list.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Install Node.js {{ node_version }} and set as default
+      shell: |
+        export NVM_DIR="{{ item.item.split(':')[1] }}/.nvm"
+        . "$NVM_DIR/nvm.sh"
+        nvm install {{ node_version }}
+        nvm alias default {{ node_version }}
+        nvm use default
+      become_user: "{{ item.item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.item.split(':')[1] }}"
+      loop: "{{ node_check.results }}"
+      loop_control:
+        label: "{{ item.item.split(':')[0] }}"
+      when: item.rc != 0
+
+    # ── Install Claude Code globally (per-user npm) ─────────────────────
+    - name: Check if Claude Code is already installed for each user
+      shell: |
+        export NVM_DIR="{{ item.split(':')[1] }}/.nvm"
+        . "$NVM_DIR/nvm.sh"
+        npm list -g @anthropic-ai/claude-code 2>/dev/null | grep -q claude-code
+      become_user: "{{ item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.split(':')[1] }}"
+      register: claude_check
+      loop: "{{ user_list.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Install Claude Code via npm for users that do not have it
+      shell: |
+        export NVM_DIR="{{ item.item.split(':')[1] }}/.nvm"
+        . "$NVM_DIR/nvm.sh"
+        npm install -g @anthropic-ai/claude-code
+      become_user: "{{ item.item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.item.split(':')[1] }}"
+      loop: "{{ claude_check.results }}"
+      loop_control:
+        label: "{{ item.item.split(':')[0] }}"
+      when: item.rc != 0
+
+    # ── Ensure NVM is sourced in bashrc for all users ───────────────────
+    - name: Ensure NVM is sourced in each user's bashrc
+      blockinfile:
+        path: "{{ item.split(':')[1] }}/.bashrc"
+        marker: "# {mark} NVM (managed by InfraForge)"
+        block: |
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+        insertafter: EOF
+        create: true
+        owner: "{{ item.split(':')[0] }}"
+        mode: "0644"
+      loop: "{{ user_list.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+
+    - name: Ensure NVM is sourced in /etc/skel/.bashrc for future users
+      blockinfile:
+        path: /etc/skel/.bashrc
+        marker: "# {mark} NVM (managed by InfraForge)"
+        block: |
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+        insertafter: EOF
+        create: true
+        mode: "0644"
+
+    # ── Verification ────────────────────────────────────────────────────
+    - name: Verify installation for each user
+      shell: |
+        export NVM_DIR="{{ item.split(':')[1] }}/.nvm"
+        . "$NVM_DIR/nvm.sh"
+        echo "node=$(node --version), claude-code=$(claude --version 2>/dev/null || echo 'not found')"
+      become_user: "{{ item.split(':')[0] }}"
+      environment:
+        HOME: "{{ item.split(':')[1] }}"
+      register: verify
+      loop: "{{ user_list.stdout_lines }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+      changed_when: false
+
+    - name: Show installation status
+      debug:
+        msg: "{{ item.item.split(':')[0] }}: {{ item.stdout }}"
+      loop: "{{ verify.results }}"
+      loop_control:
+        label: "{{ item.item.split(':')[0] }}"
