@@ -126,13 +126,54 @@ setup_venv() {
     if ! $PYTHON_CMD -m venv "$VENV_TEST_DIR/test_venv" &>/dev/null 2>&1; then
         rm -rf "$VENV_TEST_DIR"
         warn "python3-venv is not installed."
-        warn "Try: sudo apt install python3.10-venv (or equivalent for your distro)"
-        echo
-        if prompt_yesno "Continue with user-level pip install instead?" "y"; then
-            USE_VENV=false
+
+        # Build the correct package name from detected Python version
+        local venv_pkg="python${PYTHON_VERSION}-venv"
+
+        if command -v apt-get &>/dev/null; then
+            if prompt_yesno "Install ${venv_pkg} now?" "y"; then
+                info "Installing ${venv_pkg}..."
+                if [[ $EUID -eq 0 ]]; then
+                    apt-get install -y "$venv_pkg"
+                else
+                    warn "Root privileges required — you may be prompted for your password."
+                    sudo apt-get install -y "$venv_pkg"
+                fi
+
+                # Retry venv creation after install
+                VENV_TEST_DIR=$(mktemp -d)
+                if $PYTHON_CMD -m venv "$VENV_TEST_DIR/test_venv" &>/dev/null 2>&1; then
+                    rm -rf "$VENV_TEST_DIR"
+                    success "${venv_pkg} installed"
+                else
+                    rm -rf "$VENV_TEST_DIR"
+                    error "venv still not working after installing ${venv_pkg}."
+                    echo
+                    if prompt_yesno "Continue with user-level pip install instead?" "y"; then
+                        USE_VENV=false
+                    else
+                        error "Cannot proceed without venv or user-level install. Exiting."
+                        exit 1
+                    fi
+                fi
+            else
+                echo
+                if prompt_yesno "Continue with user-level pip install instead?" "y"; then
+                    USE_VENV=false
+                else
+                    error "Cannot proceed without venv or user-level install. Exiting."
+                    exit 1
+                fi
+            fi
         else
-            error "Cannot proceed without venv or user-level install. Exiting."
-            exit 1
+            warn "apt not found — install ${venv_pkg} (or equivalent for your distro) manually."
+            echo
+            if prompt_yesno "Continue with user-level pip install instead?" "y"; then
+                USE_VENV=false
+            else
+                error "Cannot proceed without venv or user-level install. Exiting."
+                exit 1
+            fi
         fi
     else
         rm -rf "$VENV_TEST_DIR"

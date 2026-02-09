@@ -14,7 +14,7 @@ RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ALL_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=50"
 CACHE_PATH = Path.home() / ".config" / "infraforge" / ".update_cache.json"
 PIN_PATH = Path.home() / ".config" / "infraforge" / ".version_pin"
-CACHE_TTL = 3600  # 1 hour
+CACHE_TTL = 600  # 10 minutes
 
 
 def _parse_version(v: str) -> tuple[int, ...]:

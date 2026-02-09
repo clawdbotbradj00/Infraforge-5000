@@ -269,16 +269,18 @@ class DashboardScreen(Screen):
         from infraforge.screens.ai_settings_screen import AISettingsScreen
         self.app.push_screen(AISettingsScreen())
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="update-check")
     def _check_for_update(self):
-        """Check GitHub for a newer release in the background."""
-        try:
-            from infraforge.updater import check_for_update
-            result = check_for_update()
-            if result:
-                self.app.call_from_thread(self._show_update_banner, result)
-        except Exception:
-            pass
+        """Check GitHub for a newer release on startup and every 10 minutes."""
+        while True:
+            try:
+                from infraforge.updater import check_for_update
+                result = check_for_update()
+                if result:
+                    self.app.call_from_thread(self._show_update_banner, result)
+            except Exception:
+                pass
+            time.sleep(600)  # Re-check every 10 minutes
 
     def _check_ai_config(self):
         """Show a hint banner if AI is not configured."""

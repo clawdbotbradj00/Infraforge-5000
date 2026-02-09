@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual import work
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, Select, Static, Switch
+from textual.widgets import Button, Input, Label, Select, Static, Switch
 
 
 # ── Arrow-key navigation mixin for config modals ──────────────────
@@ -56,6 +57,29 @@ class _ArrowNavModal(ModalScreen):
         else:
             fields[0].focus()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id or ""
+        if btn_id.startswith("reveal-"):
+            input_id = btn_id[len("reveal-"):]
+            try:
+                inp = self.query_one(f"#{input_id}", Input)
+                inp.password = not inp.password
+                event.button.label = "Hide" if not inp.password else "Reveal"
+            except Exception:
+                pass
+        elif btn_id.startswith("copy-"):
+            input_id = btn_id[len("copy-"):]
+            try:
+                inp = self.query_one(f"#{input_id}", Input)
+                value = inp.value
+                if value:
+                    self.app.copy_to_clipboard(value)
+                    self.notify("Copied to clipboard")
+                else:
+                    self.notify("Field is empty", severity="warning")
+            except Exception:
+                pass
+
 
 # ── Shared CSS for all config modals ───────────────────────────────
 
@@ -83,6 +107,22 @@ _BOX_CSS = """
 .modal-hint {
     margin: 1 0 0 0;
     color: $text-muted;
+}
+.secret-row {
+    height: auto;
+}
+.secret-row Input {
+    width: 1fr;
+}
+.reveal-btn {
+    width: 12;
+    min-width: 12;
+    margin: 0 0 0 1;
+}
+.copy-btn {
+    width: 10;
+    min-width: 10;
+    margin: 0 0 0 0;
 }
 """
 
@@ -150,10 +190,16 @@ ProxmoxConfigModal {
             yield Input(value=s.get("token_name", ""), placeholder="e.g. infraforge", id="f-token-name")
 
             yield Label("Token Value", classes="field-label", id="lbl-token-value")
-            yield Input(value=s.get("token_value", ""), placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", id="f-token-value", password=True)
+            with Horizontal(classes="secret-row", id="row-token-value"):
+                yield Input(value=s.get("token_value", ""), placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", id="f-token-value", password=True)
+                yield Button("Reveal", id="reveal-f-token-value", classes="reveal-btn")
+                yield Button("Copy", id="copy-f-token-value", classes="copy-btn")
 
             yield Label("Password", classes="field-label", id="lbl-password")
-            yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+            with Horizontal(classes="secret-row", id="row-password"):
+                yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+                yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
+                yield Button("Copy", id="copy-f-password", classes="copy-btn")
 
             yield Label("Verify SSL", classes="field-label")
             yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
@@ -179,10 +225,10 @@ ProxmoxConfigModal {
         # Token fields
         self.query_one("#f-token-name", Input).display = is_token
         self.query_one("#lbl-token-name").display = is_token
-        self.query_one("#f-token-value", Input).display = is_token
+        self.query_one("#row-token-value").display = is_token
         self.query_one("#lbl-token-value").display = is_token
         # Password field
-        self.query_one("#f-password", Input).display = not is_token
+        self.query_one("#row-password").display = not is_token
         self.query_one("#lbl-password").display = not is_token
 
     def action_save(self) -> None:
@@ -258,7 +304,10 @@ DNSConfigModal {
             yield Input(value=s.get("tsig_key_name", ""), placeholder="e.g. api-control", id="f-tsig-name")
 
             yield Label("TSIG Key Secret", classes="field-label")
-            yield Input(value=s.get("tsig_key_secret", ""), placeholder="base64 secret", id="f-tsig-secret", password=True)
+            with Horizontal(classes="secret-row"):
+                yield Input(value=s.get("tsig_key_secret", ""), placeholder="base64 secret", id="f-tsig-secret", password=True)
+                yield Button("Reveal", id="reveal-f-tsig-secret", classes="reveal-btn")
+                yield Button("Copy", id="copy-f-tsig-secret", classes="copy-btn")
 
             yield Label("TSIG Algorithm", classes="field-label")
             yield Select(
@@ -268,7 +317,10 @@ DNSConfigModal {
             )
 
             yield Label("API Key [dim](Cloudflare/Route53)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("api_key", ""), placeholder="API key", id="f-api-key", password=True)
+            with Horizontal(classes="secret-row"):
+                yield Input(value=s.get("api_key", ""), placeholder="API key", id="f-api-key", password=True)
+                yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
+                yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
 
             yield Static(
                 "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
@@ -310,34 +362,79 @@ class IPAMConfigModal(_ArrowNavModal):
 IPAMConfigModal {
     align: center middle;
 }
+#ipam-docker-fields, #ipam-existing-fields {
+    height: auto;
+}
+#docker-status {
+    height: auto;
+    margin: 1 0 0 0;
+}
 """ + _BOX_CSS
 
     def __init__(self, section: dict) -> None:
         super().__init__()
         self._sec = section
+        self._deploying = False
 
     def compose(self) -> ComposeResult:
         s = self._sec
+        default_method = "existing" if s.get("url") else "docker"
+
         with VerticalScroll(id="config-box"):
             yield Static("[bold]IPAM Configuration[/bold]  [dim](phpIPAM)[/dim]", id="config-title", markup=True)
 
-            yield Label("URL", classes="field-label")
-            yield Input(value=s.get("url", ""), placeholder="e.g. https://ipam.example.com", id="f-url")
+            yield Label("Setup Method", classes="field-label")
+            yield Select(
+                [
+                    ("Deploy phpIPAM with Docker (recommended)", "docker"),
+                    ("Connect to existing phpIPAM server", "existing"),
+                ],
+                value=default_method,
+                id="f-ipam-method",
+            )
 
-            yield Label("App ID", classes="field-label")
-            yield Input(value=s.get("app_id", "infraforge"), placeholder="infraforge", id="f-app-id")
+            # ── Docker deployment fields ──
+            with Vertical(id="ipam-docker-fields"):
+                yield Static(
+                    "[dim]Deploys a local phpIPAM instance with MariaDB, "
+                    "auto-configured API, and self-signed SSL.[/dim]",
+                    markup=True,
+                    classes="field-hint",
+                )
+                yield Label("HTTPS Port", classes="field-label")
+                yield Input(value="8443", placeholder="8443", id="f-docker-port")
+                yield Label("Admin Password", classes="field-label")
+                with Horizontal(classes="secret-row"):
+                    yield Input(value="admin", placeholder="admin", id="f-docker-pass", password=True)
+                    yield Button("Reveal", id="reveal-f-docker-pass", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-docker-pass", classes="copy-btn")
+                yield Static("", id="docker-status", markup=True)
 
-            yield Label("Token [dim](if token auth)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("token", ""), placeholder="API token", id="f-token", password=True)
+            # ── Existing server fields ──
+            with Vertical(id="ipam-existing-fields"):
+                yield Label("URL", classes="field-label")
+                yield Input(value=s.get("url", ""), placeholder="e.g. https://ipam.example.com", id="f-url")
 
-            yield Label("Username [dim](if user auth)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("username", ""), placeholder="admin", id="f-username")
+                yield Label("App ID", classes="field-label")
+                yield Input(value=s.get("app_id", "infraforge"), placeholder="infraforge", id="f-app-id")
 
-            yield Label("Password [dim](if user auth)[/dim]", classes="field-label", markup=True)
-            yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+                yield Label("Token [dim](if token auth)[/dim]", classes="field-label", markup=True)
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("token", ""), placeholder="API token", id="f-token", password=True)
+                    yield Button("Reveal", id="reveal-f-token", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-token", classes="copy-btn")
 
-            yield Label("Verify SSL", classes="field-label")
-            yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
+                yield Label("Username [dim](if user auth)[/dim]", classes="field-label", markup=True)
+                yield Input(value=s.get("username", ""), placeholder="admin", id="f-username")
+
+                yield Label("Password [dim](if user auth)[/dim]", classes="field-label", markup=True)
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("password", ""), placeholder="", id="f-password", password=True)
+                    yield Button("Reveal", id="reveal-f-password", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-password", classes="copy-btn")
+
+                yield Label("Verify SSL", classes="field-label")
+                yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
 
             yield Static(
                 "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
@@ -346,23 +443,249 @@ IPAMConfigModal {
                 markup=True,
             )
 
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._toggle_method_fields()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "f-ipam-method":
+            self._toggle_method_fields()
+
+    def _toggle_method_fields(self) -> None:
+        method = self.query_one("#f-ipam-method", Select).value
+        is_docker = method == "docker"
+        self.query_one("#ipam-docker-fields").display = is_docker
+        self.query_one("#ipam-existing-fields").display = not is_docker
+
+    def _set_status(self, msg: str) -> None:
+        self.query_one("#docker-status", Static).update(msg)
+
     def action_save(self) -> None:
-        url = self.query_one("#f-url", Input).value.strip()
-        if not url:
-            self.notify("URL is required!", severity="error")
+        method = self.query_one("#f-ipam-method", Select).value
+        if method == "docker":
+            if self._deploying:
+                return
+            port = self.query_one("#f-docker-port", Input).value.strip() or "8443"
+            admin_pass = self.query_one("#f-docker-pass", Input).value.strip() or "admin"
+            self._deploy_docker(port, admin_pass)
+        else:
+            url = self.query_one("#f-url", Input).value.strip()
+            if not url:
+                self.notify("URL is required!", severity="error")
+                return
+            result = {
+                "provider": "phpipam",
+                "url": url,
+                "app_id": self.query_one("#f-app-id", Input).value.strip() or "infraforge",
+                "token": self.query_one("#f-token", Input).value.strip(),
+                "username": self.query_one("#f-username", Input).value.strip(),
+                "password": self.query_one("#f-password", Input).value.strip(),
+                "verify_ssl": self.query_one("#f-verify-ssl", Switch).value,
+            }
+            self.dismiss(result)
+
+    @work(thread=True)
+    def _deploy_docker(self, port: str, admin_pass: str) -> None:
+        """Deploy phpIPAM Docker stack in a background thread."""
+        import secrets
+        import subprocess
+        import time
+        from pathlib import Path
+
+        self._deploying = True
+        docker_dir = Path(__file__).resolve().parent.parent.parent / "docker"
+
+        def status(msg: str) -> None:
+            self.app.call_from_thread(self._set_status, f"[bold cyan]{msg}[/bold cyan]")
+
+        def fail(msg: str) -> None:
+            self.app.call_from_thread(self._set_status, f"[bold red]{msg}[/bold red]")
+            self._deploying = False
+
+        # ── Step 1: Check Docker ──
+        status("Checking Docker...")
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            if r.returncode != 0:
+                fail("Docker is not available. Install Docker and try again.")
+                return
+        except FileNotFoundError:
+            fail("Docker is not installed.")
             return
+
+        # ── Step 2: Detect compose command ──
+        compose_cmd: list[str] | None = None
+        for candidate in [["docker", "compose"], ["docker-compose"]]:
+            try:
+                if subprocess.run(candidate + ["version"], capture_output=True, timeout=5).returncode == 0:
+                    compose_cmd = candidate
+                    break
+            except Exception:
+                continue
+        if not compose_cmd:
+            fail("docker compose not found. Install docker compose v2.")
+            return
+
+        # ── Step 3: Check if already running ──
+        try:
+            r = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", "infraforge-ipam-web"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.stdout.strip() == "true":
+                status("phpIPAM containers already running — using existing deployment.")
+                existing_port = port
+                env_file = docker_dir / ".env"
+                if env_file.exists():
+                    for line in env_file.read_text().splitlines():
+                        if line.startswith("IPAM_PORT="):
+                            existing_port = line.split("=", 1)[1].strip()
+                time.sleep(1)
+                self._deploying = False
+                self.app.call_from_thread(self.dismiss, {
+                    "provider": "phpipam",
+                    "url": f"https://localhost:{existing_port}",
+                    "app_id": "infraforge",
+                    "token": "",
+                    "username": "Admin",
+                    "password": admin_pass,
+                    "verify_ssl": False,
+                })
+                return
+        except Exception:
+            pass
+
+        # ── Step 4: Generate SSL certs ──
+        status("Generating SSL certificate...")
+        ssl_script = docker_dir / "phpipam" / "generate-ssl.sh"
+        if ssl_script.exists():
+            subprocess.run(
+                ["bash", str(ssl_script)],
+                cwd=str(docker_dir / "phpipam"),
+                capture_output=True, timeout=15,
+            )
+
+        # ── Step 5: Generate passwords + admin hash + write .env ──
+        status("Generating credentials...")
+        db_pass = secrets.token_urlsafe(16)
+        db_root_pass = secrets.token_urlsafe(16)
+
+        admin_hash = ""
+        escaped_pass = admin_pass.replace("'", "\\'")
+        php_code = f"echo password_hash('{escaped_pass}', PASSWORD_DEFAULT);"
+        for php_cmd in [
+            ["docker", "run", "--rm", "php:cli", "php", "-r", php_code],
+            ["docker", "run", "--rm", "phpipam/phpipam-www:latest", "php", "-r", php_code],
+        ]:
+            try:
+                r = subprocess.run(php_cmd, capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip().startswith("$2"):
+                    admin_hash = r.stdout.strip()
+                    break
+            except Exception:
+                continue
+
+        env_lines = [
+            f"IPAM_DB_ROOT_PASS={db_root_pass}",
+            f"IPAM_DB_PASS={db_pass}",
+            f"IPAM_PORT={port}",
+            "SCAN_INTERVAL=15m",
+        ]
+        if admin_hash:
+            env_lines.append(f"IPAM_ADMIN_HASH={admin_hash.replace('$', '$$')}")
+        (docker_dir / ".env").write_text("\n".join(env_lines) + "\n")
+
+        # ── Step 6: Launch containers ──
+        status("Starting containers...")
+        r = subprocess.run(
+            compose_cmd + ["-f", str(docker_dir / "docker-compose.yml"), "up", "-d"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            err = r.stderr.strip()[:200]
+            fail(f"Failed to start containers:\n[dim]{err}[/dim]")
+            return
+
+        # ── Step 7: Wait for readiness ──
+        status("Waiting for phpIPAM to start (may take 30-60s)...")
+        import ssl as ssl_mod
+        import urllib.request
+
+        url = f"https://localhost:{port}"
+        ready = False
+        for _ in range(60):
+            try:
+                ctx = ssl_mod.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl_mod.CERT_NONE
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
+                    if resp.status in (200, 301, 302):
+                        time.sleep(5)
+                        ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(3)
+
+        if not ready:
+            fail("phpIPAM did not become ready in time.\n[dim]Check: docker logs infraforge-ipam-web[/dim]")
+            return
+
+        # ── Step 8: Verify API ──
+        status("Verifying API connectivity...")
+        api_ok = False
+        for _ in range(5):
+            try:
+                from infraforge.config import Config, IPAMConfig
+                from infraforge.ipam_client import IPAMClient
+
+                cfg = Config()
+                cfg.ipam = IPAMConfig(
+                    provider="phpipam", url=url, app_id="infraforge",
+                    token="", username="Admin", password=admin_pass,
+                    verify_ssl=False,
+                )
+                client = IPAMClient(cfg)
+                if client.check_health():
+                    api_ok = True
+                    break
+            except Exception:
+                pass
+            time.sleep(3)
+
+        actual_pass = admin_pass
+        if not api_ok and not admin_hash:
+            actual_pass = "ipamadmin"
+            self.app.call_from_thread(
+                self.notify,
+                "Could not set admin password — default is 'ipamadmin'",
+                severity="warning",
+            )
+
+        self.app.call_from_thread(
+            self._set_status,
+            f"[bold green]phpIPAM deployed at {url}[/bold green]\n"
+            f"[dim]Web UI: {url}  (Admin / {actual_pass})[/dim]",
+        )
+
         result = {
             "provider": "phpipam",
             "url": url,
-            "app_id": self.query_one("#f-app-id", Input).value.strip() or "infraforge",
-            "token": self.query_one("#f-token", Input).value.strip(),
-            "username": self.query_one("#f-username", Input).value.strip(),
-            "password": self.query_one("#f-password", Input).value.strip(),
-            "verify_ssl": self.query_one("#f-verify-ssl", Switch).value,
+            "app_id": "infraforge",
+            "token": "",
+            "username": "Admin",
+            "password": actual_pass,
+            "verify_ssl": False,
         }
-        self.dismiss(result)
+        self._deploying = False
+        time.sleep(2)
+        self.app.call_from_thread(self.dismiss, result)
 
     def action_cancel(self) -> None:
+        if self._deploying:
+            self.notify("Deployment in progress — please wait", severity="warning")
+            return
         self.dismiss(None)
 
 
@@ -487,7 +810,10 @@ AIConfigModal {
             yield Static("[bold]AI Configuration[/bold]  [dim](Anthropic)[/dim]", id="config-title", markup=True)
 
             yield Label("API Key", classes="field-label")
-            yield Input(value=s.get("api_key", ""), placeholder="sk-ant-api03-...", id="f-api-key", password=True)
+            with Horizontal(classes="secret-row"):
+                yield Input(value=s.get("api_key", ""), placeholder="sk-ant-api03-...", id="f-api-key", password=True)
+                yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
+                yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
 
             yield Label("Model", classes="field-label")
             yield Select(
