@@ -1042,7 +1042,13 @@ AIChatModal {
     color: $success;
 }
 
+#setup-launch-row {
+    height: auto;
+    width: 100%;
+    align: center middle;
+    margin: 1 0;
+}
+
 #setup-launch-btn {
     width: 40;
-    margin: 1 auto;
 }

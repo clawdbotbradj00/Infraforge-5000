@@ -473,12 +473,12 @@ class SetupScreen(Screen):
                 markup=True,
                 classes="hidden",
             )
-            yield Button(
-                "\u2713  Launch InfraForge",
-                id="setup-launch-btn",
-                variant="success",
-                classes="hidden",
-            )
+            with Horizontal(id="setup-launch-row", classes="hidden"):
+                yield Button(
+                    "\u2713  Launch InfraForge",
+                    id="setup-launch-btn",
+                    variant="success",
+                )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -500,13 +500,13 @@ class SetupScreen(Screen):
                 ok_count += 1
         status = self.query_one("#setup-status", Static)
         complete_msg = self.query_one("#setup-complete-msg", Static)
-        launch_btn = self.query_one("#setup-launch-btn", Button)
+        launch_row = self.query_one("#setup-launch-row", Horizontal)
         if ok_count == total:
             status.update(
                 f"  [bold green]All {total} components configured![/bold green]"
             )
             complete_msg.remove_class("hidden")
-            launch_btn.remove_class("hidden")
+            launch_row.remove_class("hidden")
             # Show the "m" keybinding in the footer
             for binding in self.BINDINGS:
                 if hasattr(binding, "key") and binding.key == "m":
@@ -518,7 +518,7 @@ class SetupScreen(Screen):
                 f"[dim]\u2502[/dim]  [bold yellow]{total - ok_count} need attention[/bold yellow]"
             )
             complete_msg.add_class("hidden")
-            launch_btn.add_class("hidden")
+            launch_row.add_class("hidden")
             for binding in self.BINDINGS:
                 if hasattr(binding, "key") and binding.key == "m":
                     binding.show = False
