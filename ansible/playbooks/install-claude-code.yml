@@ -7,6 +7,8 @@
     nvm_version: "v0.40.4"
     node_version: "v22"
     nvm_install_url: "https://raw.githubusercontent.com/nvm-sh/nvm/{{ nvm_version }}/install.sh"
+    # SHA256 of the install.sh for the pinned nvm_version — update both together
+    nvm_install_sha256: "4b7412c49960c7d31e8df72da90c1fb5b8cccb419ac99537b737028d497aba4f"
 
   tasks:
     # ── Ensure acl is installed (required for become_user) ────────────
@@ -63,6 +65,7 @@
       get_url:
         url: "{{ nvm_install_url }}"
         dest: /tmp/nvm-install-{{ nvm_version }}.sh
+        checksum: "sha256:{{ nvm_install_sha256 }}"
         mode: '0755'
         force: no
       when: nvm_check.results | selectattr('stat.exists', 'equalto', false) | list | length > 0

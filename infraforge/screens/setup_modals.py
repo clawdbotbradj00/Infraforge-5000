@@ -580,7 +580,7 @@ IPAMConfigModal {{
         s = self._sec
         default_method = "existing" if s.get("url") else "docker"
         alphabet = string.ascii_lowercase + string.digits
-        default_pass = "".join(secrets.choice(alphabet) for _ in range(6))
+        default_pass = "".join(secrets.choice(alphabet) for _ in range(20))
 
         with Horizontal(id="config-outer"):
             with VerticalScroll(id="config-form"):
@@ -676,7 +676,7 @@ IPAMConfigModal {{
             if not admin_pass:
                 import secrets, string
                 alphabet = string.ascii_lowercase + string.digits
-                admin_pass = "".join(secrets.choice(alphabet) for _ in range(6))
+                admin_pass = "".join(secrets.choice(alphabet) for _ in range(20))
             self._deploy_docker(port, admin_pass)
         else:
             url = self.query_one("#f-url", Input).value.strip()

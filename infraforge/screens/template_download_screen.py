@@ -12,7 +12,9 @@ Flow:
 
 from __future__ import annotations
 
+import re
 import time
+import urllib.request
 from typing import Optional
 
 from textual.app import ComposeResult
@@ -39,6 +41,8 @@ CLOUD_IMAGES = [
         "filename": "noble-server-cloudimg-amd64.img",
         "format": "qcow2",
         "description": "Ubuntu 24.04 LTS cloud image with cloud-init support",
+        "checksum_url": "https://cloud-images.ubuntu.com/noble/current/SHA256SUMS",
+        "checksum_algo": "sha256sum",
     },
     {
         "name": "Ubuntu 22.04 LTS (Jammy)",
@@ -48,6 +52,8 @@ CLOUD_IMAGES = [
         "filename": "jammy-server-cloudimg-amd64.img",
         "format": "qcow2",
         "description": "Ubuntu 22.04 LTS cloud image with cloud-init support",
+        "checksum_url": "https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS",
+        "checksum_algo": "sha256sum",
     },
     {
         "name": "Debian 12 (Bookworm)",
@@ -57,6 +63,8 @@ CLOUD_IMAGES = [
         "filename": "debian-12-genericcloud-amd64.qcow2",
         "format": "qcow2",
         "description": "Debian 12 generic cloud image with cloud-init",
+        "checksum_url": "https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+        "checksum_algo": "sha512sum",
     },
     {
         "name": "Debian 11 (Bullseye)",
@@ -66,6 +74,8 @@ CLOUD_IMAGES = [
         "filename": "debian-11-genericcloud-amd64.qcow2",
         "format": "qcow2",
         "description": "Debian 11 generic cloud image with cloud-init",
+        "checksum_url": "https://cloud.debian.org/images/cloud/bullseye/latest/SHA512SUMS",
+        "checksum_algo": "sha512sum",
     },
     {
         "name": "Rocky Linux 9",
@@ -75,6 +85,8 @@ CLOUD_IMAGES = [
         "filename": "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
         "format": "qcow2",
         "description": "Rocky Linux 9 generic cloud image (RHEL-compatible)",
+        "checksum_url": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/CHECKSUM",
+        "checksum_algo": "sha256sum",
     },
     {
         "name": "AlmaLinux 9",
@@ -84,6 +96,8 @@ CLOUD_IMAGES = [
         "filename": "AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
         "format": "qcow2",
         "description": "AlmaLinux 9 generic cloud image (RHEL-compatible)",
+        "checksum_url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM",
+        "checksum_algo": "sha256sum",
     },
     {
         "name": "Fedora 40 Cloud",
@@ -93,6 +107,8 @@ CLOUD_IMAGES = [
         "filename": "Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2",
         "format": "qcow2",
         "description": "Fedora 40 cloud base image",
+        "checksum_url": "https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-40-1.14-x86_64-CHECKSUM",
+        "checksum_algo": "sha256sum",
     },
     {
         "name": "openSUSE Leap 15.6",
@@ -102,8 +118,44 @@ CLOUD_IMAGES = [
         "filename": "openSUSE-Leap-15.6-Minimal-VM.x86_64-Cloud.qcow2",
         "format": "qcow2",
         "description": "openSUSE Leap 15.6 minimal cloud image",
+        "checksum_url": "https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.x86_64-Cloud.qcow2.sha256",
+        "checksum_algo": "sha256sum",
     },
 ]
+
+def _fetch_checksum(checksum_url: str, filename: str) -> str | None:
+    """Fetch a checksum file and extract the hash for the given filename.
+
+    Supports standard formats:
+      - 'HASH  filename'  (sha256sum/sha512sum output)
+      - 'SHA256 (filename) = HASH'  (BSD/Fedora/Rocky style)
+      - Single hash on its own line (openSUSE .sha256 files)
+    Returns the hex hash string, or None on failure.
+    """
+    try:
+        req = urllib.request.Request(checksum_url, headers={"User-Agent": "InfraForge"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("-"):
+            continue
+        # BSD style: SHA256 (filename) = HASH
+        m = re.match(r'SHA(?:256|512)\s+\((.+?)\)\s*=\s*([0-9a-fA-F]+)', line)
+        if m and m.group(1) == filename:
+            return m.group(2).lower()
+        # Standard: HASH  filename  or  HASH *filename
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].lstrip("*").strip() == filename:
+            return parts[0].lower()
+        # Single-hash file (e.g. openSUSE .sha256)
+        if len(parts) == 1 and re.fullmatch(r'[0-9a-fA-F]{64,128}', parts[0]):
+            return parts[0].lower()
+    return None
+
 
 # Block-based storage types that cannot accept file uploads
 _BLOCK_STORAGE_TYPES = frozenset({
@@ -985,10 +1037,23 @@ class TemplateDownloadScreen(Screen):
             log(f"[bold]Downloading cloud image: {name}[/bold]")
             log(f"[dim]  URL: {url}[/dim]")
             log(f"[dim]  Target: {node}:{storage} as {filename}[/dim]")
+
+            # Fetch integrity checksum from distro's official checksum file
+            checksum_url = meta.get("checksum_url")
+            checksum_algo = meta.get("checksum_algo")
+            checksum_hash = None
+            if checksum_url:
+                log(f"[dim]  Fetching checksum from {checksum_url}...[/dim]")
+                checksum_hash = _fetch_checksum(checksum_url, filename)
+                if checksum_hash:
+                    log(f"[dim]  Checksum ({checksum_algo}): {checksum_hash[:16]}...[/dim]")
+                else:
+                    log("[yellow]  Warning: Could not extract checksum — downloading without verification[/yellow]")
             log("")
 
             upid = self.app.proxmox.download_url_to_storage(
                 node, storage, url, filename, content="iso",
+                checksum=checksum_hash, checksum_algorithm=checksum_algo,
             )
             log(f"[dim]  Task started: {upid}[/dim]")
             log("[dim]  Polling for progress...[/dim]\n")

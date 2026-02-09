@@ -29,8 +29,10 @@ run_sql "UPDATE settings SET api=1, scanPingType='fping', scanMaxThreads=32 WHER
 echo "[infraforge] API enabled, scan type set to fping"
 
 # 2. Create InfraForge API application (read/write, user token auth)
+# Generate a random app_code — not used for auth in 'user' mode but shouldn't be predictable
+APP_CODE=$(head -c 24 /dev/urandom | od -A n -t x1 | tr -d ' \n')
 run_sql "INSERT INTO api (app_id, app_code, app_permissions, app_security, app_lock)
-         VALUES ('infraforge', 'infraforge_auto', 2, 'user', 0);"
+         VALUES ('infraforge', '${APP_CODE}', 2, 'user', 0);"
 echo "[infraforge] API app 'infraforge' created (rw, security=user)"
 
 # 3. Set scan agent to mysql type (for cron-based scanning)
@@ -44,7 +46,7 @@ if [[ -n "${IPAM_ADMIN_HASH:-}" ]]; then
     run_sql "UPDATE users SET password='${ESCAPED_HASH}', passChange='No' WHERE username='Admin';"
     echo "[infraforge] Admin password set"
 else
-    echo "[infraforge] No IPAM_ADMIN_HASH provided — keeping default admin password (ipamadmin)"
+    echo "[infraforge] WARNING: No IPAM_ADMIN_HASH provided — admin account has an invalid placeholder password. Set a real password via the phpIPAM web UI."
 fi
 
 echo "[infraforge] Bootstrap complete!"

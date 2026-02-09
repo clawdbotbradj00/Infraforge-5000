@@ -369,14 +369,20 @@ class ProxmoxClient:
         return self.api.nodes(node).aplinfo.post(storage=storage, template=template)
 
     def download_url_to_storage(self, node: str, storage: str, url: str,
-                                filename: str, content: str = "iso") -> str:
+                                filename: str, content: str = "iso",
+                                checksum: str | None = None,
+                                checksum_algorithm: str | None = None) -> str:
         """Download a URL to Proxmox storage. Returns UPID.
 
         content: 'iso' for ISO images, 'vztmpl' for container templates
+        checksum: hex digest for integrity verification (optional)
+        checksum_algorithm: one of sha256sum, sha512sum, md5sum, etc.
         """
-        return self.api.nodes(node).storage(storage)('download-url').post(
-            url=url, filename=filename, content=content,
-        )
+        kwargs: dict = dict(url=url, filename=filename, content=content)
+        if checksum and checksum_algorithm:
+            kwargs["checksum"] = checksum
+            kwargs["checksum-algorithm"] = checksum_algorithm
+        return self.api.nodes(node).storage(storage)('download-url').post(**kwargs)
 
     # ------------------------------------------------------------------
     # Storage info (parallelized per node)
