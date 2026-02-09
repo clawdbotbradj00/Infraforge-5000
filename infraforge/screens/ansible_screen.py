@@ -7,20 +7,227 @@ lets users run playbooks against dynamically targeted hosts.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, Tree
-from textual.containers import Container, Horizontal
+from textual.screen import Screen, ModalScreen
+from textual.widgets import Header, Footer, Static, Tree, Input, Button, ListView, ListItem, Label
+from textual.containers import Container, Horizontal, Vertical
 from textual import work
 
 from rich.text import Text
 
 from infraforge.ansible_runner import PlaybookInfo, discover_playbooks
+from infraforge.credential_manager import CredentialManager
+
+
+# ---------------------------------------------------------------------------
+# SSH Key Selection Modal
+# ---------------------------------------------------------------------------
+
+class SSHKeySelectModal(ModalScreen):
+    """Pre-stage modal for selecting which SSH public key to deploy."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    SSHKeySelectModal {
+        align: center middle;
+    }
+    #sshkey-box {
+        width: 90;
+        height: auto;
+        max-height: 85%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+        overflow-y: auto;
+    }
+    #sshkey-list {
+        height: auto;
+        max-height: 16;
+        margin: 1 0;
+    }
+    #sshkey-gen-row {
+        height: auto;
+        margin: 1 0;
+        align: center middle;
+    }
+    #sshkey-gen-name {
+        width: 30;
+        margin: 0 1 0 0;
+    }
+    #sshkey-gen-btn {
+        width: auto;
+    }
+    #sshkey-pubkey-display {
+        height: auto;
+        max-height: 4;
+        margin: 1 0;
+        padding: 1 2;
+        border: round $primary-background;
+        background: $surface;
+        overflow-y: auto;
+    }
+    #sshkey-status {
+        height: auto;
+        margin: 1 0 0 0;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._keys: list[tuple[str, str, str]] = []  # (path, label, pubkey)
+        self._selected_pubkey: str = ""
+        self._generating: bool = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sshkey-box"):
+            yield Static(
+                "[bold]Select SSH Key to Deploy[/bold]\n\n"
+                "[dim]Choose an existing key or generate a new one. "
+                "The public key will be added to authorized_keys on all targets.[/dim]",
+                markup=True,
+            )
+            yield ListView(id="sshkey-list")
+            yield Static("", id="sshkey-status", markup=True)
+            yield Static(
+                "[bold dim]Generate New Key[/bold dim]",
+                markup=True,
+            )
+            with Horizontal(id="sshkey-gen-row"):
+                yield Input(
+                    placeholder="Key name (e.g. infraforge-deploy)",
+                    id="sshkey-gen-name",
+                )
+                yield Button("Generate", id="sshkey-gen-btn", variant="primary")
+            yield Static("", id="sshkey-pubkey-display", markup=True, classes="hidden")
+
+    def on_mount(self) -> None:
+        self._scan_keys()
+
+    def _scan_keys(self) -> None:
+        """Scan for SSH public keys and populate the list."""
+        keys: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+
+        search_dirs = [
+            (Path.home() / ".ssh", "~/.ssh"),
+            (Path.home() / ".config" / "infraforge" / "ssh_keys", "~/.config/infraforge/ssh_keys"),
+        ]
+
+        for dir_path, dir_label in search_dirs:
+            if not dir_path.is_dir():
+                continue
+            for pub in sorted(dir_path.glob("*.pub")):
+                try:
+                    content = pub.read_text().strip()
+                    if not content:
+                        continue
+                    if content in seen:
+                        continue
+                    seen.add(content)
+                    # Build label: key type + comment (last field) + location
+                    parts = content.split()
+                    key_type = parts[0] if parts else "unknown"
+                    comment = parts[2] if len(parts) > 2 else pub.stem
+                    label = f"{comment}  ({key_type})  [dim]{dir_label}/{pub.name}[/dim]"
+                    keys.append((str(pub), label, content))
+                except Exception:
+                    continue
+
+        self._keys = keys
+        lv = self.query_one("#sshkey-list", ListView)
+        lv.clear()
+        if keys:
+            for _path, label, _pubkey in keys:
+                lv.append(ListItem(Label(label, markup=True)))
+        else:
+            lv.append(ListItem(Label("[dim]No SSH keys found[/dim]", markup=True)))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """User selected a key from the list."""
+        idx = self.query_one("#sshkey-list", ListView).index
+        if idx is not None and idx < len(self._keys):
+            _path, _label, pubkey = self._keys[idx]
+            self._selected_pubkey = pubkey
+            self.dismiss(pubkey)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sshkey-gen-btn":
+            self._do_generate()
+
+    def _do_generate(self) -> None:
+        name_input = self.query_one("#sshkey-gen-name", Input)
+        name = name_input.value.strip()
+        if not name:
+            self.query_one("#sshkey-status", Static).update(
+                "[red]Enter a name for the key.[/red]"
+            )
+            return
+        # Sanitize name
+        safe_name = "".join(c for c in name if c.isalnum() or c in "-_")
+        if not safe_name:
+            self.query_one("#sshkey-status", Static).update(
+                "[red]Invalid name — use letters, numbers, hyphens.[/red]"
+            )
+            return
+        if self._generating:
+            return
+        self._generating = True
+        self.query_one("#sshkey-status", Static).update(
+            "[dim]Generating SSH key (4096-bit RSA)...[/dim]"
+        )
+        self._generate_key(safe_name)
+
+    @work(thread=True, exclusive=True)
+    def _generate_key(self, name: str) -> None:
+        try:
+            mgr = CredentialManager()
+            key_path, public_key = mgr.generate_ssh_key(name)
+            # Also write the .pub file
+            pub_path = Path(str(key_path) + ".pub")
+            pub_path.write_text(public_key + "\n")
+            try:
+                os.chmod(pub_path, 0o644)
+            except OSError:
+                pass
+
+            def _on_done():
+                self._generating = False
+                self.query_one("#sshkey-status", Static).update(
+                    f"[bold green]Key generated![/bold green]  {key_path}"
+                )
+                display = self.query_one("#sshkey-pubkey-display", Static)
+                from rich.markup import escape
+                display.update(
+                    f"[bold]Public key:[/bold]\n[dim]{escape(public_key[:120])}...[/dim]"
+                )
+                display.remove_class("hidden")
+                # Refresh the list and auto-select the new key
+                self._scan_keys()
+                self._selected_pubkey = public_key
+
+            self.app.call_from_thread(_on_done)
+        except Exception as e:
+            from rich.markup import escape
+
+            def _on_err():
+                self._generating = False
+                self.query_one("#sshkey-status", Static).update(
+                    f"[red]Generation failed: {escape(str(e))}[/red]"
+                )
+
+            self.app.call_from_thread(_on_err)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 # ---------------------------------------------------------------------------
@@ -316,11 +523,28 @@ class AnsibleScreen(Screen):
 
     def action_run_playbook(self) -> None:
         pb = self._get_highlighted_playbook()
-        if pb:
+        if not pb:
+            self.notify("Select a playbook to run", timeout=2)
+            return
+        # Pre-stage: SSH key selection for deploy-ssh-key playbook
+        if pb.path.stem.startswith("deploy-ssh-key"):
+            self.app.push_screen(
+                SSHKeySelectModal(),
+                callback=lambda pubkey: self._on_ssh_key_selected(pb, pubkey),
+            )
+        else:
             from infraforge.screens.ansible_run_modal import AnsibleRunModal
             self.app.push_screen(AnsibleRunModal(pb))
-        else:
-            self.notify("Select a playbook to run", timeout=2)
+
+    def _on_ssh_key_selected(self, pb: PlaybookInfo, pubkey: str | None) -> None:
+        """Callback after SSH key selection — launch the run modal with the key."""
+        if not pubkey:
+            self.notify("No key selected — cancelled.", timeout=2)
+            return
+        from infraforge.screens.ansible_run_modal import AnsibleRunModal
+        self.app.push_screen(
+            AnsibleRunModal(pb, extra_vars={"ssh_public_key": pubkey})
+        )
 
     def action_view_log(self) -> None:
         pb = self._get_highlighted_playbook()
