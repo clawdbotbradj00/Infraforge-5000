@@ -3,6 +3,13 @@
   hosts: targets
   become: true
 
+  vars:
+    node_exporter_version: "1.7.0"
+    # STILL-06 fix: SHA256 checksum from official Prometheus release
+    # https://github.com/prometheus/node_exporter/releases/tag/v1.7.0
+    # Update this checksum whenever node_exporter_version is changed
+    node_exporter_sha256: "a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57a917465b1fba3b02a6"
+
   roles:
     - node_exporter
 
@@ -21,10 +28,11 @@
         system: yes
         shell: /usr/sbin/nologin
 
-    - name: Download node_exporter
+    - name: Download node_exporter with checksum verification
       get_url:
-        url: "https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz"
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
         dest: /tmp/node_exporter.tar.gz
+        checksum: "sha256:{{ node_exporter_sha256 }}"
 
     - name: Extract node_exporter
       unarchive:

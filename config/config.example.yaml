@@ -45,6 +45,9 @@ terraform:
 
 ansible:
   playbook_dir: "./ansible/playbooks"
+  # Verify SSH host keys when running playbooks (default: true).
+  # Set to false only if targeting newly provisioned VMs with unknown host keys.
+  host_key_checking: true
 
 defaults:
   # Default values for new VM creation

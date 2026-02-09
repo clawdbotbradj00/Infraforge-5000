@@ -2259,6 +2259,13 @@ class AnsibleRunModal(ModalScreen):
             import json
             extra_args.extend(["--extra-vars", json.dumps(self._extra_vars)])
 
+        # Read host_key_checking from Ansible config (defaults to True / secure)
+        host_key_checking = True
+        try:
+            host_key_checking = self.app.config.ansible.host_key_checking
+        except (AttributeError, TypeError):
+            pass
+
         # Create interactive runner with PTY
         runner = PlaybookRunner(
             self._playbook.path,
@@ -2267,6 +2274,7 @@ class AnsibleRunModal(ModalScreen):
             extra_args=extra_args,
             credential_args=cred_args,
             credential_env=cred_env,
+            host_key_checking=host_key_checking,
         )
         self._runner = runner
 

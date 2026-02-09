@@ -379,11 +379,13 @@ CREATE TABLE `users` (
   UNIQUE KEY `id_2` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /* insert default values */
-/* NOTE: The admin password hash below is phpIPAM's upstream default ("ipamadmin").
-   It gets overwritten at deploy time by 02-infraforge-bootstrap.sh when IPAM_ADMIN_HASH is set. */
+/* NOTE: The admin password hash below is intentionally invalid (all X's).
+   It can never authenticate via bcrypt.  The real password hash is set at
+   deploy time by 02-infraforge-bootstrap.sh (IPAM_ADMIN_HASH env var).
+   If bootstrap fails to run, the admin account is locked out by design. */
 INSERT INTO `users` (`id`, `username`, `password`, `groups`, `role`, `real_name`, `email`, `domainUser`,`widgets`, `passChange`)
 VALUES
-	(1,'Admin',X'243624726F756E64733D33303030244A51454536644C394E70766A6546733424524B3558336F6132382E557A742F6835564166647273766C56652E3748675155594B4D58544A5573756438646D5766507A5A51506252626B38784A6E314B797974342E64576D346E4A4959684156326D624F5A33672E',X'','Administrator','phpIPAM Admin','admin@domain.local',X'30','statistics;favourite_subnets;changelog;access_logs;error_logs;top10_hosts_v4', 'Yes');
+	(1,'Admin','$2y$10$XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',X'','Administrator','phpIPAM Admin','admin@domain.local',X'30','statistics;favourite_subnets;changelog;access_logs;error_logs;top10_hosts_v4', 'Yes');
 
 
 # Dump of table lang

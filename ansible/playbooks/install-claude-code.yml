@@ -57,20 +57,47 @@
       loop_control:
         label: "{{ item.split(':')[0] }}"
 
+    # STILL-05 fix: Download NVM install script first, then verify and execute
+    # (avoids curl-pipe-to-bash supply chain risk)
+    - name: Download NVM install script to temp file
+      get_url:
+        url: "{{ nvm_install_url }}"
+        dest: /tmp/nvm-install-{{ nvm_version }}.sh
+        mode: '0755'
+        force: no
+      when: nvm_check.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+    - name: Verify NVM install script was downloaded successfully
+      stat:
+        path: /tmp/nvm-install-{{ nvm_version }}.sh
+        checksum_algorithm: sha256
+      register: nvm_script_stat
+      when: nvm_check.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+    - name: Fail if NVM install script is missing or empty
+      fail:
+        msg: "NVM install script download failed or file is empty"
+      when:
+        - nvm_check.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+        - not (nvm_script_stat.stat.exists | default(false)) or (nvm_script_stat.stat.size | default(0)) == 0
+
     - name: Install NVM for users that do not have it
-      shell: |
-        export HOME="{{ item.item.split(':')[1] }}"
-        export NVM_DIR="$HOME/.nvm"
-        curl -o- {{ nvm_install_url }} | bash
+      command: bash /tmp/nvm-install-{{ nvm_version }}.sh
       args:
         creates: "{{ item.item.split(':')[1] }}/.nvm/nvm.sh"
       become_user: "{{ item.item.split(':')[0] }}"
       environment:
         HOME: "{{ item.item.split(':')[1] }}"
+        NVM_DIR: "{{ item.item.split(':')[1] }}/.nvm"
       loop: "{{ nvm_check.results }}"
       loop_control:
         label: "{{ item.item.split(':')[0] }}"
       when: not item.stat.exists
+
+    - name: Clean up NVM install script
+      file:
+        path: /tmp/nvm-install-{{ nvm_version }}.sh
+        state: absent
 
     # ── Install Node.js v22 per user ────────────────────────────────────
     - name: Check if Node.js {{ node_version }} is installed for each user

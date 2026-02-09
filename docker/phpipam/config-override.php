@@ -64,7 +64,7 @@ $config['footer_message'] = file_env('IPAM_FOOTER_MESSAGE', $config['footer_mess
 
 // ─── InfraForge-specific settings ───────────────────────────────────
 
-// Allow API access without SSL verification.
-// Required when app_security='none' (InfraForge's default).
-// Safe for local Docker deployments managed by InfraForge.
-$api_allow_unsafe = true;
+// Disallow API access over unencrypted HTTP.
+// The InfraForge Docker stack serves phpIPAM over SSL (port 8443),
+// so there is no need to permit plaintext API requests.
+$api_allow_unsafe = false;

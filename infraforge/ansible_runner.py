@@ -465,6 +465,7 @@ def run_playbook(
     extra_args: list[str] | None = None,
     credential_args: list[str] | None = None,
     credential_env: dict[str, str] | None = None,
+    host_key_checking: bool = True,
 ) -> Generator[tuple[str, str], None, None]:
     """Execute ``ansible-playbook`` and yield output lines.
 
@@ -473,6 +474,13 @@ def run_playbook(
     status messages.
 
     The output is simultaneously written to *log_path*.
+
+    Parameters
+    ----------
+    host_key_checking:
+        Whether to verify SSH host keys.  Defaults to ``True`` (secure).
+        Set to ``False`` only for newly provisioned VMs whose keys are
+        not yet known.
     """
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,7 +496,7 @@ def run_playbook(
     run_env = {
         **os.environ,
         "ANSIBLE_FORCE_COLOR": "false",
-        "ANSIBLE_HOST_KEY_CHECKING": "False",
+        "ANSIBLE_HOST_KEY_CHECKING": str(host_key_checking),
     }
     if credential_env:
         run_env.update(credential_env)
@@ -560,6 +568,7 @@ class PlaybookRunner:
         extra_args: list[str] | None = None,
         credential_args: list[str] | None = None,
         credential_env: dict[str, str] | None = None,
+        host_key_checking: bool = True,
     ):
         self._playbook_path = Path(playbook_path)
         self._inventory_path = Path(inventory_path)
@@ -567,6 +576,7 @@ class PlaybookRunner:
         self._extra_args = extra_args or []
         self._credential_args = credential_args or []
         self._credential_env = credential_env or {}
+        self._host_key_checking = host_key_checking
         self._process: subprocess.Popen | None = None
         self._master_fd: int | None = None
         self._log_file = None
@@ -616,7 +626,7 @@ class PlaybookRunner:
         run_env = {
             **os.environ,
             "ANSIBLE_FORCE_COLOR": "false",
-            "ANSIBLE_HOST_KEY_CHECKING": "False",
+            "ANSIBLE_HOST_KEY_CHECKING": str(self._host_key_checking),
         }
         run_env.update(self._credential_env)
 

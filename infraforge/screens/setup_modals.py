@@ -574,12 +574,13 @@ IPAMConfigModal {{
         self._deploying = False
 
     def compose(self) -> ComposeResult:
-        import random
+        import secrets
         import string
 
         s = self._sec
         default_method = "existing" if s.get("url") else "docker"
-        default_pass = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        alphabet = string.ascii_lowercase + string.digits
+        default_pass = "".join(secrets.choice(alphabet) for _ in range(6))
 
         with Horizontal(id="config-outer"):
             with VerticalScroll(id="config-form"):
@@ -673,8 +674,9 @@ IPAMConfigModal {{
             port = self.query_one("#f-docker-port", Input).value.strip() or "8443"
             admin_pass = self.query_one("#f-docker-pass", Input).value.strip()
             if not admin_pass:
-                import random, string
-                admin_pass = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                import secrets, string
+                alphabet = string.ascii_lowercase + string.digits
+                admin_pass = "".join(secrets.choice(alphabet) for _ in range(6))
             self._deploy_docker(port, admin_pass)
         else:
             url = self.query_one("#f-url", Input).value.strip()

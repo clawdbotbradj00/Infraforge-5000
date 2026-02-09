@@ -20,7 +20,7 @@ class ProxmoxConfig:
     token_name: str = ""
     token_value: str = ""
     password: str = ""
-    verify_ssl: bool = False
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -53,6 +53,7 @@ class TerraformConfig:
 @dataclass
 class AnsibleConfig:
     playbook_dir: str = "./ansible/playbooks"
+    host_key_checking: bool = True
 
 
 @dataclass
@@ -63,7 +64,7 @@ class IPAMConfig:
     token: str = ""
     username: str = ""
     password: str = ""
-    verify_ssl: bool = False
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -140,7 +141,7 @@ class Config:
                 token_name=str(pve.get("token_name", "")),
                 token_value=str(pve.get("token_value", "")),
                 password=str(pve.get("password", "")),
-                verify_ssl=bool(pve.get("verify_ssl", False)),
+                verify_ssl=bool(pve.get("verify_ssl", True)),
             )
 
         # Parse dns section
@@ -181,6 +182,7 @@ class Config:
             ans = data["ansible"]
             config.ansible = AnsibleConfig(
                 playbook_dir=str(ans.get("playbook_dir", "./ansible/playbooks")),
+                host_key_checking=bool(ans.get("host_key_checking", True)),
             )
 
         # Parse ipam section
@@ -193,7 +195,7 @@ class Config:
                 token=str(ipam.get("token", "")),
                 username=str(ipam.get("username", "")),
                 password=str(ipam.get("password", "")),
-                verify_ssl=bool(ipam.get("verify_ssl", False)),
+                verify_ssl=bool(ipam.get("verify_ssl", True)),
             )
 
         # Parse ai section
