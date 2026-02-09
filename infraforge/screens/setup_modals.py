@@ -377,8 +377,12 @@ IPAMConfigModal {
         self._deploying = False
 
     def compose(self) -> ComposeResult:
+        import random
+        import string
+
         s = self._sec
         default_method = "existing" if s.get("url") else "docker"
+        default_pass = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
         with VerticalScroll(id="config-box"):
             yield Static("[bold]IPAM Configuration[/bold]  [dim](phpIPAM)[/dim]", id="config-title", markup=True)
@@ -405,7 +409,7 @@ IPAMConfigModal {
                 yield Input(value="8443", placeholder="8443", id="f-docker-port")
                 yield Label("Admin Password", classes="field-label")
                 with Horizontal(classes="secret-row"):
-                    yield Input(value="admin", placeholder="admin", id="f-docker-pass", password=True)
+                    yield Input(value=default_pass, placeholder="auto-generated", id="f-docker-pass", password=True)
                     yield Button("Reveal", id="reveal-f-docker-pass", classes="reveal-btn")
                     yield Button("Copy", id="copy-f-docker-pass", classes="copy-btn")
                 yield Static("", id="docker-status", markup=True)
@@ -466,7 +470,10 @@ IPAMConfigModal {
             if self._deploying:
                 return
             port = self.query_one("#f-docker-port", Input).value.strip() or "8443"
-            admin_pass = self.query_one("#f-docker-pass", Input).value.strip() or "admin"
+            admin_pass = self.query_one("#f-docker-pass", Input).value.strip()
+            if not admin_pass:
+                import random, string
+                admin_pass = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
             self._deploy_docker(port, admin_pass)
         else:
             url = self.query_one("#f-url", Input).value.strip()
@@ -502,34 +509,111 @@ IPAMConfigModal {
             self.app.call_from_thread(self._set_status, f"[bold red]{msg}[/bold red]")
             self._deploying = False
 
-        # ── Step 1: Check Docker ──
+        import os
+        import shutil
+        import tempfile
+        import urllib.request as urlreq
+
+        sudo = ["sudo"] if os.geteuid() != 0 else []
+        has_apt = shutil.which("apt-get") is not None
+
+        # ── Step 1: Ensure Docker is installed ──
         status("Checking Docker...")
+        docker_ok = False
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            docker_ok = r.returncode == 0
+        except FileNotFoundError:
+            pass
+
+        if not docker_ok:
+            if not has_apt:
+                fail("Docker is not installed and apt is not available.\nInstall Docker manually and retry.")
+                return
+            status("Installing Docker...")
+            try:
+                subprocess.run(sudo + ["apt-get", "update", "-qq"], capture_output=True, timeout=120)
+                r = subprocess.run(
+                    sudo + ["apt-get", "install", "-y", "docker.io"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0:
+                    fail(f"Failed to install Docker:\n[dim]{r.stderr.strip()[:200]}[/dim]")
+                    return
+                subprocess.run(sudo + ["systemctl", "start", "docker"], capture_output=True, timeout=30)
+                subprocess.run(sudo + ["systemctl", "enable", "docker"], capture_output=True, timeout=30)
+            except Exception as e:
+                fail(f"Failed to install Docker: {e}")
+                return
+
+            # Verify it works now
+            try:
+                r = subprocess.run(sudo + ["docker", "info"], capture_output=True, timeout=10)
+                if r.returncode != 0:
+                    fail("Docker installed but daemon not responding.\n[dim]Try: sudo systemctl start docker[/dim]")
+                    return
+            except Exception:
+                fail("Docker installed but not accessible.")
+                return
+
+        # If docker requires sudo, prefix all docker commands
+        docker_prefix: list[str] = []
         try:
             r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
             if r.returncode != 0:
-                fail("Docker is not available. Install Docker and try again.")
-                return
-        except FileNotFoundError:
-            fail("Docker is not installed.")
-            return
+                docker_prefix = sudo
+        except Exception:
+            docker_prefix = sudo
 
-        # ── Step 2: Detect compose command ──
+        # ── Step 2: Ensure docker compose is available ──
         compose_cmd: list[str] | None = None
-        for candidate in [["docker", "compose"], ["docker-compose"]]:
+        for candidate in [docker_prefix + ["docker", "compose"], ["docker-compose"]]:
             try:
                 if subprocess.run(candidate + ["version"], capture_output=True, timeout=5).returncode == 0:
                     compose_cmd = candidate
                     break
             except Exception:
                 continue
+
         if not compose_cmd:
-            fail("docker compose not found. Install docker compose v2.")
-            return
+            status("Installing docker compose v2 plugin...")
+            try:
+                arch = subprocess.run(
+                    ["uname", "-m"], capture_output=True, text=True, timeout=5,
+                ).stdout.strip() or "x86_64"
+                compose_url = (
+                    f"https://github.com/docker/compose/releases/latest/download"
+                    f"/docker-compose-linux-{arch}"
+                )
+                plugin_dir = "/usr/local/lib/docker/cli-plugins"
+                plugin_path = f"{plugin_dir}/docker-compose"
+                subprocess.run(sudo + ["mkdir", "-p", plugin_dir], capture_output=True, timeout=10)
+
+                # Download to temp then move (avoids permission issues)
+                tmp = tempfile.mktemp(prefix="docker-compose-")
+                urlreq.urlretrieve(compose_url, tmp)
+                subprocess.run(sudo + ["mv", tmp, plugin_path], capture_output=True, timeout=10)
+                subprocess.run(sudo + ["chmod", "+x", plugin_path], capture_output=True, timeout=10)
+            except Exception as e:
+                fail(f"Failed to install docker compose:\n[dim]{e}[/dim]")
+                return
+
+            # Verify
+            for candidate in [docker_prefix + ["docker", "compose"], ["docker-compose"]]:
+                try:
+                    if subprocess.run(candidate + ["version"], capture_output=True, timeout=5).returncode == 0:
+                        compose_cmd = candidate
+                        break
+                except Exception:
+                    continue
+            if not compose_cmd:
+                fail("docker compose installed but not working.")
+                return
 
         # ── Step 3: Check if already running ──
         try:
             r = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Running}}", "infraforge-ipam-web"],
+                docker_prefix + ["docker", "inspect", "--format", "{{.State.Running}}", "infraforge-ipam-web"],
                 capture_output=True, text=True, timeout=5,
             )
             if r.stdout.strip() == "true":
@@ -574,8 +658,8 @@ IPAMConfigModal {
         escaped_pass = admin_pass.replace("'", "\\'")
         php_code = f"echo password_hash('{escaped_pass}', PASSWORD_DEFAULT);"
         for php_cmd in [
-            ["docker", "run", "--rm", "php:cli", "php", "-r", php_code],
-            ["docker", "run", "--rm", "phpipam/phpipam-www:latest", "php", "-r", php_code],
+            docker_prefix + ["docker", "run", "--rm", "php:cli", "php", "-r", php_code],
+            docker_prefix + ["docker", "run", "--rm", "phpipam/phpipam-www:latest", "php", "-r", php_code],
         ]:
             try:
                 r = subprocess.run(php_cmd, capture_output=True, text=True, timeout=60)
