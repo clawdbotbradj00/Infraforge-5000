@@ -79,17 +79,27 @@ def _check_component(cfg: dict, name: str) -> tuple[bool, str]:
         sec = cfg.get("terraform", {})
         workspace = sec.get("workspace", "")
         has_binary = shutil.which("terraform") is not None
-        if has_binary:
+        configured = bool(workspace or sec.get("state_backend"))
+        if has_binary and configured:
             return True, f"Installed  (workspace: {workspace or './terraform'})"
-        return False, "terraform not in PATH"
+        elif configured:
+            return True, f"Configured  (workspace: {workspace or './terraform'})  [dim]binary not in PATH[/dim]"
+        elif has_binary:
+            return True, f"Installed  (workspace: {workspace or './terraform'})"
+        return False, "Not configured"
 
     elif name == "ansible":
         sec = cfg.get("ansible", {})
+        pdir = sec.get("playbook_dir", "")
         has_binary = shutil.which("ansible") is not None
-        if has_binary:
-            pdir = sec.get("playbook_dir", "./ansible/playbooks")
+        configured = bool(pdir)
+        if has_binary and configured:
             return True, f"Installed  (playbooks: {pdir})"
-        return False, "ansible not in PATH"
+        elif configured:
+            return True, f"Configured  (playbooks: {pdir})  [dim]binary not in PATH[/dim]"
+        elif has_binary:
+            return True, f"Installed  (playbooks: {pdir or './ansible/playbooks'})"
+        return False, "Not configured"
 
     elif name == "ai":
         sec = cfg.get("ai", {})
@@ -437,23 +447,43 @@ class SetupScreen(Screen):
         )
 
     def _test_terraform(self) -> str:
+        if not shutil.which("terraform"):
+            return (
+                "[bold red]terraform binary not found in PATH[/bold red]\n\n"
+                "  Install Terraform:\n"
+                "  [dim]wget -qO- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg\n"
+                "  echo \"deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main\" "
+                "| sudo tee /etc/apt/sources.list.d/hashicorp.list\n"
+                "  sudo apt update && sudo apt install terraform[/dim]\n\n"
+                "  Or download from: [bold]https://developer.hashicorp.com/terraform/install[/bold]"
+            )
         import subprocess
         result = subprocess.run(
-            ["terraform", "version"], capture_output=True, text=True, timeout=10
+            ["terraform", "version"], capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
             ver = result.stdout.strip().split("\n")[0]
-            return f"[bold green]Terraform available![/bold green]\n\n  {ver}"
+            workspace = self._cfg.get("terraform", {}).get("workspace", "./terraform")
+            return f"[bold green]Terraform available![/bold green]\n\n  {ver}\n  Workspace: {workspace}"
         return f"[red]terraform exited with code {result.returncode}[/red]\n{result.stderr}"
 
     def _test_ansible(self) -> str:
+        if not shutil.which("ansible"):
+            return (
+                "[bold red]ansible binary not found in PATH[/bold red]\n\n"
+                "  Install Ansible:\n"
+                "  [dim]pip install ansible[/dim]\n"
+                "  or\n"
+                "  [dim]sudo apt install ansible[/dim]"
+            )
         import subprocess
         result = subprocess.run(
-            ["ansible", "--version"], capture_output=True, text=True, timeout=10
+            ["ansible", "--version"], capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
             ver = result.stdout.strip().split("\n")[0]
-            return f"[bold green]Ansible available![/bold green]\n\n  {ver}"
+            pdir = self._cfg.get("ansible", {}).get("playbook_dir", "./ansible/playbooks")
+            return f"[bold green]Ansible available![/bold green]\n\n  {ver}\n  Playbook dir: {pdir}"
         return f"[red]ansible exited with code {result.returncode}[/red]\n{result.stderr}"
 
     def _test_ai(self) -> str:
