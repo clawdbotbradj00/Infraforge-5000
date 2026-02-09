@@ -565,6 +565,72 @@ check_docker() {
     return 1
 }
 
+check_and_install_terraform() {
+    echo
+    echo -e "${CYAN}${BOLD}── Terraform ──${NC}"
+    if command -v terraform &>/dev/null; then
+        local tf_ver
+        tf_ver=$(terraform version 2>/dev/null | head -1)
+        success "Terraform already installed ($tf_ver)"
+        return 0
+    fi
+
+    warn "Terraform is not installed."
+    if prompt_yesno "Install Terraform now?" "y"; then
+        info "Adding HashiCorp GPG key..."
+        wget -qO- https://apt.releases.hashicorp.com/gpg \
+            | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp.gpg 2>/dev/null
+        if [[ $? -ne 0 ]]; then
+            error "Failed to add GPG key"
+            return 1
+        fi
+
+        info "Adding HashiCorp APT repository..."
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
+
+        info "Installing terraform..."
+        sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq terraform
+        if [[ $? -ne 0 ]]; then
+            error "Failed to install terraform"
+            return 1
+        fi
+
+        local tf_ver
+        tf_ver=$(terraform version 2>/dev/null | head -1)
+        success "Terraform installed ($tf_ver)"
+    else
+        echo -e "${DIM}Skipping Terraform installation — you can install it later.${NC}"
+    fi
+}
+
+check_and_install_ansible() {
+    echo
+    echo -e "${CYAN}${BOLD}── Ansible ──${NC}"
+    if command -v ansible &>/dev/null; then
+        local ans_ver
+        ans_ver=$(ansible --version 2>/dev/null | head -1)
+        success "Ansible already installed ($ans_ver)"
+        return 0
+    fi
+
+    warn "Ansible is not installed."
+    if prompt_yesno "Install Ansible now?" "y"; then
+        info "Installing ansible..."
+        sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ansible
+        if [[ $? -ne 0 ]]; then
+            error "Failed to install ansible"
+            return 1
+        fi
+
+        local ans_ver
+        ans_ver=$(ansible --version 2>/dev/null | head -1)
+        success "Ansible installed ($ans_ver)"
+    else
+        echo -e "${DIM}Skipping Ansible installation — you can install it later.${NC}"
+    fi
+}
+
 generate_password() {
     # Generate a random password using available tools
     if command -v openssl &>/dev/null; then
@@ -1348,6 +1414,9 @@ else
     IPAM_VERIFY_SSL=$(cfg_get ipam verify_ssl)
     [[ -z "$IPAM_VERIFY_SSL" ]] && IPAM_VERIFY_SSL="false"
 fi
+
+check_and_install_terraform || true
+check_and_install_ansible || true
 
 write_config
 

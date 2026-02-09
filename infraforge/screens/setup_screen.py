@@ -220,6 +220,216 @@ class TestResultModal(ModalScreen):
         self.dismiss(None)
 
 
+# ── Dependency Install Modal ──────────────────────────────────────
+
+class InstallDependencyModal(ModalScreen):
+    """Offers to auto-install a missing dependency with live progress."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    InstallDependencyModal {
+        align: center middle;
+    }
+    #install-box {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+        overflow-x: hidden;
+        overflow-y: hidden;
+    }
+    """
+
+    def __init__(self, dep_name: str) -> None:
+        super().__init__()
+        self._dep_name = dep_name
+        self._phase = "offer"  # offer | installing | done
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="install-box"):
+            yield Static(id="install-status", markup=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#install-status", Static).update(
+            f"[bold yellow]{self._dep_name} is not installed[/bold yellow]\n\n"
+            f"Would you like to install it now?\n\n"
+            f"  [bold white on dark_green] y [/bold white on dark_green] Install now    "
+            f"  [bold white on dark_red] n [/bold white on dark_red] Skip"
+        )
+
+    def on_key(self, event) -> None:
+        if self._phase == "offer":
+            if event.key == "y":
+                event.stop()
+                self._phase = "installing"
+                if self._dep_name == "Terraform":
+                    self._install_terraform()
+                elif self._dep_name == "Ansible":
+                    self._install_ansible()
+            elif event.key == "n":
+                event.stop()
+                self.dismiss(False)
+        elif self._phase == "installing":
+            event.stop()
+        elif self._phase == "done":
+            if event.key in ("enter", "escape"):
+                event.stop()
+                self.dismiss(self._success)
+
+    def action_cancel(self) -> None:
+        if self._phase != "installing":
+            self.dismiss(False)
+
+    def _update(self, msg: str) -> None:
+        self.app.call_from_thread(
+            self.query_one("#install-status", Static).update, msg
+        )
+
+    @work(thread=True, exclusive=True)
+    def _install_terraform(self) -> None:
+        import subprocess
+        from rich.markup import escape
+
+        steps = [
+            ("Adding HashiCorp GPG key...",
+             "wget -qO- https://apt.releases.hashicorp.com/gpg "
+             "| sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp.gpg"),
+            ("Adding APT repository...",
+             'echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] '
+             'https://apt.releases.hashicorp.com $(lsb_release -cs) main" '
+             '| sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null'),
+            ("Updating package index...",
+             "sudo apt-get update -qq"),
+            ("Installing terraform...",
+             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq terraform"),
+        ]
+
+        for i, (msg, cmd) in enumerate(steps, 1):
+            self._update(
+                f"[bold cyan]Installing Terraform...[/bold cyan]\n\n"
+                f"  Step {i}/{len(steps)}: {msg}"
+            )
+            try:
+                result = subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    stderr = escape(result.stderr.strip()[:500])
+                    self._update(
+                        f"[bold red]Installation failed[/bold red]\n\n"
+                        f"  Step {i}: {msg}\n\n"
+                        f"  {stderr}\n\n"
+                        f"[dim]Press Enter or Escape to close[/dim]"
+                    )
+                    self._phase = "done"
+                    self._success = False
+                    return
+            except subprocess.TimeoutExpired:
+                self._update(
+                    f"[bold red]Installation timed out[/bold red]\n\n"
+                    f"  Step {i}: {msg}\n\n"
+                    f"[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = False
+                return
+
+        # Verify
+        try:
+            result = subprocess.run(
+                ["terraform", "version"], capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                ver = escape(result.stdout.strip().split("\n")[0])
+                self._update(
+                    f"[bold green]Terraform installed successfully![/bold green]\n\n"
+                    f"  {ver}\n\n"
+                    f"[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = True
+                return
+        except Exception:
+            pass
+        self._update(
+            f"[bold red]Installation completed but terraform not responding[/bold red]\n\n"
+            f"[dim]Press Enter or Escape to close[/dim]"
+        )
+        self._phase = "done"
+        self._success = False
+
+    @work(thread=True, exclusive=True)
+    def _install_ansible(self) -> None:
+        import subprocess
+        from rich.markup import escape
+
+        steps = [
+            ("Updating package index...",
+             "sudo apt-get update -qq"),
+            ("Installing ansible...",
+             "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ansible"),
+        ]
+
+        for i, (msg, cmd) in enumerate(steps, 1):
+            self._update(
+                f"[bold cyan]Installing Ansible...[/bold cyan]\n\n"
+                f"  Step {i}/{len(steps)}: {msg}"
+            )
+            try:
+                result = subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    stderr = escape(result.stderr.strip()[:500])
+                    self._update(
+                        f"[bold red]Installation failed[/bold red]\n\n"
+                        f"  Step {i}: {msg}\n\n"
+                        f"  {stderr}\n\n"
+                        f"[dim]Press Enter or Escape to close[/dim]"
+                    )
+                    self._phase = "done"
+                    self._success = False
+                    return
+            except subprocess.TimeoutExpired:
+                self._update(
+                    f"[bold red]Installation timed out[/bold red]\n\n"
+                    f"  Step {i}: {msg}\n\n"
+                    f"[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = False
+                return
+
+        # Verify
+        try:
+            result = subprocess.run(
+                ["ansible", "--version"], capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                ver = escape(result.stdout.strip().split("\n")[0])
+                self._update(
+                    f"[bold green]Ansible installed successfully![/bold green]\n\n"
+                    f"  {ver}\n\n"
+                    f"[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = True
+                return
+        except Exception:
+            pass
+        self._update(
+            f"[bold red]Installation completed but ansible not responding[/bold red]\n\n"
+            f"[dim]Press Enter or Escape to close[/dim]"
+        )
+        self._phase = "done"
+        self._success = False
+
+
 # ── Main Setup Screen ──────────────────────────────────────────────
 
 class SetupScreen(Screen):
@@ -351,6 +561,16 @@ class SetupScreen(Screen):
     @work(thread=True, exclusive=True, group="setup-test")
     def _run_test(self, comp_id: str, comp_name: str) -> None:
         """Run a connection test for the given component in a background thread."""
+        # Offer auto-install for missing CLI tools
+        if comp_id == "terraform" and not shutil.which("terraform"):
+            self.app.call_from_thread(self._clear_testing)
+            self.app.call_from_thread(self._offer_install, "Terraform")
+            return
+        if comp_id == "ansible" and not shutil.which("ansible"):
+            self.app.call_from_thread(self._clear_testing)
+            self.app.call_from_thread(self._offer_install, "Ansible")
+            return
+
         title = f"{comp_name} Test"
         try:
             if comp_id == "proxmox":
@@ -376,6 +596,13 @@ class SetupScreen(Screen):
         self.app.call_from_thread(
             self.app.push_screen,
             TestResultModal(title, body),
+        )
+
+    def _offer_install(self, dep_name: str) -> None:
+        """Push the install-dependency modal and refresh status on completion."""
+        self.app.push_screen(
+            InstallDependencyModal(dep_name),
+            callback=lambda _result: self._refresh_all(),
         )
 
     def _clear_testing(self) -> None:
@@ -449,16 +676,7 @@ class SetupScreen(Screen):
         )
 
     def _test_terraform(self) -> str:
-        if not shutil.which("terraform"):
-            return (
-                "[bold red]terraform binary not found in PATH[/bold red]\n\n"
-                "  Install Terraform:\n"
-                "  [dim]wget -qO- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg\n"
-                "  echo \"deb \\[signed-by=/usr/share/keyrings/hashicorp.gpg\\] https://apt.releases.hashicorp.com $(lsb_release -cs) main\" "
-                "| sudo tee /etc/apt/sources.list.d/hashicorp.list\n"
-                "  sudo apt update && sudo apt install terraform[/dim]\n\n"
-                "  Or download from: [bold]https://developer.hashicorp.com/terraform/install[/bold]"
-            )
+        # Binary-missing case is handled by _run_test -> _offer_install
         import subprocess
         result = subprocess.run(
             ["terraform", "version"], capture_output=True, text=True, timeout=10,
@@ -472,14 +690,7 @@ class SetupScreen(Screen):
         return f"[red]terraform exited with code {result.returncode}[/red]\n{escape(result.stderr)}"
 
     def _test_ansible(self) -> str:
-        if not shutil.which("ansible"):
-            return (
-                "[bold red]ansible binary not found in PATH[/bold red]\n\n"
-                "  Install Ansible:\n"
-                "  [dim]pip install ansible[/dim]\n"
-                "  or\n"
-                "  [dim]sudo apt install ansible[/dim]"
-            )
+        # Binary-missing case is handled by _run_test -> _offer_install
         import subprocess
         result = subprocess.run(
             ["ansible", "--version"], capture_output=True, text=True, timeout=10,
