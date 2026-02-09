@@ -525,6 +525,28 @@ class SetupScreen(Screen):
     def _on_confirm_config(self, confirmed: bool, comp_id: str) -> None:
         if not confirmed:
             return
+        # For terraform/ansible, detect missing binary and offer install first
+        if comp_id == "terraform" and not shutil.which("terraform"):
+            self.app.push_screen(
+                InstallDependencyModal("Terraform"),
+                callback=lambda _installed: self._after_install_check(comp_id),
+            )
+            return
+        if comp_id == "ansible" and not shutil.which("ansible"):
+            self.app.push_screen(
+                InstallDependencyModal("Ansible"),
+                callback=lambda _installed: self._after_install_check(comp_id),
+            )
+            return
+        self._push_config_modal(comp_id)
+
+    def _after_install_check(self, comp_id: str) -> None:
+        """Called after install-dependency modal; proceed to config form."""
+        self._refresh_all()
+        self._push_config_modal(comp_id)
+
+    def _push_config_modal(self, comp_id: str) -> None:
+        """Push the configuration modal for a component."""
         from infraforge.screens.setup_modals import get_config_modal
         modal = get_config_modal(comp_id, self._cfg)
         if modal is None:

@@ -36,12 +36,14 @@ class DashboardScreen(Screen):
         super().__init__()
         self._node_sort_index: int = 0
         self._node_sort_reverse: bool = False
+        self._disabled_items: dict[str, list[str]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="dashboard-container"):
             yield Static("", id="update-banner", markup=True, classes="hidden")
             yield Static("", id="ai-setup-banner", markup=True, classes="hidden")
+            yield Static("", id="setup-banner", markup=True, classes="hidden")
             yield Static("Dashboard", classes="section-title")
             with Horizontal(id="stats-row"):
                 with Container(classes="stat-card"):
@@ -87,10 +89,12 @@ class DashboardScreen(Screen):
         self._start_auto_refresh()
         self._check_for_update()
         self._check_ai_config()
+        self._check_modules()
 
     def on_screen_resume(self):
         """Refresh data when returning to the dashboard from another screen."""
         self._start_auto_refresh()
+        self._check_modules()
 
     @work(thread=True, exclusive=True, group="dashboard-refresh")
     def _start_auto_refresh(self):
@@ -218,6 +222,71 @@ class DashboardScreen(Screen):
         container.remove_children()
         container.mount(Static(f"  [red]Error loading data: {error}[/red]", markup=True))
 
+    # ── Module availability ─────────────────────────────────────
+
+    # Original label text for each nav item (used to rebuild on refresh)
+    _NAV_LABELS: dict[str, str] = {
+        "nav-vms":         "  \\[1]  Virtual Machines  —  View and manage all VMs and containers",
+        "nav-templates":   "  \\[2]  Templates         —  Browse VM and container templates",
+        "nav-nodes":       "  \\[3]  Node Info         —  Cluster node details and resources",
+        "nav-dns":         "  \\[4]  DNS Management    —  View and manage DNS records",
+        "nav-ipam":        "  \\[5]  IPAM Management   —  Manage IP addresses and subnets",
+        "nav-create":      "  \\[6]  Provision VM      —  Templates and custom VM creation",
+        "nav-ansible":     "  \\[7]  Ansible           —  Manage playbooks and automation",
+        "nav-ai-settings": "  \\[8]  AI Settings       —  Configure AI assistant and model",
+    }
+
+    def _check_modules(self) -> None:
+        """Check module availability and update nav items + banner."""
+        try:
+            from infraforge.module_status import get_disabled_nav_items, MODULE_NAMES
+
+            disabled = get_disabled_nav_items(self.app.config)
+            self._disabled_items = disabled
+
+            for nav_id, original in self._NAV_LABELS.items():
+                try:
+                    item = self.query_one(f"#{nav_id}", ListItem)
+                    label = item.query_one(Label)
+                    if nav_id in disabled:
+                        names = ", ".join(MODULE_NAMES[m] for m in disabled[nav_id])
+                        label.update(
+                            f"[dim red]{original}[/dim red]  "
+                            f"[bold red]\u2717[/bold red] [dim]Requires: {names}[/dim]"
+                        )
+                    else:
+                        label.update(original)
+                except Exception:
+                    pass
+
+            banner = self.query_one("#setup-banner", Static)
+            if disabled:
+                banner.update(
+                    "  [bold red]Some modules are not fully configured.[/bold red]  "
+                    "Functionality may be limited.  "
+                    "Run [bold]infraforge setup[/bold] to correct."
+                )
+                banner.remove_class("hidden")
+            else:
+                banner.add_class("hidden")
+        except Exception:
+            pass
+
+    def _is_nav_disabled(self, nav_id: str) -> bool:
+        """Check if a nav item is disabled; show notification if so."""
+        if nav_id in self._disabled_items:
+            from infraforge.module_status import MODULE_NAMES
+            missing = ", ".join(MODULE_NAMES[m] for m in self._disabled_items[nav_id])
+            self.notify(
+                f"Not available \u2014 requires: {missing}. Run 'infraforge setup' to configure.",
+                severity="error",
+                timeout=5,
+            )
+            return True
+        return False
+
+    # ── Navigation ─────────────────────────────────────────────
+
     def on_list_view_selected(self, event: ListView.Selected):
         item_id = event.item.id
         if item_id == "nav-vms":
@@ -238,34 +307,50 @@ class DashboardScreen(Screen):
             self.action_ai_settings()
 
     def action_view_vms(self):
+        if self._is_nav_disabled("nav-vms"):
+            return
         from infraforge.screens.vm_list import VMListScreen
         self.app.push_screen(VMListScreen())
 
     def action_view_templates(self):
+        if self._is_nav_disabled("nav-templates"):
+            return
         from infraforge.screens.template_list import TemplateListScreen
         self.app.push_screen(TemplateListScreen())
 
     def action_view_nodes(self):
+        if self._is_nav_disabled("nav-nodes"):
+            return
         from infraforge.screens.node_info import NodeInfoScreen
         self.app.push_screen(NodeInfoScreen())
 
     def action_manage_dns(self):
+        if self._is_nav_disabled("nav-dns"):
+            return
         from infraforge.screens.dns_screen import DNSScreen
         self.app.push_screen(DNSScreen())
 
     def action_manage_ipam(self):
+        if self._is_nav_disabled("nav-ipam"):
+            return
         from infraforge.screens.ipam_screen import IPAMScreen
         self.app.push_screen(IPAMScreen())
 
     def action_create_vm(self):
+        if self._is_nav_disabled("nav-create"):
+            return
         from infraforge.screens.provision_menu import ProvisionMenuScreen
         self.app.push_screen(ProvisionMenuScreen())
 
     def action_manage_ansible(self):
+        if self._is_nav_disabled("nav-ansible"):
+            return
         from infraforge.screens.ansible_screen import AnsibleScreen
         self.app.push_screen(AnsibleScreen())
 
     def action_ai_settings(self):
+        if self._is_nav_disabled("nav-ai-settings"):
+            return
         from infraforge.screens.ai_settings_screen import AISettingsScreen
         self.app.push_screen(AISettingsScreen())
 

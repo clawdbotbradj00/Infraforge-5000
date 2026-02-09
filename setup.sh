@@ -200,6 +200,20 @@ setup_venv() {
         pip install -r "$SCRIPT_DIR/requirements.txt" -q
         pip install -e "$SCRIPT_DIR" -q
         success "Dependencies installed"
+
+        # Create system-wide symlink so 'infraforge' works from anywhere
+        VENV_BIN="$VENV_DIR/bin/infraforge"
+        GLOBAL_LINK="/usr/local/bin/infraforge"
+        if [[ -f "$VENV_BIN" ]]; then
+            if [[ $EUID -eq 0 ]]; then
+                ln -sf "$VENV_BIN" "$GLOBAL_LINK"
+            else
+                sudo ln -sf "$VENV_BIN" "$GLOBAL_LINK" 2>/dev/null || true
+            fi
+            if [[ -L "$GLOBAL_LINK" ]]; then
+                success "infraforge command installed to $GLOBAL_LINK"
+            fi
+        fi
     else
         info "Installing dependencies with pip (user-level)..."
         $PYTHON_CMD -m pip install --user --upgrade pip -q 2>/dev/null || true

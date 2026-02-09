@@ -75,6 +75,17 @@ Screen {
     text-align: center;
 }
 
+#setup-banner {
+    height: auto;
+    margin: 0 0 1 0;
+    background: $error 30%;
+    border: round $error;
+    color: $text;
+    padding: 0 2;
+    text-align: center;
+    text-style: bold;
+}
+
 #dashboard-container {
     padding: 1 2;
 }
