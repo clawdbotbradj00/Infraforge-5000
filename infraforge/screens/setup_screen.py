@@ -810,7 +810,7 @@ def run_setup_tui() -> None:
             self.theme = "midnight"
             self.push_screen(SetupScreen())
 
-    result = _SetupApp().run(mouse=False)
+    result = _SetupApp().run()
 
     if result == "launch_main":
         # User chose to launch main app — import and run it
@@ -822,4 +822,4 @@ def run_setup_tui() -> None:
             Console().print(f"[bold red]Config error:[/bold red] {e}")
             return
         from infraforge.app import InfraForgeApp
-        InfraForgeApp(config=config).run(mouse=False)
+        InfraForgeApp(config=config).run()

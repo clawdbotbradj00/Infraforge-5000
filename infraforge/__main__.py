@@ -53,7 +53,7 @@ def main():
     # Launch the TUI app
     from infraforge.app import InfraForgeApp
     app = InfraForgeApp(config=config, start_screen=start_screen)
-    app.run(mouse=False)
+    app.run()
 
 
 if __name__ == "__main__":

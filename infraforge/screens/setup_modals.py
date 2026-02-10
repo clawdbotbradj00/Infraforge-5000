@@ -19,6 +19,14 @@ class _ArrowNavModal(ModalScreen):
     """Base modal that adds up/down arrow navigation between fields
     and auto-focuses the first input on mount."""
 
+    _help_cmds: list[str] = []
+
+    def action_copy_cmd(self, idx: int) -> None:
+        """Copy a help-panel command to the system clipboard."""
+        if 0 <= idx < len(self._help_cmds):
+            self.app.copy_to_clipboard(self._help_cmds[idx])
+            self.notify("Copied to clipboard")
+
     def on_mount(self) -> None:
         # Disable focus on scroll containers so they don't steal arrow keys
         for vs in self.query(VerticalScroll):
@@ -141,6 +149,11 @@ _BOX_CSS = """
     text-align: left;
     color: $text;
     padding: 0 0 1 0;
+    link-color: cyan;
+    link-style: italic;
+    link-color-hover: $accent;
+    link-background-hover: $primary-background;
+    link-style-hover: bold;
 }
 .field-label {
     margin: 1 0 0 0;
@@ -197,6 +210,11 @@ _MODAL_ALIGN = """
 
 # ── Help content for each module ──────────────────────────────────
 
+_PROXMOX_CMDS = [
+    "root@pam",
+    "admin@pve",
+]
+
 _PROXMOX_HELP = (
     "[bold cyan]PROXMOX SETUP[/bold cyan]\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
@@ -212,8 +230,8 @@ _PROXMOX_HELP = (
     "     [dim]Shown only once — cannot be retrieved later[/dim]\n\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
     "[bold cyan]USER FORMAT[/bold cyan]\n\n"
-    "  [reverse] root@pam  [/reverse]  Local root account\n"
-    "  [reverse] admin@pve [/reverse]  PVE-managed user\n\n"
+    "  [reverse] root@pam  [/reverse] [@click=screen.copy_cmd(0)][dim italic] copy[/dim italic][/]  Local root account\n"
+    "  [reverse] admin@pve [/reverse] [@click=screen.copy_cmd(1)][dim italic] copy[/dim italic][/]  PVE-managed user\n\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
     "[bold cyan]TOKEN VS PASSWORD[/bold cyan]\n\n"
     "  [yellow]Tokens are recommended because they:[/yellow]\n\n"
@@ -227,6 +245,23 @@ _PROXMOX_HELP = (
     "  [dim]•[/dim] [bold]Enabled[/bold]  — only with CA-signed certificates"
 )
 
+_DNS_CMDS = [
+    # 0: Step 1 - generate key + set permissions (combined)
+    "tsig-keygen infraforge-key > /etc/bind/infraforge-key.conf && chown root:bind /etc/bind/infraforge-key.conf && chmod 640 /etc/bind/infraforge-key.conf",
+    # 1: Step 2 - read key file
+    "cat /etc/bind/infraforge-key.conf",
+    # 2: Step 3 - include directive (config snippet)
+    'include "/etc/bind/infraforge-key.conf";',
+    # 3: Step 3 - allow-update directive (config snippet)
+    'allow-update { key "infraforge-key"; };',
+    # 4: Step 4 - validate and reload
+    "named-checkconf && rndc reload",
+    # 5: Useful - list TSIG keys
+    "rndc tsig-list",
+    # 6: Useful - list zones
+    """grep -oP 'zone "\\K[^"]+' /etc/bind/named.conf.local""",
+]
+
 _DNS_HELP = (
     "[bold cyan]BIND9 DNS SETUP[/bold cyan]\n"
     "[dim]───────────────────────────────────────[/dim]\n"
@@ -236,9 +271,11 @@ _DNS_HELP = (
     "   [reverse]     > /etc/bind/infraforge-key.conf       [/reverse]\n"
     "   [reverse] $ chown root:bind \\                       [/reverse]\n"
     "   [reverse]     /etc/bind/infraforge-key.conf          [/reverse]\n"
-    "   [reverse] $ chmod 640 /etc/bind/infraforge-key.conf  [/reverse]\n\n"
+    "   [reverse] $ chmod 640 /etc/bind/infraforge-key.conf  [/reverse]"
+    "[@click=screen.copy_cmd(0)][dim italic] copy[/dim italic][/]\n\n"
     "[bold yellow]2[/bold yellow]  [bold]Copy the secret from the key file[/bold]\n\n"
-    "   [reverse] $ cat /etc/bind/infraforge-key.conf        [/reverse]\n\n"
+    "   [reverse] $ cat /etc/bind/infraforge-key.conf        [/reverse]"
+    "[@click=screen.copy_cmd(1)][dim italic] copy[/dim italic][/]\n\n"
     "   [dim]Output looks like:[/dim]\n"
     '   [dim]key "infraforge-key" \\{[/dim]\n'
     "   [dim]    algorithm hmac-sha256;[/dim]\n"
@@ -248,18 +285,23 @@ _DNS_HELP = (
     "     on the left.\n\n"
     "[bold yellow]3[/bold yellow]  [bold]Enable dynamic updates[/bold]\n\n"
     "   Add to [bold]named.conf.local[/bold]:\n\n"
-    '   [reverse] include "/etc/bind/infraforge-key.conf";   [/reverse]\n\n'
+    '   [reverse] include "/etc/bind/infraforge-key.conf";   [/reverse]'
+    "[@click=screen.copy_cmd(2)][dim italic] copy[/dim italic][/]\n\n"
     "   In your zone block, add:\n\n"
-    '   [reverse] allow-update \\{ key "infraforge-key"; \\};  [/reverse]\n\n'
+    '   [reverse] allow-update \\{ key "infraforge-key"; \\};  [/reverse]'
+    "[@click=screen.copy_cmd(3)][dim italic] copy[/dim italic][/]\n\n"
     "[bold yellow]4[/bold yellow]  [bold]Validate and reload[/bold]\n\n"
-    "   [reverse] $ named-checkconf && rndc reload           [/reverse]\n\n"
+    "   [reverse] $ named-checkconf && rndc reload           [/reverse]"
+    "[@click=screen.copy_cmd(4)][dim italic] copy[/dim italic][/]\n\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
     "[bold cyan]USEFUL COMMANDS[/bold cyan]\n\n"
     "  [dim]•[/dim] List TSIG keys:\n"
-    "    [reverse] $ rndc tsig-list [/reverse]\n\n"
+    "    [reverse] $ rndc tsig-list [/reverse]"
+    "[@click=screen.copy_cmd(5)][dim italic] copy[/dim italic][/]\n\n"
     "  [dim]•[/dim] List configured zones:\n"
     "    [reverse] $ grep -oP 'zone \"\\K\\[^\"]+'              [/reverse]\n"
-    "    [reverse]   /etc/bind/named.conf.local               [/reverse]\n\n"
+    "    [reverse]   /etc/bind/named.conf.local               [/reverse]"
+    "[@click=screen.copy_cmd(6)][dim italic] copy[/dim italic][/]\n\n"
     "  [dim]InfraForge auto-discovers zones on first connect.[/dim]"
 )
 
@@ -334,6 +376,10 @@ _TERRAFORM_HELP = (
     "  [yellow]![/yellow] [dim]InfraForge auto-installs Terraform if missing.[/dim]"
 )
 
+_ANSIBLE_CMDS = [
+    "./ansible/playbooks",
+]
+
 _ANSIBLE_HELP = (
     "[bold cyan]ANSIBLE SETUP[/bold cyan]\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
@@ -342,7 +388,8 @@ _ANSIBLE_HELP = (
     "  Each [bold].yml[/bold] / [bold].yaml[/bold] file appears in the\n"
     "  Ansible screen automatically.\n\n"
     "  Default:\n"
-    "  [reverse] ./ansible/playbooks [/reverse]\n\n"
+    "  [reverse] ./ansible/playbooks [/reverse]"
+    "[@click=screen.copy_cmd(0)][dim italic] copy[/dim italic][/]\n\n"
     "[dim]───────────────────────────────────────[/dim]\n\n"
     "[bold cyan]INCLUDED PLAYBOOKS[/bold cyan]\n\n"
     "  [dim]•[/dim] [bold]deploy-ssh-key.yml[/bold]\n"
@@ -417,6 +464,8 @@ def get_config_modal(comp_id: str, full_cfg: dict) -> ModalScreen | None:
 # ── Proxmox Config Modal ──────────────────────────────────────────
 
 class ProxmoxConfigModal(_ArrowNavModal):
+
+    _help_cmds = _PROXMOX_CMDS
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=False),
@@ -524,6 +573,8 @@ ProxmoxConfigModal {{
 # ── DNS Config Modal ───────────────────────────────────────────────
 
 class DNSConfigModal(_ArrowNavModal):
+
+    _help_cmds = _DNS_CMDS
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=False),
@@ -1101,6 +1152,8 @@ TerraformConfigModal {{
 # ── Ansible Config Modal ──────────────────────────────────────────
 
 class AnsibleConfigModal(_ArrowNavModal):
+
+    _help_cmds = _ANSIBLE_CMDS
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=False),
