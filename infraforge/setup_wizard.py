@@ -204,6 +204,45 @@ def _configure_ai(console: Console, prev: dict | None = None) -> dict:
     }
 
 
+def _check_and_install_sshpass(console: Console) -> None:
+    """Check if sshpass is installed and offer to install it if missing.
+
+    sshpass is needed for the SSH key setup flow (copying SSH keys to
+    Proxmox nodes using password auth via ssh-copy-id).
+    """
+    if shutil.which("sshpass") is not None:
+        return
+
+    console.print("\n[bold cyan]─── System Dependency: sshpass ───[/bold cyan]\n")
+    console.print(
+        "[dim]sshpass is needed to copy SSH keys to Proxmox nodes using password auth.[/dim]\n"
+    )
+
+    if not Confirm.ask("Install sshpass now?", default=True):
+        console.print("[dim]Skipping sshpass — you can install it later with: sudo apt-get install -y sshpass[/dim]")
+        return
+
+    console.print("[dim]Installing sshpass...[/dim]")
+    try:
+        result = subprocess.run(
+            ["sudo", "apt-get", "install", "-y", "sshpass"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0 and shutil.which("sshpass") is not None:
+            console.print("[green]✓[/green] sshpass installed")
+        else:
+            console.print("[red]✗[/red] Failed to install sshpass")
+            if result.stderr:
+                console.print(f"[dim]{result.stderr.strip()[:300]}[/dim]")
+            console.print("[dim]Install manually with: sudo apt-get install -y sshpass[/dim]")
+    except subprocess.TimeoutExpired:
+        console.print("[red]✗[/red] Installation timed out")
+        console.print("[dim]Install manually with: sudo apt-get install -y sshpass[/dim]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Could not install sshpass: {e}")
+        console.print("[dim]Install manually with: sudo apt-get install -y sshpass[/dim]")
+
+
 def run_setup_wizard():
     """Run the interactive setup wizard."""
     console = Console()
@@ -323,6 +362,9 @@ def run_setup_wizard():
     # ── Configure subnets if phpIPAM is configured ────────────────────
     if config["ipam"].get("url"):
         _configure_subnets(console, config_path)
+
+    # ── System dependency: sshpass ──────────────────────────────────
+    _check_and_install_sshpass(console)
 
     console.print("\n[bold green]Setup complete![/bold green] Run [bold]infraforge[/bold] to start.\n")
 

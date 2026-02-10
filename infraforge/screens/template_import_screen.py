@@ -26,6 +26,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from textual import work
 
+from infraforge.ssh_helper import test_ssh
 from infraforge.screens.template_update_screen import (
     WizItem,
     _stor_label,
@@ -865,8 +866,8 @@ class TemplateImportScreen(Screen):
             if not valid:
                 self.notify(msg, severity="error")
                 return
-            self._phase = 2
-            self._render_phase()
+            # Check SSH connectivity before proceeding to import
+            self._check_ssh_before_import()
         elif self._phase == 3:
             self.app.pop_screen()
 
@@ -874,6 +875,46 @@ class TemplateImportScreen(Screen):
         if self._phase == 1:
             self._phase = 0
             self._render_phase()
+
+    @work(thread=True)
+    def _check_ssh_before_import(self):
+        """Test SSH connectivity; if it fails, prompt user to set it up."""
+        host = self.app.config.proxmox.host
+
+        # Show checking hint
+        def _set():
+            self._set_hint("[dim]Checking SSH connectivity...[/dim]")
+            self.query_one("#btn-next", Button).disabled = True
+        self.app.call_from_thread(_set)
+
+        if test_ssh(host):
+            def _proceed():
+                self._phase = 2
+                self._render_phase()
+            self.app.call_from_thread(_proceed)
+        else:
+            def _show_modal():
+                # Re-enable button before showing modal
+                try:
+                    btn = self.query_one("#btn-next", Button)
+                    btn.disabled = False
+                except Exception:
+                    pass
+                from infraforge.screens.ssh_setup_modal import SSHSetupModal
+                self.app.push_screen(
+                    SSHSetupModal(host),
+                    callback=self._on_ssh_setup_done,
+                )
+            self.app.call_from_thread(_show_modal)
+
+    def _on_ssh_setup_done(self, success: bool) -> None:
+        """Called after SSH setup modal is dismissed."""
+        if success:
+            self._phase = 2
+            self._render_phase()
+        else:
+            self.notify("SSH key auth is required for template import", severity="warning")
+            self._update_phase_hint()
 
     def action_handle_escape(self):
         if self._import_done:

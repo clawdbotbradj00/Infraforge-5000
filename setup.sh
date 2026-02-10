@@ -688,6 +688,30 @@ check_and_install_ansible() {
     fi
 }
 
+check_and_install_sshpass() {
+    echo
+    echo -e "${CYAN}${BOLD}── sshpass ──${NC}"
+    if command -v sshpass &>/dev/null; then
+        success "sshpass already installed"
+        return 0
+    fi
+
+    warn "sshpass is not installed."
+    echo -e "${DIM}sshpass is needed to copy SSH keys to Proxmox nodes using password auth.${NC}"
+    if prompt_yesno "Install sshpass now?" "y"; then
+        info "Installing sshpass..."
+        sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass
+        if [[ $? -ne 0 ]]; then
+            error "Failed to install sshpass"
+            return 1
+        fi
+
+        success "sshpass installed"
+    else
+        echo -e "${DIM}Skipping sshpass installation — you can install it later.${NC}"
+    fi
+}
+
 generate_password() {
     # Generate a random password using available tools
     if command -v openssl &>/dev/null; then
