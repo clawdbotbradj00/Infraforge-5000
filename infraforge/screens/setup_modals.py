@@ -49,6 +49,15 @@ class _ArrowNavModal(ModalScreen):
         ]
 
     def on_key(self, event) -> None:
+        # Enter on Input/Switch advances to next field
+        if event.key == "enter":
+            focused = self.app.focused
+            if isinstance(focused, (Input, Switch)):
+                event.prevent_default()
+                event.stop()
+                self._move_field(1)
+            return
+
         if event.key not in ("down", "up"):
             return
         # Don't intercept arrows when any Select dropdown is expanded
