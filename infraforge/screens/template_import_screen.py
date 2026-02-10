@@ -151,6 +151,8 @@ class TemplateImportScreen(Screen):
         self._editing = False
         self._editing_key = ""
         self._downloading = False
+        self._vmid_user_set = False
+        self._pending_rerender = False
 
     # ------------------------------------------------------------------
     # Compose
@@ -385,6 +387,13 @@ class TemplateImportScreen(Screen):
         inp = self.query_one("#wiz-edit-input", Input)
         inp.add_class("hidden")
         inp.blur()
+        # If a background data load completed while we were editing,
+        # do a full re-render now (after the user's value has been saved
+        # into self._vmid / self._template_name so it won't be lost).
+        if self._pending_rerender:
+            self._pending_rerender = False
+            self._render_phase()
+            return
         self._refresh_lines()
         self._update_phase_hint()
         self._maybe_focus_next()
@@ -396,6 +405,11 @@ class TemplateImportScreen(Screen):
         inp = self.query_one("#wiz-edit-input", Input)
         inp.add_class("hidden")
         inp.blur()
+        # Flush deferred re-render from background data load.
+        if self._pending_rerender:
+            self._pending_rerender = False
+            self._render_phase()
+            return
         self._update_phase_hint()
 
     # ------------------------------------------------------------------
@@ -434,6 +448,8 @@ class TemplateImportScreen(Screen):
     def _apply_input_value(self, item: WizItem):
         if item.key == "vmid":
             self._vmid = item.value.strip()
+            if self._vmid:
+                self._vmid_user_set = True
         elif item.key == "template_name":
             self._template_name = item.value.strip()
         elif item.key == "download_url":
@@ -731,10 +747,11 @@ class TemplateImportScreen(Screen):
         ))
 
         if self._selected_node:
-            node_storages = [
-                s for s in self._storages
-                if s.node == self._selected_node or s.shared
-            ]
+            node_storages = sorted(
+                [s for s in self._storages
+                 if s.node == self._selected_node or s.shared],
+                key=lambda s: s.storage,
+            )
             if node_storages:
                 items.append(WizItem(kind="info", label=_stor_header()))
                 seen: set[str] = set()
@@ -883,13 +900,9 @@ class TemplateImportScreen(Screen):
             if not valid:
                 self.notify(msg, severity="error")
                 return
-            # Pre-populate VMID if not set
-            if not self._vmid:
-                try:
-                    next_id = self.app.proxmox.get_next_vmid()
-                    self._vmid = str(next_id)
-                except Exception:
-                    pass
+            # VMID is pre-populated asynchronously by _load_initial_data.
+            # If the data hasn't loaded yet the VMID field stays blank and
+            # _run_import will fetch one on demand.
             # Pre-populate template name from manifest
             if not self._template_name and self._selected_package:
                 self._template_name = self._selected_package["manifest"].get(
@@ -1079,19 +1092,41 @@ class TemplateImportScreen(Screen):
     def _load_initial_data(self):
         try:
             raw_nodes = self.app.proxmox.get_nodes()
-            self._online_nodes = [
-                n["node"] for n in raw_nodes
-                if n.get("status") == "online"
-            ]
-            self._storages = self.app.proxmox.get_storage_info()
-            self._data_loaded = True
-            self.app.call_from_thread(self._on_data_loaded)
+            online = sorted(
+                [n["node"] for n in raw_nodes if n.get("status") == "online"]
+            )
+            storages = self.app.proxmox.get_storage_info()
+
+            # Pre-fetch next available VMID so Phase 1 doesn't block the
+            # UI thread.  Only store it if the user hasn't manually set
+            # a VMID while we were loading.
+            next_vmid: str = ""
+            try:
+                next_vmid = str(self.app.proxmox.get_next_vmid())
+            except Exception:
+                pass
+
+            def _apply():
+                self._online_nodes = online
+                self._storages = storages
+                # Only populate the auto-detected VMID when the user has
+                # not explicitly typed one.
+                if next_vmid and not self._vmid_user_set:
+                    self._vmid = next_vmid
+                self._data_loaded = True
+                self._on_data_loaded()
+            self.app.call_from_thread(_apply)
         except Exception:
             pass
 
     def _on_data_loaded(self):
         if self._phase in (0, 1):
-            self._render_phase()
+            if self._editing:
+                # Defer re-render until editing finishes so we don't
+                # rebuild items while the user is typing a value.
+                self._pending_rerender = True
+            else:
+                self._render_phase()
 
     # ------------------------------------------------------------------
     # URL download worker
