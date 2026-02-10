@@ -434,6 +434,21 @@ class ProxmoxClient:
         except Exception:
             return []
 
+    def get_node_ip(self, node_name: str) -> str:
+        """Resolve a node name to its cluster IP via /cluster/status.
+
+        Falls back to config host if the node can't be resolved.
+        """
+        try:
+            for entry in self.get_cluster_status():
+                if entry.get("type") == "node" and entry.get("name") == node_name:
+                    ip = entry.get("ip", "")
+                    if ip:
+                        return ip
+        except Exception:
+            pass
+        return ""
+
     def get_version(self) -> dict:
         try:
             return self.api.version.get()

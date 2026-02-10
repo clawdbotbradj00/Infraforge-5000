@@ -876,10 +876,23 @@ class TemplateImportScreen(Screen):
             self._phase = 0
             self._render_phase()
 
+    def _resolve_node_host(self) -> str:
+        """Resolve the SSH host for the selected target node.
+
+        Uses /cluster/status to find the node IP (important for
+        non-shared storage where the file must be on that node).
+        Falls back to config.proxmox.host.
+        """
+        if self._selected_node:
+            node_ip = self.app.proxmox.get_node_ip(self._selected_node)
+            if node_ip:
+                return node_ip
+        return self.app.config.proxmox.host
+
     @work(thread=True)
     def _check_ssh_before_import(self):
         """Test SSH connectivity; if it fails, prompt user to set it up."""
-        host = self.app.config.proxmox.host
+        host = self._resolve_node_host()
 
         # Show checking hint
         def _set():
@@ -1104,7 +1117,7 @@ class TemplateImportScreen(Screen):
         package_path = Path(pkg["path"])
         node = self._selected_node
         storage = self._selected_storage
-        host = self.app.config.proxmox.host
+        host = self._resolve_node_host()
         template_name = self._template_name
 
         # Resolve VMID

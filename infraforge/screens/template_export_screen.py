@@ -624,6 +624,16 @@ class TemplateExportScreen(Screen):
         elif self._phase == 2:
             self.app.pop_screen()
 
+    def _resolve_node_host(self) -> str:
+        """Resolve the SSH host for the template's node.
+
+        Uses /cluster/status to find the node IP (important for
+        non-shared storage where the file is only on that node).
+        Falls back to config.proxmox.host.
+        """
+        node_ip = self.app.proxmox.get_node_ip(self._template.node)
+        return node_ip or self.app.config.proxmox.host
+
     @work(thread=True)
     def _check_ssh_before_export(self):
         """Test SSH connectivity; if it fails, prompt user to set it up."""
@@ -632,7 +642,7 @@ class TemplateExportScreen(Screen):
             self.query_one("#btn-next", Button).disabled = True
         self.app.call_from_thread(_set)
 
-        host = self.app.config.proxmox.host
+        host = self._resolve_node_host()
         if test_ssh(host):
             def _proceed():
                 self.query_one("#btn-next", Button).disabled = False
@@ -703,7 +713,7 @@ class TemplateExportScreen(Screen):
         t = self._template
         node = t.node
         vmid = t.vmid
-        host = self.app.config.proxmox.host
+        host = self._resolve_node_host()
 
         def log(msg: str):
             def _update():
