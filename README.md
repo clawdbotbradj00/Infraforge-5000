@@ -21,6 +21,10 @@ Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible 
 
 <img src="assets/logo.png" alt="InfraForge Logo" width="100%">
 
+```bash
+git clone https://github.com/clawdbotbradj00/Infraforge-5000.git && cd Infraforge-5000 && bash setup.sh
+```
+
 </div>
 
 ---
