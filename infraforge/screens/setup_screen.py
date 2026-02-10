@@ -76,29 +76,31 @@ def _check_component(cfg: dict, name: str) -> tuple[bool, str]:
         return False, "Not configured"
 
     elif name == "terraform":
+        from infraforge.config import _resolve_path
         sec = cfg.get("terraform", {})
-        workspace = sec.get("workspace", "")
+        workspace = _resolve_path(sec.get("workspace", ""), "./terraform")
         has_binary = shutil.which("terraform") is not None
-        configured = bool(workspace or sec.get("state_backend"))
+        configured = bool(sec.get("workspace") or sec.get("state_backend"))
         if has_binary and configured:
-            return True, f"Installed  (workspace: {workspace or './terraform'})"
+            return True, f"Installed  (workspace: {workspace})"
         elif configured:
-            return True, f"Configured  (workspace: {workspace or './terraform'})  [dim]binary not in PATH[/dim]"
+            return True, f"Configured  (workspace: {workspace})  [dim]binary not in PATH[/dim]"
         elif has_binary:
-            return True, f"Installed  (workspace: {workspace or './terraform'})"
+            return True, f"Installed  (workspace: {workspace})"
         return False, "Not configured"
 
     elif name == "ansible":
+        from infraforge.config import _resolve_path
         sec = cfg.get("ansible", {})
-        pdir = sec.get("playbook_dir", "")
+        pdir = _resolve_path(sec.get("playbook_dir", ""), "./ansible/playbooks")
         has_binary = shutil.which("ansible") is not None
-        configured = bool(pdir)
+        configured = bool(sec.get("playbook_dir"))
         if has_binary and configured:
             return True, f"Installed  (playbooks: {pdir})"
         elif configured:
             return True, f"Configured  (playbooks: {pdir})  [dim]binary not in PATH[/dim]"
         elif has_binary:
-            return True, f"Installed  (playbooks: {pdir or './ansible/playbooks'})"
+            return True, f"Installed  (playbooks: {pdir})"
         return False, "Not configured"
 
     elif name == "ai":

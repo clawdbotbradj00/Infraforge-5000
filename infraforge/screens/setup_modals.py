@@ -376,9 +376,9 @@ _TERRAFORM_HELP = (
     "  [yellow]![/yellow] [dim]InfraForge auto-installs Terraform if missing.[/dim]"
 )
 
-_ANSIBLE_CMDS = [
-    "./ansible/playbooks",
-]
+def _get_ansible_cmds():
+    from infraforge.config import _resolve_path
+    return [_resolve_path("", "./ansible/playbooks")]
 
 _ANSIBLE_HELP = (
     "[bold cyan]ANSIBLE SETUP[/bold cyan]\n"
@@ -1117,13 +1117,15 @@ TerraformConfigModal {{
         self._sec = section
 
     def compose(self) -> ComposeResult:
+        from infraforge.config import _resolve_path
         s = self._sec
+        default_workspace = _resolve_path("", "./terraform")
         with Horizontal(id="config-outer"):
             with VerticalScroll(id="config-form"):
                 yield Static("[bold]Terraform Configuration[/bold]", id="config-title", markup=True)
 
                 yield Label("Workspace Directory", classes="field-label")
-                yield Input(value=s.get("workspace", "./terraform"), placeholder="./terraform", id="f-workspace")
+                yield Input(value=s.get("workspace", default_workspace), placeholder=default_workspace, id="f-workspace")
 
                 yield Label("State Backend", classes="field-label")
                 yield Select(
@@ -1140,8 +1142,9 @@ TerraformConfigModal {{
                 yield Static(_TERRAFORM_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
+        from infraforge.config import _resolve_path
         result = {
-            "workspace": self.query_one("#f-workspace", Input).value.strip() or "./terraform",
+            "workspace": _resolve_path(self.query_one("#f-workspace", Input).value.strip(), "./terraform"),
             "state_backend": self.query_one("#f-backend", Select).value,
         }
         self.dismiss(result)
@@ -1154,7 +1157,9 @@ TerraformConfigModal {{
 
 class AnsibleConfigModal(_ArrowNavModal):
 
-    _help_cmds = _ANSIBLE_CMDS
+    @property
+    def _help_cmds(self):
+        return _get_ansible_cmds()
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=False),
@@ -1172,13 +1177,15 @@ AnsibleConfigModal {{
         self._sec = section
 
     def compose(self) -> ComposeResult:
+        from infraforge.config import _resolve_path
         s = self._sec
+        default_pdir = _resolve_path("", "./ansible/playbooks")
         with Horizontal(id="config-outer"):
             with VerticalScroll(id="config-form"):
                 yield Static("[bold]Ansible Configuration[/bold]", id="config-title", markup=True)
 
                 yield Label("Playbook Directory", classes="field-label")
-                yield Input(value=s.get("playbook_dir", "./ansible/playbooks"), placeholder="./ansible/playbooks", id="f-playbook-dir")
+                yield Input(value=s.get("playbook_dir", default_pdir), placeholder=default_pdir, id="f-playbook-dir")
 
                 with Horizontal(classes="modal-buttons"):
                     yield Button("Save", id="save-btn", variant="success")
@@ -1188,8 +1195,9 @@ AnsibleConfigModal {{
                 yield Static(_ANSIBLE_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
+        from infraforge.config import _resolve_path
         result = {
-            "playbook_dir": self.query_one("#f-playbook-dir", Input).value.strip() or "./ansible/playbooks",
+            "playbook_dir": _resolve_path(self.query_one("#f-playbook-dir", Input).value.strip(), "./ansible/playbooks"),
         }
         self.dismiss(result)
 

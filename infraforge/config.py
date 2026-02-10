@@ -5,6 +5,26 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
+# Project root: parent of the infraforge/ package directory
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_path(raw: str, default_relative: str = "") -> str:
+    """Resolve a path that may be relative to the project root.
+
+    Absolute paths and ~/ paths are returned as-is (expanded).
+    Relative paths (e.g. ./ansible/playbooks) are resolved relative
+    to the InfraForge project root, not the current working directory.
+    """
+    if not raw:
+        raw = default_relative
+    if not raw:
+        return ""
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return str(p)
+    return str((_PROJECT_ROOT / p).resolve())
+
 
 class ConfigError(Exception):
     """Configuration error."""
@@ -221,6 +241,14 @@ class Config:
                 start_on_create=bool(defs.get("start_on_create", True)),
                 exports_dir=str(defs.get("exports_dir", "")),
             )
+
+        # Resolve relative paths to absolute (relative to project root)
+        config.terraform.workspace = _resolve_path(
+            config.terraform.workspace, "./terraform"
+        )
+        config.ansible.playbook_dir = _resolve_path(
+            config.ansible.playbook_dir, "./ansible/playbooks"
+        )
 
         # Validate required fields
         if not config.proxmox.host:

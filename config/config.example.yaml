@@ -40,10 +40,14 @@ ipam:
   verify_ssl: true
 
 terraform:
+  # Relative paths are resolved relative to the InfraForge install directory.
+  # You can also use absolute paths or ~/paths.
   workspace: "./terraform"
   state_backend: "local"  # "local", "s3", "consul"
 
 ansible:
+  # Relative paths are resolved relative to the InfraForge install directory.
+  # You can also use absolute paths or ~/paths.
   playbook_dir: "./ansible/playbooks"
   # Verify SSH host keys when running playbooks (default: true).
   # Set to false only if targeting newly provisioned VMs with unknown host keys.

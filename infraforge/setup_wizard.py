@@ -327,12 +327,13 @@ def run_setup_wizard():
     ex_ans = existing.get("ansible", {})
     ex_def = existing.get("defaults", {})
 
+    from infraforge.config import _resolve_path
     config["terraform"] = {
-        "workspace": ex_tf.get("workspace", "./terraform"),
+        "workspace": _resolve_path(ex_tf.get("workspace", ""), "./terraform"),
         "state_backend": ex_tf.get("state_backend", "local"),
     }
     config["ansible"] = {
-        "playbook_dir": ex_ans.get("playbook_dir", "./ansible/playbooks"),
+        "playbook_dir": _resolve_path(ex_ans.get("playbook_dir", ""), "./ansible/playbooks"),
     }
     config["defaults"] = {
         "cpu_cores": ex_def.get("cpu_cores", 2),
