@@ -4,17 +4,51 @@
 
 ### Manage your entire Proxmox homelab from one terminal.
 
-```bash
-git clone https://github.com/clawdbotbradj00/Infraforge-5000.git && cd Infraforge-5000 && bash setup.sh
-```
-
-The setup wizard connects to Proxmox, deploys phpIPAM via Docker, configures DNS, and drops you into InfraForge — ready to go.
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![GitHub Release](https://img.shields.io/badge/Release-v0.8.0-brightgreen)](https://github.com/clawdbotbradj00/Infraforge-5000/releases/latest)
 
 </div>
+
+## Installing
+
+To install or update InfraForge, run the install script. You can download and run it with this command:
+
+```bash
+curl -o- https://raw.githubusercontent.com/clawdbotbradj00/Infraforge-5000/main/setup.sh | bash
+```
+
+Or with `wget`:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/clawdbotbradj00/Infraforge-5000/main/setup.sh | bash
+```
+
+This clones the repo to `~/Infraforge-5000`, installs dependencies in a Python venv, and launches the setup wizard — which walks you through connecting to Proxmox, deploying phpIPAM via Docker, and configuring DNS.
+
+You can set a custom install location with `INFRAFORGE_DIR`:
+
+```bash
+curl -o- https://raw.githubusercontent.com/clawdbotbradj00/Infraforge-5000/main/setup.sh | INFRAFORGE_DIR=/opt/infraforge bash
+```
+
+### Manual Install
+
+```bash
+git clone https://github.com/clawdbotbradj00/Infraforge-5000.git
+cd Infraforge-5000
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
+cp config/config.example.yaml ~/.config/infraforge/config.yaml
+# Edit config.yaml with your Proxmox host, API token, etc.
+infraforge
+```
+
+### Running
+
+```bash
+infraforge          # Launch the TUI
+infraforge setup    # Re-run the setup wizard anytime
+```
 
 ---
 
@@ -36,28 +70,12 @@ InfraForge is a terminal UI that puts your Proxmox cluster, DNS, IP address mana
 
 **Cloud Images** — Download Ubuntu, Debian, Rocky, Alma, Fedora, and openSUSE cloud images with automatic SHA256 integrity verification.
 
----
-
 ## Requirements
 
 - Python 3.10+
 - Proxmox VE 7.x or 8.x with API access
 - Docker + Docker Compose v2 (for phpIPAM — installed automatically if missing)
 - BIND9 with TSIG key (optional, for DNS management)
-
-## Manual Setup
-
-If you prefer not to use the setup wizard:
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -e .
-mkdir -p ~/.config/infraforge
-cp config/config.example.yaml ~/.config/infraforge/config.yaml
-# Edit config.yaml with your Proxmox host, API token, etc.
-infraforge
-```
-
-Re-run `infraforge setup` anytime to reconfigure.
 
 ## Configuration
 
@@ -108,21 +126,6 @@ Create a Proxmox API token at **Datacenter > Permissions > API Tokens** with at 
 | `?` | Help |
 | `q` | Quit |
 | `Escape` | Go back |
-
-## phpIPAM Docker Stack
-
-Deployed automatically by the setup wizard as three containers:
-
-| Container | Purpose | Port |
-|-----------|---------|------|
-| `infraforge-ipam-web` | phpIPAM web UI + API | 8443 (HTTPS) |
-| `infraforge-ipam-db` | MariaDB | internal |
-| `infraforge-ipam-cron` | fping subnet scanner | internal |
-
-```bash
-cd docker && docker compose logs -f    # View logs
-cd docker && docker compose restart    # Restart
-```
 
 ## License
 

@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+INFRAFORGE_REPO="https://github.com/clawdbotbradj00/Infraforge-5000.git"
+INSTALL_DIR="${INFRAFORGE_DIR:-$HOME/Infraforge-5000}"
+
+# ── Bootstrap: if run via curl|bash, clone the repo first ──────────────
+# Detect: if this script is NOT inside a repo (no pyproject.toml nearby),
+# we were piped from curl — clone the repo and re-exec from inside it.
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")" && pwd)"
+if [[ ! -f "$_self_dir/pyproject.toml" ]]; then
+    echo -e "\033[0;36m\033[1m"
+    echo "  ╔══════════════════════════════════════════╗"
+    echo "  ║            InfraForge Installer            ║"
+    echo "  ╚══════════════════════════════════════════╝"
+    echo -e "\033[0m"
+
+    # Check for git
+    if ! command -v git &>/dev/null; then
+        echo -e "\033[0;31m[✗]\033[0m git is required. Install it and try again."
+        exit 1
+    fi
+
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        echo -e "\033[0;34m[INFO]\033[0m Updating existing install at $INSTALL_DIR..."
+        git -C "$INSTALL_DIR" pull --ff-only || true
+    else
+        echo -e "\033[0;34m[INFO]\033[0m Cloning InfraForge to $INSTALL_DIR..."
+        git clone "$INFRAFORGE_REPO" "$INSTALL_DIR"
+    fi
+
+    exec bash "$INSTALL_DIR/setup.sh" "$@"
+fi
+
+# ── Normal setup (running from inside the repo) ───────────────────────
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
