@@ -22,10 +22,19 @@ if [[ ! -f "$_self_dir/pyproject.toml" ]]; then
 
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         echo -e "\033[0;34m[INFO]\033[0m Updating existing install at $INSTALL_DIR..."
-        git -C "$INSTALL_DIR" pull --ff-only || true
+        git -C "$INSTALL_DIR" fetch --tags --force
     else
         echo -e "\033[0;34m[INFO]\033[0m Cloning InfraForge to $INSTALL_DIR..."
         git clone "$INFRAFORGE_REPO" "$INSTALL_DIR"
+    fi
+
+    # Checkout the latest release tag (highest semver)
+    _latest_tag=$(git -C "$INSTALL_DIR" tag -l 'v*' --sort=-version:refname | head -n1)
+    if [[ -n "$_latest_tag" ]]; then
+        echo -e "\033[0;34m[INFO]\033[0m Installing release $_latest_tag"
+        git -C "$INSTALL_DIR" checkout "$_latest_tag" --quiet
+    else
+        echo -e "\033[0;33m[WARN]\033[0m No release tags found, using main branch"
     fi
 
     exec bash "$INSTALL_DIR/setup.sh" "$@"
