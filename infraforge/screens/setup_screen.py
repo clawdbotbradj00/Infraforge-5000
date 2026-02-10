@@ -456,8 +456,9 @@ class SetupScreen(Screen):
     BINDINGS = [
         Binding("enter", "configure", "Configure", show=True),
         Binding("t", "test", "Test Connection", show=True),
+        Binding("r", "repair_ipam", "Repair IPAM", show=True),
         Binding("s", "save_exit", "Save & Exit", show=True),
-        Binding("m", "launch_main", "Main Menu", show=False),
+        Binding("m", "launch_main", "Main Menu", show=True),
         Binding("escape", "quit_setup", "Exit", show=True),
     ]
 
@@ -473,7 +474,7 @@ class SetupScreen(Screen):
             yield Static(
                 "[bold]InfraForge Setup[/bold]  [dim]\u2502[/dim]  "
                 "Select a component to configure  [dim]\u2502[/dim]  "
-                "[dim]Enter[/dim]=Configure  [dim]t[/dim]=Test  [dim]s[/dim]=Save & Exit",
+                "[dim]Enter[/dim]=Configure  [dim]t[/dim]=Test  [dim]r[/dim]=Repair IPAM  [dim]m[/dim]=Main Menu",
                 id="setup-title",
                 markup=True,
             )
@@ -659,6 +660,33 @@ class SetupScreen(Screen):
             TestResultModal(title, body),
         )
 
+    def action_repair_ipam(self) -> None:
+        """Repair the phpIPAM Docker installation."""
+        comp_id = self._get_selected_comp_id()
+        if comp_id != "ipam":
+            self.notify("Select the IPAM component first, then press r to repair.", severity="warning")
+            return
+        # Check if IPAM is using Docker (local deployment)
+        sec = self._cfg.get("ipam", {})
+        url = sec.get("url", "")
+        if url and "localhost" not in url and "127.0.0.1" not in url:
+            self.notify("Repair is only available for local Docker deployments.", severity="warning")
+            return
+        from infraforge.screens.setup_modals import IPAMRepairModal
+        self.app.push_screen(
+            IPAMRepairModal(),
+            callback=self._on_repair_complete,
+        )
+
+    def _on_repair_complete(self, result: dict | None) -> None:
+        """Called when the repair modal is dismissed."""
+        if result is None:
+            return
+        self._cfg["ipam"] = result
+        _save_config(self._cfg)
+        self._refresh_all()
+        self.notify("IPAM repaired and reconfigured!", title="Repaired")
+
     def _offer_install(self, dep_name: str) -> None:
         """Push the install-dependency modal and refresh status on completion."""
         self.app.push_screen(
@@ -835,11 +863,6 @@ class SetupScreen(Screen):
 
     def action_launch_main(self) -> None:
         """Save config and exit setup to launch the main InfraForge app."""
-        # Check all modules are configured
-        ok_count = sum(1 for cid, _, _ in COMPONENTS if _check_component(self._cfg, cid)[0])
-        if ok_count < len(COMPONENTS):
-            self.notify("Not all modules are configured yet.", severity="warning")
-            return
         _save_config(self._cfg)
         self.app.exit(result="launch_main")
 

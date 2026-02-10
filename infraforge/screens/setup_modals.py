@@ -1128,6 +1128,338 @@ IPAMConfigModal {{
         self.dismiss(None)
 
 
+# ── IPAM Repair Modal ─────────────────────────────────────────────
+
+
+class IPAMRepairModal(ModalScreen):
+    """Tear down and redeploy phpIPAM Docker containers with fresh credentials."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    IPAMRepairModal {
+        align: center middle;
+    }
+    #repair-box {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+        overflow-x: hidden;
+        overflow-y: hidden;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._phase = "confirm"  # confirm | repairing | done
+        self._success = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="repair-box"):
+            yield Static(id="repair-status", markup=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#repair-status", Static).update(
+            "[bold yellow]Repair phpIPAM Installation[/bold yellow]\n\n"
+            "This will:\n"
+            "  1. Stop all phpIPAM containers\n"
+            "  2. Remove database volumes (all IPAM data will be lost)\n"
+            "  3. Generate fresh credentials\n"
+            "  4. Redeploy from scratch\n\n"
+            "[bold red]WARNING: All existing IPAM data will be permanently deleted![/bold red]\n\n"
+            "  [bold white on dark_green] y [/bold white on dark_green] Proceed with repair    "
+            "  [bold white on dark_red] n [/bold white on dark_red] Cancel"
+        )
+
+    def on_key(self, event) -> None:
+        if self._phase == "confirm":
+            if event.key == "y":
+                event.stop()
+                self._phase = "repairing"
+                self._run_repair()
+            elif event.key == "n":
+                event.stop()
+                self.dismiss(None)
+        elif self._phase == "repairing":
+            event.stop()  # Block all keys during repair
+        elif self._phase == "done":
+            if event.key in ("enter", "escape"):
+                event.stop()
+                if self._success:
+                    self.dismiss(self._result)
+                else:
+                    self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        if self._phase != "repairing":
+            self.dismiss(None)
+
+    def _update(self, msg: str) -> None:
+        self.app.call_from_thread(
+            self.query_one("#repair-status", Static).update, msg
+        )
+
+    @work(thread=True, exclusive=True)
+    def _run_repair(self) -> None:
+        """Tear down and redeploy phpIPAM in a background thread."""
+        import os
+        import secrets
+        import shutil
+        import subprocess
+        import time
+        from pathlib import Path
+
+        docker_dir = Path(__file__).resolve().parent.parent.parent / "docker"
+        sudo = ["sudo"] if os.geteuid() != 0 else []
+
+        # Detect docker prefix
+        docker_prefix: list[str] = []
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            if r.returncode != 0:
+                docker_prefix = sudo
+        except Exception:
+            docker_prefix = sudo
+
+        # Find compose command
+        compose_cmd: list[str] | None = None
+        for candidate in [docker_prefix + ["docker", "compose"], ["docker-compose"]]:
+            try:
+                if subprocess.run(candidate + ["version"], capture_output=True, timeout=5).returncode == 0:
+                    compose_cmd = candidate
+                    break
+            except Exception:
+                continue
+
+        if not compose_cmd:
+            self._update(
+                "[bold red]docker compose not found![/bold red]\n\n"
+                "[dim]Install docker compose and try again.[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Step 1: Tear down
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  Step 1/6: Stopping containers and removing volumes..."
+        )
+        try:
+            r = subprocess.run(
+                compose_cmd + ["-f", str(docker_dir / "docker-compose.yml"), "down", "-v"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                self._update(
+                    "[bold red]Failed to tear down containers[/bold red]\n\n"
+                    f"[dim]{r.stderr.strip()[:300]}[/dim]\n\n"
+                    "[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = False
+                return
+        except subprocess.TimeoutExpired:
+            self._update(
+                "[bold red]Tear down timed out[/bold red]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Step 2: Generate SSL certs
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers removed\n"
+            "  Step 2/6: Generating SSL certificate..."
+        )
+        ssl_script = docker_dir / "phpipam" / "generate-ssl.sh"
+        if ssl_script.exists():
+            subprocess.run(
+                ["bash", str(ssl_script)],
+                cwd=str(docker_dir / "phpipam"),
+                capture_output=True, timeout=15,
+            )
+
+        # Step 3: Generate fresh credentials
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers removed\n"
+            "  [green]\u2713[/green] SSL certificate generated\n"
+            "  Step 3/6: Generating fresh credentials..."
+        )
+        import string
+        alphabet = string.ascii_lowercase + string.digits
+        admin_pass = "".join(secrets.choice(alphabet) for _ in range(20))
+        db_pass = secrets.token_urlsafe(16)
+        db_root_pass = secrets.token_urlsafe(16)
+        port = "8443"
+
+        # Read existing port from .env if it exists
+        env_file = docker_dir / ".env"
+        if env_file.exists():
+            try:
+                for line in env_file.read_text().splitlines():
+                    if line.startswith("IPAM_PORT="):
+                        port = line.split("=", 1)[1].strip()
+            except Exception:
+                pass
+
+        # Generate admin password hash
+        admin_hash = ""
+        escaped_pass = admin_pass.replace("'", "\\'")
+        php_code = f"echo password_hash('{escaped_pass}', PASSWORD_DEFAULT);"
+        for php_cmd in [
+            docker_prefix + ["docker", "run", "--rm", "php:cli", "php", "-r", php_code],
+            docker_prefix + ["docker", "run", "--rm", "phpipam/phpipam-www:latest", "php", "-r", php_code],
+        ]:
+            try:
+                r = subprocess.run(php_cmd, capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip().startswith("$2"):
+                    admin_hash = r.stdout.strip()
+                    break
+            except Exception:
+                continue
+
+        # Step 4: Write .env
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers removed\n"
+            "  [green]\u2713[/green] SSL certificate generated\n"
+            "  [green]\u2713[/green] Credentials generated\n"
+            "  Step 4/6: Writing environment file..."
+        )
+        env_lines = [
+            f"IPAM_DB_ROOT_PASS={db_root_pass}",
+            f"IPAM_DB_PASS={db_pass}",
+            f"IPAM_PORT={port}",
+            "SCAN_INTERVAL=15m",
+        ]
+        if admin_hash:
+            env_lines.append(f"IPAM_ADMIN_HASH={admin_hash.replace('$', '$$')}")
+        (docker_dir / ".env").write_text("\n".join(env_lines) + "\n")
+
+        # Step 5: Launch containers
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers removed\n"
+            "  [green]\u2713[/green] SSL certificate generated\n"
+            "  [green]\u2713[/green] Credentials generated\n"
+            "  [green]\u2713[/green] Environment written\n"
+            "  Step 5/6: Starting containers..."
+        )
+        r = subprocess.run(
+            compose_cmd + ["-f", str(docker_dir / "docker-compose.yml"), "up", "-d"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            self._update(
+                "[bold red]Failed to start containers[/bold red]\n\n"
+                f"[dim]{r.stderr.strip()[:300]}[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Step 6: Wait for readiness
+        self._update(
+            "[bold cyan]Repairing phpIPAM...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers removed\n"
+            "  [green]\u2713[/green] SSL certificate generated\n"
+            "  [green]\u2713[/green] Credentials generated\n"
+            "  [green]\u2713[/green] Environment written\n"
+            "  [green]\u2713[/green] Containers started\n"
+            "  Step 6/6: Waiting for phpIPAM to start (may take 30-60s)..."
+        )
+        import ssl as ssl_mod
+        import urllib.request
+
+        url = f"https://localhost:{port}"
+        ready = False
+        for _ in range(60):
+            try:
+                ctx = ssl_mod.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl_mod.CERT_NONE
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
+                    if resp.status in (200, 301, 302):
+                        time.sleep(5)
+                        ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(3)
+
+        if not ready:
+            self._update(
+                "[bold red]phpIPAM did not become ready in time[/bold red]\n\n"
+                "[dim]Check: docker logs infraforge-ipam-web\n"
+                "Check: docker logs infraforge-ipam-db[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Verify API
+        api_ok = False
+        for _ in range(5):
+            try:
+                from infraforge.config import Config, IPAMConfig
+                from infraforge.ipam_client import IPAMClient
+                cfg = Config()
+                cfg.ipam = IPAMConfig(
+                    provider="phpipam", url=url, app_id="infraforge",
+                    token="", username="Admin", password=admin_pass,
+                    verify_ssl=False,
+                )
+                client = IPAMClient(cfg)
+                if client.check_health():
+                    api_ok = True
+                    break
+            except Exception:
+                pass
+            time.sleep(3)
+
+        if api_ok:
+            self._update(
+                "[bold green]phpIPAM repaired successfully![/bold green]\n\n"
+                f"  URL:      {url}\n"
+                f"  Username: Admin\n"
+                f"  Password: {admin_pass}\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+        else:
+            self._update(
+                "[bold yellow]phpIPAM deployed but API not responding yet[/bold yellow]\n\n"
+                f"  URL:      {url}\n"
+                f"  Username: Admin\n"
+                f"  Password: {admin_pass}\n\n"
+                "[dim]It may still be initializing. Press Enter to save config.[/dim]"
+            )
+
+        self._result = {
+            "provider": "phpipam",
+            "url": url,
+            "app_id": "infraforge",
+            "token": "",
+            "username": "Admin",
+            "password": admin_pass,
+            "verify_ssl": False,
+        }
+        self._phase = "done"
+        self._success = True
+
+
 # ── Terraform Config Modal ─────────────────────────────────────────
 
 class TerraformConfigModal(_ArrowNavModal):
