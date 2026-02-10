@@ -1393,29 +1393,35 @@ fi
 
 echo ""
 
-# Only launch the TUI setup wizard if stdin is a terminal (not a pipe)
-if [[ -t 0 ]]; then
-    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
-    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-    echo ""
+echo ""
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+echo ""
 
-    # Ensure textual is available (should be installed via requirements)
-    $PYTHON_CMD -m pip install textual -q 2>/dev/null || true
+# Ensure textual is available (should be installed via requirements)
+$PYTHON_CMD -m pip install textual -q 2>/dev/null || true
 
-    # Launch the TUI setup wizard as the calling user (not root) so config
-    # is saved to the correct home directory (~user, not /root)
+# Launch the TUI setup wizard. If stdin is a pipe (curl|bash), reconnect
+# it to /dev/tty so the Textual TUI can read keyboard input.
+_launch_setup() {
     if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
         sudo -u "$SUDO_USER" infraforge setup
     else
         infraforge setup
     fi
+}
 
-    # Reset terminal state (Textual enables mouse tracking; ensure it's off)
-    printf '\e[?1000l\e[?1003l\e[?1006l' 2>/dev/null || true
-    stty sane 2>/dev/null || true
+if [[ -t 0 ]]; then
+    _launch_setup
+else
+    _launch_setup </dev/tty
 fi
+
+# Reset terminal state (Textual enables mouse tracking; ensure it's off)
+printf '\e[?1000l\e[?1003l\e[?1006l' 2>/dev/null || true
+stty sane 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}${BOLD}Setup complete!${NC}"
-echo -e "Run ${BOLD}infraforge${NC} to launch, or ${BOLD}infraforge setup${NC} to configure."
+echo -e "Run ${BOLD}infraforge${NC} to launch."
