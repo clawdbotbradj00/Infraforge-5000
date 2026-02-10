@@ -66,6 +66,7 @@ class IPAMClient:
             resp = self._session.post(
                 url,
                 auth=(self._username, self._password),
+                headers={"Content-Type": "application/json"},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -75,8 +76,56 @@ class IPAMClient:
                 raise IPAMError(f"phpIPAM auth failed: {data.get('message', 'unknown error')}")
 
             self._token = data["data"]["token"]
+        except requests.exceptions.SSLError as e:
+            raise IPAMError(
+                f"SSL error connecting to phpIPAM: {e}\n\n"
+                "If using a self-signed certificate, set verify_ssl to false\n"
+                "in your IPAM configuration."
+            )
+        except requests.exceptions.ConnectionError as e:
+            raise IPAMError(
+                f"Cannot connect to phpIPAM at {url}\n\n"
+                "Check that:\n"
+                "  - phpIPAM is running (docker ps)\n"
+                "  - URL and port are correct\n"
+                "  - Firewall allows the connection"
+            )
         except requests.RequestException as e:
-            raise IPAMError(f"Failed to authenticate with phpIPAM: {e}")
+            # Try to extract a more specific error message
+            msg = str(e)
+            hint = ""
+
+            resp_obj = getattr(e, 'response', None)
+            if resp_obj is not None:
+                status = resp_obj.status_code
+                # Try to get phpIPAM's JSON error message
+                try:
+                    body = resp_obj.json()
+                    if body.get("message"):
+                        msg = body["message"]
+                except Exception:
+                    pass
+
+                if status == 400:
+                    hint = (
+                        "\n\nCheck your IPAM credentials:\n"
+                        "  - Username: usually 'Admin' (case-sensitive)\n"
+                        "  - Password: the password set during phpIPAM setup\n"
+                        "  - App ID: must match the API app name in phpIPAM (default: 'infraforge')\n"
+                        "  - URL: must be HTTPS for phpIPAM (e.g. https://localhost:8443)"
+                    )
+                elif status == 401:
+                    hint = "\n\nInvalid credentials. Check your username and password."
+                elif status == 403:
+                    hint = "\n\nAccess denied. Check that the API app has read/write permissions."
+                elif status == 404:
+                    hint = (
+                        "\n\nAPI endpoint not found. Check:\n"
+                        "  - URL is correct (include port if needed)\n"
+                        "  - App ID matches the phpIPAM API app name"
+                    )
+
+            raise IPAMError(f"Failed to authenticate with phpIPAM: {msg}{hint}")
 
     def _headers(self) -> dict[str, str]:
         self._ensure_auth()

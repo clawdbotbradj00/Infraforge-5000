@@ -662,8 +662,18 @@ class SetupScreen(Screen):
         sec = self._cfg.get("proxmox", {})
         if not sec.get("host"):
             return "[red]Not configured \u2014 nothing to test.[/red]"
-        from infraforge.config import Config
-        cfg = Config.load()
+        from infraforge.config import Config, ProxmoxConfig
+        cfg = Config()
+        cfg.proxmox = ProxmoxConfig(
+            host=str(sec.get("host", "")),
+            port=int(sec.get("port", 8006)),
+            user=str(sec.get("user", "root@pam")),
+            auth_method=str(sec.get("auth_method", "token")),
+            token_name=str(sec.get("token_name", "")),
+            token_value=str(sec.get("token_value", "")),
+            password=str(sec.get("password", "")),
+            verify_ssl=bool(sec.get("verify_ssl", True)),
+        )
         from infraforge.proxmox_client import ProxmoxClient
         client = ProxmoxClient(cfg)
         client.connect()
@@ -711,11 +721,19 @@ class SetupScreen(Screen):
         url = sec.get("url", "")
         if not url:
             return "[red]Not configured \u2014 nothing to test.[/red]"
-        from infraforge.config import Config
-        cfg = Config.load()
+        from infraforge.config import Config, IPAMConfig
+        cfg = Config()
+        cfg.ipam = IPAMConfig(
+            provider=str(sec.get("provider", "")),
+            url=str(sec.get("url", "")),
+            app_id=str(sec.get("app_id", "")),
+            token=str(sec.get("token", "")),
+            username=str(sec.get("username", "")),
+            password=str(sec.get("password", "")),
+            verify_ssl=bool(sec.get("verify_ssl", True)),
+        )
         from infraforge.ipam_client import IPAMClient
         client = IPAMClient(cfg)
-        client.check_health()
         sections = client.get_sections()
         subnets = client.get_subnets()
         return (
