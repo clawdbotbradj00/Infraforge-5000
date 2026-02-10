@@ -42,7 +42,10 @@ class _ArrowNavModal(ModalScreen):
         all_widgets = list(self.query("*"))
         return [
             w for w in all_widgets
-            if isinstance(w, _FOCUSABLE) and self._is_displayed(w)
+            if self._is_displayed(w) and (
+                isinstance(w, _FOCUSABLE)
+                or (isinstance(w, Button) and (w.id or "").startswith("save-"))
+            )
         ]
 
     def on_key(self, event) -> None:
@@ -93,6 +96,10 @@ class _ArrowNavModal(ModalScreen):
                     self.notify("Field is empty", severity="warning")
             except Exception:
                 pass
+        elif btn_id == "save-btn":
+            self.action_save()
+        elif btn_id == "cancel-btn":
+            self.action_cancel()
 
 
 # ── Shared CSS for all config modals ───────────────────────────────
@@ -132,9 +139,12 @@ _BOX_CSS = """
     color: $text-muted;
     text-style: italic;
 }
-.modal-hint {
+.modal-buttons {
+    height: auto;
     margin: 1 0 0 0;
-    color: $text-muted;
+}
+.modal-buttons Button {
+    margin: 0 1 0 0;
 }
 .secret-row {
     height: auto;
@@ -160,6 +170,11 @@ Select:focus {
 }
 Switch:focus {
     border: tall $accent;
+}
+#save-btn:focus {
+    background: $success;
+    color: $text;
+    text-style: bold;
 }
 """
 
@@ -363,7 +378,7 @@ def get_config_modal(comp_id: str, full_cfg: dict) -> ModalScreen | None:
 class ProxmoxConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -417,12 +432,9 @@ ProxmoxConfigModal {{
                 yield Label("Verify SSL", classes="field-label")
                 yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_PROXMOX_HELP, id="help-title", markup=True)
@@ -473,7 +485,7 @@ ProxmoxConfigModal {{
 class DNSConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -539,12 +551,9 @@ DNSConfigModal {{
                     yield Button("Reveal", id="reveal-f-api-key", classes="reveal-btn")
                     yield Button("Copy", id="copy-f-api-key", classes="copy-btn")
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_DNS_HELP, id="help-title", markup=True)
@@ -574,7 +583,7 @@ DNSConfigModal {{
 class IPAMConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -662,12 +671,9 @@ IPAMConfigModal {{
                     yield Label("Verify SSL", classes="field-label")
                     yield Switch(value=s.get("verify_ssl", False), id="f-verify-ssl")
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_IPAM_HELP, id="help-title", markup=True)
@@ -1003,7 +1009,7 @@ IPAMConfigModal {{
 class TerraformConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -1033,12 +1039,9 @@ TerraformConfigModal {{
                     id="f-backend",
                 )
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_TERRAFORM_HELP, id="help-title", markup=True)
@@ -1059,7 +1062,7 @@ TerraformConfigModal {{
 class AnsibleConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -1082,12 +1085,9 @@ AnsibleConfigModal {{
                 yield Label("Playbook Directory", classes="field-label")
                 yield Input(value=s.get("playbook_dir", "./ansible/playbooks"), placeholder="./ansible/playbooks", id="f-playbook-dir")
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_ANSIBLE_HELP, id="help-title", markup=True)
@@ -1107,7 +1107,7 @@ AnsibleConfigModal {{
 class AIConfigModal(_ArrowNavModal):
 
     BINDINGS = [
-        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -1144,12 +1144,9 @@ AIConfigModal {{
                     id="f-model",
                 )
 
-                yield Static(
-                    "[bold white on dark_green] Ctrl+S [/bold white on dark_green] Save    "
-                    "[bold white on dark_red] Esc [/bold white on dark_red] Cancel",
-                    classes="modal-hint",
-                    markup=True,
-                )
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
                 yield Static(_AI_HELP, id="help-title", markup=True)
