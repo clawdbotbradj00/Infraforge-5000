@@ -131,6 +131,7 @@ class TemplateListScreen(Screen):
         Binding("d", "download_template", "Download", show=True),
         Binding("e", "export_template", "Export", show=True),
         Binding("i", "import_template", "Import", show=True),
+        Binding("X", "cleanup_staging", "Clean Staging", show=True),
     ]
 
     def __init__(self):
@@ -450,3 +451,65 @@ class TemplateListScreen(Screen):
         """Open the template import screen."""
         from infraforge.screens.template_import_screen import TemplateImportScreen
         self.app.push_screen(TemplateImportScreen())
+
+    def action_cleanup_staging(self):
+        """Clean up the template staging directory."""
+        from infraforge.template_package import get_exports_dir
+        from pathlib import Path
+
+        exports_dir_cfg = ""
+        try:
+            exports_dir_cfg = self.app.config.defaults.exports_dir
+        except Exception:
+            pass
+        exports_dir = get_exports_dir(exports_dir_cfg)
+
+        # Calculate total size
+        total_size = 0
+        pkg_files = list(exports_dir.glob("*.ifpkg"))
+        for f in pkg_files:
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                pass
+
+        if not pkg_files:
+            self.notify("Staging directory is empty", severity="information")
+            return
+
+        # Format size
+        if total_size >= 1024 ** 3:
+            size_str = f"{total_size / (1024 ** 3):.2f} GB"
+        elif total_size >= 1024 ** 2:
+            size_str = f"{total_size / (1024 ** 2):.1f} MB"
+        else:
+            size_str = f"{total_size / 1024:.1f} KB"
+
+        count = len(pkg_files)
+
+        # Import and show confirmation modal
+        from infraforge.screens.template_import_screen import CleanupConfirmModal
+        self.app.push_screen(
+            CleanupConfirmModal(count=count, size_str=size_str, directory=str(exports_dir)),
+            callback=self._on_staging_cleanup_confirmed,
+        )
+
+    def _on_staging_cleanup_confirmed(self, confirmed: bool) -> None:
+        """Delete all staging .ifpkg files if confirmed."""
+        if not confirmed:
+            return
+        from infraforge.template_package import get_exports_dir
+        exports_dir_cfg = ""
+        try:
+            exports_dir_cfg = self.app.config.defaults.exports_dir
+        except Exception:
+            pass
+        exports_dir = get_exports_dir(exports_dir_cfg)
+        deleted = 0
+        for f in exports_dir.glob("*.ifpkg"):
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        self.notify(f"Deleted {deleted} staging package(s)", severity="information")

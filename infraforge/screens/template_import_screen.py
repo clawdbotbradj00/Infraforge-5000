@@ -22,7 +22,7 @@ from typing import Optional
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from textual import work
 
@@ -128,6 +128,7 @@ class TemplateImportScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "handle_escape", "Back/Cancel", show=True),
+        Binding("x", "cleanup_staging", "Clean Up", show=True),
     ]
 
     def __init__(self):
@@ -630,8 +631,14 @@ class TemplateImportScreen(Screen):
         items.append(WizItem(
             kind="info",
             label=(
-                f"Place [bold].ifpkg[/bold] files in "
-                f"[cyan]{exports_dir}[/cyan] or paste a URL below"
+                f"[bold]Staging directory:[/bold] [cyan]{exports_dir}[/cyan]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]Template packages here are staging copies for import. "
+                "They can be cleaned up after use.[/dim]"
             ),
         ))
         items.append(WizItem(kind="info", label=""))
@@ -841,6 +848,26 @@ class TemplateImportScreen(Screen):
             label=f"Storage: [cyan]{self._selected_storage}[/cyan]",
         ))
         items.append(WizItem(kind="info", label=""))
+        items.append(WizItem(kind="header", label="STAGING CLEANUP"))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]The imported template is now on your Proxmox node.[/dim]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]The .ifpkg staging file can be safely deleted to reclaim disk space.[/dim]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]Use [bold]x[/bold] on the package list to clean up all staging files.[/dim]"
+            ),
+        ))
+        items.append(WizItem(kind="info", label=""))
         items.append(WizItem(
             kind="info",
             label="[dim]Press Enter or Escape to return[/dim]",
@@ -937,6 +964,63 @@ class TemplateImportScreen(Screen):
         else:
             self.notify("SSH key auth is required for template import", severity="warning")
             self._update_phase_hint()
+
+    def action_cleanup_staging(self):
+        """Show cleanup confirmation for staging directory."""
+        if self._phase != 0:
+            return
+        if self._working or self._downloading:
+            return
+
+        from infraforge.template_package import get_exports_dir
+        exports_dir = get_exports_dir(self._get_exports_override())
+
+        # Calculate total size of .ifpkg files
+        total_size = 0
+        pkg_files = list(exports_dir.glob("*.ifpkg"))
+        for f in pkg_files:
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                pass
+
+        if not pkg_files:
+            self.notify("No packages to clean up", severity="information")
+            return
+
+        # Format size
+        if total_size >= 1024 ** 3:
+            size_str = f"{total_size / (1024 ** 3):.2f} GB"
+        elif total_size >= 1024 ** 2:
+            size_str = f"{total_size / (1024 ** 2):.1f} MB"
+        else:
+            size_str = f"{total_size / 1024:.1f} KB"
+
+        count = len(pkg_files)
+
+        # Push a confirmation screen
+        self.app.push_screen(
+            CleanupConfirmModal(count=count, size_str=size_str, directory=str(exports_dir)),
+            callback=self._on_cleanup_confirmed,
+        )
+
+    def _on_cleanup_confirmed(self, confirmed: bool) -> None:
+        """Delete all .ifpkg files if confirmed."""
+        if not confirmed:
+            return
+        from infraforge.template_package import get_exports_dir
+        exports_dir = get_exports_dir(self._get_exports_override())
+        deleted = 0
+        for f in exports_dir.glob("*.ifpkg"):
+            try:
+                f.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        self._scan_packages()
+        self._selected_package = None
+        self._render_phase()
+        self.notify(f"Deleted {deleted} package(s)", severity="information")
 
     def action_handle_escape(self):
         if self._import_done:
@@ -1451,3 +1535,58 @@ class TemplateImportScreen(Screen):
             except Exception:
                 pass
         self.app.call_from_thread(_hint)
+
+
+class CleanupConfirmModal(ModalScreen[bool]):
+    """Confirm cleanup of staging directory."""
+
+    DEFAULT_CSS = """
+    CleanupConfirmModal {
+        align: center middle;
+    }
+    #cleanup-box {
+        width: 65;
+        height: auto;
+        max-height: 16;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, count: int, size_str: str, directory: str) -> None:
+        super().__init__()
+        self._count = count
+        self._size_str = size_str
+        self._directory = directory
+
+    def compose(self) -> ComposeResult:
+        with Container(id="cleanup-box"):
+            yield Static(
+                f"[bold yellow]Clean Up Staging Directory[/bold yellow]\n\n"
+                f"Delete [bold]{self._count}[/bold] package(s) "
+                f"([bold red]{self._size_str}[/bold red]) from:\n"
+                f"[cyan]{self._directory}[/cyan]\n\n"
+                f"[dim]These are staging copies used for transferring templates\n"
+                f"between Proxmox nodes. Templates already imported to Proxmox\n"
+                f"are not affected.[/dim]",
+                markup=True,
+            )
+            with Horizontal(classes="modal-buttons"):
+                yield Button(
+                    f"Delete All ({self._size_str})",
+                    id="btn-confirm",
+                    variant="error",
+                )
+                yield Button("Cancel", id="btn-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-confirm":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.prevent_default()
+            self.dismiss(False)

@@ -549,6 +549,19 @@ class TemplateExportScreen(Screen):
             meta={"placeholder": f"{t.name}.ifpkg"},
         ))
         items.append(WizItem(kind="info", label=""))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]Staging area: packages are stored temporarily for transfer.[/dim]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]They can be cleaned up after import to reclaim space.[/dim]"
+            ),
+        ))
+        items.append(WizItem(kind="info", label=""))
 
         # Existing backups section (populated asynchronously)
         items.append(WizItem(kind="header", label="EXISTING BACKUPS"))
@@ -712,6 +725,26 @@ class TemplateExportScreen(Screen):
         items.append(WizItem(
             kind="info",
             label="Press [b]Enter[/b] or [b]Escape[/b] to return",
+        ))
+        items.append(WizItem(kind="info", label=""))
+        items.append(WizItem(kind="header", label="STAGING AREA"))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]This .ifpkg file is a [bold]staging copy[/bold] for transferring templates[/dim]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]between Proxmox nodes. Once imported at its destination, it can be[/dim]"
+            ),
+        ))
+        items.append(WizItem(
+            kind="info",
+            label=(
+                "[dim]safely deleted to reclaim disk space.[/dim]"
+            ),
         ))
 
     # ------------------------------------------------------------------
