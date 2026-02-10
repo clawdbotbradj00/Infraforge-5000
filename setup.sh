@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 INFRAFORGE_REPO="https://github.com/clawdbotbradj00/Infraforge-5000.git"
 INSTALL_DIR="${INFRAFORGE_DIR:-$HOME/Infraforge-5000}"
 
 # ── Bootstrap: if run via curl|bash, clone the repo first ──────────────
-# Detect: if this script is NOT inside a repo (no pyproject.toml nearby),
-# we were piped from curl — clone the repo and re-exec from inside it.
-_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null || echo ".")" && pwd)"
+# When piped from curl, BASH_SOURCE is empty so we use "." as fallback.
+_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-"."}")" 2>/dev/null && pwd || pwd)"
 if [[ ! -f "$_self_dir/pyproject.toml" ]]; then
     echo -e "\033[0;36m\033[1m"
     echo "  ╔══════════════════════════════════════════╗"
@@ -1393,22 +1392,30 @@ if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
 fi
 
 echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
-echo ""
 
-# Ensure textual is available (should be installed via requirements)
-$PYTHON_CMD -m pip install textual -q 2>/dev/null || true
+# Only launch the TUI setup wizard if stdin is a terminal (not a pipe)
+if [[ -t 0 ]]; then
+    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  Launching InfraForge Setup Wizard...${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
+    echo ""
 
-# Launch the TUI setup wizard as the calling user (not root) so config
-# is saved to the correct home directory (~user, not /root)
-if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
-    sudo -u "$SUDO_USER" infraforge setup
-else
-    infraforge setup
+    # Ensure textual is available (should be installed via requirements)
+    $PYTHON_CMD -m pip install textual -q 2>/dev/null || true
+
+    # Launch the TUI setup wizard as the calling user (not root) so config
+    # is saved to the correct home directory (~user, not /root)
+    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+        sudo -u "$SUDO_USER" infraforge setup
+    else
+        infraforge setup
+    fi
+
+    # Reset terminal state (Textual enables mouse tracking; ensure it's off)
+    printf '\e[?1000l\e[?1003l\e[?1006l' 2>/dev/null || true
+    stty sane 2>/dev/null || true
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}Setup wizard complete!${NC}"
-echo -e "Run ${BOLD}infraforge${NC} to start."
+echo -e "${GREEN}${BOLD}Setup complete!${NC}"
+echo -e "Run ${BOLD}infraforge${NC} to launch, or ${BOLD}infraforge setup${NC} to configure."

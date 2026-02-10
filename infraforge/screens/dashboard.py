@@ -27,6 +27,7 @@ class DashboardScreen(Screen):
         Binding("6", "create_vm", "6:Provision", show=True),
         Binding("7", "manage_ansible", "7:Ansible", show=True),
         Binding("8", "ai_settings", "8:AI", show=True),
+        Binding("9", "open_setup", "9:Setup", show=True),
         Binding("s", "cycle_node_sort", "Sort", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("D", "download_template", "Download Templates", show=False),
@@ -81,6 +82,7 @@ class DashboardScreen(Screen):
                 ListItem(Label(" "), id="nav-spacer-3", disabled=True),
                 ListItem(Label("[dim bold]  SETTINGS[/dim bold]"), id="nav-group-settings", disabled=True),
                 ListItem(Label("  [8]  AI Settings       —  Configure AI assistant and model"), id="nav-ai-settings"),
+                ListItem(Label("  [9]  Setup             —  Configure Proxmox, DNS, IPAM, and modules"), id="nav-setup"),
                 id="nav-menu",
             )
         yield Footer()
@@ -305,6 +307,8 @@ class DashboardScreen(Screen):
             self.action_manage_ansible()
         elif item_id == "nav-ai-settings":
             self.action_ai_settings()
+        elif item_id == "nav-setup":
+            self.action_open_setup()
 
     def action_view_vms(self):
         if self._is_nav_disabled("nav-vms"):
@@ -353,6 +357,10 @@ class DashboardScreen(Screen):
             return
         from infraforge.screens.ai_settings_screen import AISettingsScreen
         self.app.push_screen(AISettingsScreen())
+
+    def action_open_setup(self):
+        from infraforge.screens.setup_screen import SetupScreen
+        self.app.push_screen(SetupScreen())
 
     @work(thread=True, exclusive=True, group="update-check")
     def _check_for_update(self):
