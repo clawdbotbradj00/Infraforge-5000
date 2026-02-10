@@ -1,8 +1,8 @@
 """Template Export Screen — export a QEMU template as an .ifpkg package.
 
 3-phase wizard:
-  0. Confirm    — review template details, select backup storage, set filename
-  1. Export     — automated vzdump, download, package creation (RichLog)
+  0. Confirm    — review template details, set output filename
+  1. Export     — automated vzdump (auto-detect backup storage), download, package creation (RichLog)
   2. Done       — success summary with file path and size
 """
 
@@ -24,11 +24,7 @@ from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from textual import work
 
 from infraforge.models import Template
-from infraforge.screens.template_update_screen import (
-    WizItem,
-    _stor_label,
-    _stor_header,
-)
+from infraforge.screens.template_update_screen import WizItem
 from infraforge import template_package
 
 
@@ -42,20 +38,26 @@ class TemplateExportScreen(Screen):
         Binding("escape", "handle_escape", "Back/Cancel", show=True),
     ]
 
+    DEFAULT_CSS = """
+    #transfer-progress {
+        height: auto;
+        max-height: 3;
+        padding: 0 2;
+        margin: 0 0 0 0;
+    }
+    """
+
     def __init__(self, template: Template):
         super().__init__()
         self._phase = 0
         self._cursor = 0
         self._items: list[WizItem] = []
         self._template = template
-        self._storages: list = []
-        self._data_loaded = False
         self._working = False
         self._done = False
         self._mount_gen = 0
         self._editing = False
         self._editing_key = ""
-        self._storage: str = ""
         self._output_filename: str = f"{template.name}.ifpkg"
         self._export_result_path: str = ""
         self._export_result_size: str = ""
@@ -81,6 +83,7 @@ class TemplateExportScreen(Screen):
             with VerticalScroll(id="wizard-content"):
                 yield Static("", id="wiz-phase-header", markup=True)
 
+            yield Static("", id="transfer-progress", markup=True, classes="hidden")
             yield Static("", id="wiz-edit-label", markup=True, classes="hidden")
             yield Input(id="wiz-edit-input", classes="hidden")
             yield Static("", id="wiz-hint", markup=True)
@@ -95,7 +98,6 @@ class TemplateExportScreen(Screen):
     # ------------------------------------------------------------------
 
     def on_mount(self):
-        self._load_storage_data()
         self._render_phase()
 
     # ------------------------------------------------------------------
@@ -268,8 +270,7 @@ class TemplateExportScreen(Screen):
     # ------------------------------------------------------------------
 
     def _apply_selection(self, item: WizItem):
-        if item.group == "storage":
-            self._storage = item.key
+        pass  # No radio-group selections in this screen
 
     def _apply_input_value(self, item: WizItem):
         if item.key == "output_filename":
@@ -430,10 +431,62 @@ class TemplateExportScreen(Screen):
 
     def _update_phase_hint(self):
         hints = {
-            0: "Space/Enter select  |  j/k navigate  |  Enter on filename to edit",
+            0: "j/k navigate  |  Enter on filename to edit  |  Enter to export",
             2: "Press Enter or Escape to return",
         }
         self._set_hint(hints.get(self._phase, ""))
+
+    # ------------------------------------------------------------------
+    # Progress bar helpers
+    # ------------------------------------------------------------------
+
+    def _update_progress(self, label: str, current: int, total: int, speed: float, elapsed: float):
+        """Update the transfer progress bar."""
+        if total <= 0:
+            return
+        pct = min(current / total, 1.0)
+        bar_width = 30
+        filled = int(bar_width * pct)
+        empty = bar_width - filled
+        filled_bar = "\u2501" * filled
+        empty_bar = "\u2501" * empty
+        bar = f"[bold green]{filled_bar}[/bold green][dim]{empty_bar}[/dim]"
+
+        pct_str = f"{pct * 100:.0f}%"
+        cur_str = _format_size(current)
+        tot_str = _format_size(total)
+        speed_str = f"{_format_size(int(speed))}/s" if speed > 0 else "..."
+
+        if speed > 0 and current < total:
+            eta_secs = int((total - current) / speed)
+            eta_str = f"ETA {eta_secs}s"
+        else:
+            eta_str = ""
+
+        text = (
+            f"  [bold]{label}[/bold]\n"
+            f"  {bar} [bold]{pct_str}[/bold] \u2502 {cur_str} / {tot_str} \u2502 {speed_str}"
+        )
+        if eta_str:
+            text += f" \u2502 {eta_str}"
+
+        def _do():
+            try:
+                w = self.query_one("#transfer-progress", Static)
+                w.update(text)
+                w.remove_class("hidden")
+            except Exception:
+                pass
+        self.app.call_from_thread(_do)
+
+    def _hide_progress(self):
+        def _do():
+            try:
+                w = self.query_one("#transfer-progress", Static)
+                w.add_class("hidden")
+            except Exception:
+                pass
+        self.app.call_from_thread(_do)
 
     # ------------------------------------------------------------------
     # Phase 0: Confirm
@@ -473,43 +526,6 @@ class TemplateExportScreen(Screen):
                 f"[green]{t.size_display}[/green]"
             ),
         ))
-        items.append(WizItem(kind="info", label=""))
-
-        # Backup storage selection
-        tmpl_node = t.node
-        items.append(WizItem(
-            kind="header",
-            label=f"BACKUP STORAGE  [dim]on {tmpl_node}[/dim]" if tmpl_node else "BACKUP STORAGE",
-        ))
-
-        backup_storages = [
-            s for s in self._storages
-            if "backup" in s.content
-            and (s.node == tmpl_node or s.shared)
-        ]
-
-        if backup_storages:
-            items.append(WizItem(kind="info", label=_stor_header()))
-            seen: set[str] = set()
-            for s in backup_storages:
-                if s.storage not in seen:
-                    seen.add(s.storage)
-                    items.append(WizItem(
-                        kind="option", label=_stor_label(s),
-                        key=s.storage, group="storage",
-                        selected=self._storage == s.storage,
-                    ))
-        elif self._data_loaded:
-            items.append(WizItem(
-                kind="info",
-                label=(
-                    "[yellow]No backup-capable storage found on "
-                    f"{tmpl_node}[/yellow]"
-                ),
-            ))
-        else:
-            items.append(WizItem(kind="info", label="Loading storage..."))
-
         items.append(WizItem(kind="info", label=""))
 
         # Output filename
@@ -636,30 +652,10 @@ class TemplateExportScreen(Screen):
 
     def _validate_phase(self) -> tuple[bool, str]:
         if self._phase == 0:
-            if not self._storage:
-                return False, "Please select a backup storage"
             if not self._output_filename:
                 return False, "Please enter an output filename"
             return True, ""
         return True, ""
-
-    # ------------------------------------------------------------------
-    # Background data loaders
-    # ------------------------------------------------------------------
-
-    @work(thread=True)
-    def _load_storage_data(self):
-        try:
-            self._storages = self.app.proxmox.get_storage_info()
-            self._data_loaded = True
-            self.app.call_from_thread(self._on_data_loaded)
-        except Exception:
-            self._data_loaded = True
-            self.app.call_from_thread(self._on_data_loaded)
-
-    def _on_data_loaded(self):
-        if self._phase == 0:
-            self._render_phase()
 
     # ------------------------------------------------------------------
     # Phase 1: Export worker
@@ -671,7 +667,6 @@ class TemplateExportScreen(Screen):
         t = self._template
         node = t.node
         vmid = t.vmid
-        storage = self._storage
         host = self.app.config.proxmox.host
 
         def log(msg: str):
@@ -685,8 +680,44 @@ class TemplateExportScreen(Screen):
         backup_volid = ""
         local_temp_dir = None
         local_vma_path: Optional[Path] = None
+        storage = ""
 
         try:
+            # Step 0: Auto-detect backup storage
+            log("[bold]Detecting backup storage...[/bold]")
+            try:
+                all_storages = self.app.proxmox.get_storage_info()
+            except Exception as e:
+                log(f"[red]  Failed to fetch storage info: {e}[/red]")
+                self._working = False
+                self._show_retry_hint()
+                return
+
+            backup_storages = [
+                s for s in all_storages
+                if "backup" in s.content
+                and (s.node == node or s.shared)
+                and s.avail > 0
+            ]
+
+            if not backup_storages:
+                log(
+                    f"[red]  No backup-capable storage found on node "
+                    f"{node} (or shared) with available space.[/red]"
+                )
+                log("[dim]  Ensure at least one storage has 'backup' in its content types.[/dim]")
+                self._working = False
+                self._show_retry_hint()
+                return
+
+            storage = backup_storages[0].storage
+            log(f"[green]  Auto-selected: {storage}[/green]")
+            log(
+                f"[dim]  Type: {backup_storages[0].storage_type}, "
+                f"Free: {backup_storages[0].avail_display}, "
+                f"Shared: {backup_storages[0].shared}[/dim]\n"
+            )
+
             # Step 1: Create vzdump backup
             log("[bold]Creating vzdump backup...[/bold]")
             log(f"[dim]  Node: {node}, VMID: {vmid}, Storage: {storage}[/dim]")
@@ -781,35 +812,55 @@ class TemplateExportScreen(Screen):
             log(f"[green]  Archive: {remote_path}[/green]")
             log(f"[dim]  Volume ID: {backup_volid}[/dim]\n")
 
-            # Step 4: SCP download
-            log("[bold]Downloading backup via SCP...[/bold]")
+            # Step 4: Download backup via SSH streaming
+            log("[bold]Downloading backup...[/bold]")
             local_temp_dir = tempfile.mkdtemp(prefix="infraforge-export-")
             local_vma_path = Path(local_temp_dir) / archive_basename
             log(f"[dim]  Remote: root@{host}:{remote_path}[/dim]")
             log(f"[dim]  Local:  {local_vma_path}[/dim]")
 
-            scp_result = subprocess.run(
-                [
-                    "scp",
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    f"root@{host}:{remote_path}",
-                    str(local_vma_path),
-                ],
-                capture_output=True,
-                timeout=600,
+            # Get remote file size first
+            size_result = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes",
+                 f"root@{host}", "stat", "-c", "%s", remote_path],
+                capture_output=True, text=True, timeout=15,
+            )
+            remote_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+
+            proc = subprocess.Popen(
+                ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes",
+                 f"root@{host}", "cat", remote_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
 
-            if scp_result.returncode != 0:
-                stderr = scp_result.stderr.decode("utf-8", errors="replace").strip()
-                log(f"[red]  SCP failed (exit {scp_result.returncode})[/red]")
+            bytes_read = 0
+            start_time = time.time()
+            chunk_size = 1024 * 256  # 256KB chunks
+            with open(local_vma_path, "wb") as f:
+                while True:
+                    chunk = proc.stdout.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bytes_read += len(chunk)
+                    elapsed_t = time.time() - start_time
+                    speed = bytes_read / elapsed_t if elapsed_t > 0 else 0
+                    self._update_progress("Downloading", bytes_read, remote_size, speed, elapsed_t)
+
+            proc.wait(timeout=30)
+            self._hide_progress()
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
+                log(f"[red]  Download failed (exit {proc.returncode})[/red]")
                 if stderr:
                     log(f"[red]  {stderr}[/red]")
                 self._working = False
+                self._cleanup_temp(local_vma_path, local_temp_dir)
                 self._show_retry_hint()
                 return
 
-            vma_size = local_vma_path.stat().st_size
-            log(f"[green]  Downloaded: {_format_size(vma_size)}[/green]\n")
+            log(f"[green]  Downloaded: {_format_size(bytes_read)}[/green]\n")
 
             # Step 5: Create .ifpkg package
             log("[bold]Creating .ifpkg package...[/bold]")
@@ -859,12 +910,14 @@ class TemplateExportScreen(Screen):
             self._export_result_size = _format_size(pkg_size)
 
         except subprocess.TimeoutExpired:
-            log("[red]  SCP transfer timed out![/red]")
+            self._hide_progress()
+            log("[red]  Transfer timed out![/red]")
             self._working = False
             self._cleanup_temp(local_vma_path, local_temp_dir)
             self._show_retry_hint()
             return
         except Exception as e:
+            self._hide_progress()
             log(f"\n[red]Export error: {e}[/red]")
             self._working = False
             self._cleanup_temp(local_vma_path, local_temp_dir)

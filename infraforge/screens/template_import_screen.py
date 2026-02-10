@@ -46,6 +46,9 @@ _PKG_NAME_W = 30
 _PKG_DATE_W = 12
 _PKG_SIZE_W = 12
 
+# Transfer chunk size (256 KB)
+_CHUNK_SIZE = 256 * 1024
+
 
 def _human_size(nbytes: int) -> str:
     """Format byte count into human-readable string."""
@@ -58,6 +61,25 @@ def _human_size(nbytes: int) -> str:
     if nbytes >= 1024:
         return f"{nbytes / 1024:.1f} KB"
     return f"{nbytes} B"
+
+
+def _progress_bar(current: int, total: int, start_time: float, width: int = 40) -> str:
+    """Build a colored progress bar string with stats."""
+    if total <= 0:
+        return f"[bold cyan]Transferring... {_human_size(current)}[/bold cyan]"
+    pct = min(current / total, 1.0)
+    filled = int(width * pct)
+    bar_filled = "\u2501" * filled
+    bar_empty = "\u2591" * (width - filled)
+    elapsed = time.time() - start_time
+    speed = current / elapsed if elapsed > 0 else 0
+    eta = int((total - current) / speed) if speed > 0 else 0
+    eta_str = f"{eta // 60}m {eta % 60}s" if eta >= 60 else f"{eta}s"
+    return (
+        f"[bold green]{bar_filled}[/bold green][dim]{bar_empty}[/dim] "
+        f"{int(pct * 100)}% \u2502 {_human_size(current)} / {_human_size(total)} \u2502 "
+        f"{_human_size(int(speed))}/s \u2502 ETA {eta_str}"
+    )
 
 
 def _pkg_label(pkg: dict) -> str:
@@ -74,9 +96,9 @@ def _pkg_label(pkg: dict) -> str:
             dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
             date_str = dt.strftime("%Y-%m-%d")
         except (ValueError, TypeError):
-            date_str = "—"
+            date_str = "\u2014"
     else:
-        date_str = "—"
+        date_str = "\u2014"
     date_str = date_str.ljust(_PKG_DATE_W)
 
     size_bytes = manifest.get("disk_size_bytes", 0)
@@ -148,6 +170,9 @@ class TemplateImportScreen(Screen):
 
             with VerticalScroll(id="wizard-content"):
                 yield Static("", id="wiz-phase-header", markup=True)
+                yield Static(
+                    "", id="transfer-progress", markup=True, classes="hidden"
+                )
 
             yield Static("", id="wiz-edit-label", markup=True, classes="hidden")
             yield Input(id="wiz-edit-input", classes="hidden")
@@ -173,6 +198,28 @@ class TemplateImportScreen(Screen):
             self._packages = scan_packages()
         except Exception:
             self._packages = []
+
+    # ------------------------------------------------------------------
+    # Transfer progress helpers
+    # ------------------------------------------------------------------
+
+    def _show_transfer_progress(self, text: str):
+        """Show and update the transfer progress widget (must be called on UI thread)."""
+        try:
+            w = self.query_one("#transfer-progress", Static)
+            w.update(text)
+            w.remove_class("hidden")
+        except Exception:
+            pass
+
+    def _hide_transfer_progress(self):
+        """Hide the transfer progress widget (must be called on UI thread)."""
+        try:
+            w = self.query_one("#transfer-progress", Static)
+            w.add_class("hidden")
+            w.update("")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Keyboard navigation
@@ -929,13 +976,36 @@ class TemplateImportScreen(Screen):
             req = urllib.request.Request(url, headers={
                 "User-Agent": "InfraForge-Template-Import/1.0",
             })
+
+            # Show the progress widget
+            self.app.call_from_thread(
+                lambda: self._show_transfer_progress(
+                    "[bold cyan]Connecting...[/bold cyan]"
+                )
+            )
+
             with urllib.request.urlopen(req, timeout=300) as resp:
+                content_length = resp.headers.get("Content-Length")
+                total_size = int(content_length) if content_length else 0
+                downloaded = 0
+                start_time = time.time()
+
                 with open(dest_path, "wb") as f:
                     while True:
-                        chunk = resp.read(1024 * 64)
+                        chunk = resp.read(_CHUNK_SIZE)
                         if not chunk:
                             break
                         f.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Update progress bar
+                        bar_text = _progress_bar(downloaded, total_size, start_time)
+                        self.app.call_from_thread(
+                            lambda t=bar_text: self._show_transfer_progress(t)
+                        )
+
+            # Hide progress widget
+            self.app.call_from_thread(self._hide_transfer_progress)
 
             # Validate the downloaded file
             manifest = read_manifest(dest_path)
@@ -967,6 +1037,8 @@ class TemplateImportScreen(Screen):
             self.app.call_from_thread(_rerender)
 
         except Exception as e:
+            # Hide progress widget on error
+            self.app.call_from_thread(self._hide_transfer_progress)
             # Clean up partial download
             try:
                 if dest_path.exists():
@@ -1079,29 +1151,82 @@ class TemplateImportScreen(Screen):
                         "SSH timeout resolving storage path on node"
                     )
 
-            # Step 3: SCP upload to Proxmox node
+            # Step 3: Upload VMA to Proxmox node via SSH + cat (with progress)
             remote_path = f"{storage_dir}/{vma_filename}"
+            file_size = local_vma.stat().st_size
             log(f"[bold]Uploading VMA to {node}...[/bold]")
             log(f"[dim]  {local_vma} -> root@{host}:{remote_path}[/dim]")
-            try:
-                result = subprocess.run(
-                    [
-                        "scp",
-                        "-o", "StrictHostKeyChecking=accept-new",
-                        str(local_vma),
-                        f"root@{host}:{storage_dir}/",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
+            log(f"[dim]  Size: {_human_size(file_size)}[/dim]")
+
+            # Show initial progress bar
+            self.app.call_from_thread(
+                lambda: self._show_transfer_progress(
+                    "[bold cyan]Starting upload...[/bold cyan]"
                 )
-                if result.returncode != 0:
-                    stderr = result.stderr.strip()
-                    log(f"[red]  SCP failed: {stderr}[/red]")
-                    raise RuntimeError(f"SCP upload failed: {stderr}")
-                log("[green]  Upload complete![/green]\n")
+            )
+
+            try:
+                proc = subprocess.Popen(
+                    [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        f"root@{host}",
+                        f"cat > {remote_path}",
+                    ],
+                    stdin=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+                uploaded = 0
+                start_time = time.time()
+
+                with open(local_vma, "rb") as f:
+                    while True:
+                        chunk = f.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        proc.stdin.write(chunk)
+                        uploaded += len(chunk)
+
+                        # Update progress bar
+                        bar_text = _progress_bar(uploaded, file_size, start_time)
+                        self.app.call_from_thread(
+                            lambda t=bar_text: self._show_transfer_progress(t)
+                        )
+
+                proc.stdin.close()
+                proc.wait(timeout=60)
+
+                # Hide progress bar
+                self.app.call_from_thread(self._hide_transfer_progress)
+
+                if proc.returncode != 0:
+                    stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
+                    log(f"[red]  Upload failed: {stderr}[/red]")
+                    raise RuntimeError(f"SSH upload failed: {stderr}")
+
+                elapsed = time.time() - start_time
+                avg_speed = file_size / elapsed if elapsed > 0 else 0
+                log(
+                    f"[green]  Upload complete! "
+                    f"({_human_size(file_size)} in {elapsed:.1f}s, "
+                    f"{_human_size(int(avg_speed))}/s)[/green]\n"
+                )
+
             except subprocess.TimeoutExpired:
-                raise RuntimeError("SCP upload timed out (10 min)")
+                # Hide progress bar on timeout
+                self.app.call_from_thread(self._hide_transfer_progress)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise RuntimeError("SSH upload timed out")
+            except RuntimeError:
+                raise
+            except Exception as e:
+                # Hide progress bar on error
+                self.app.call_from_thread(self._hide_transfer_progress)
+                raise RuntimeError(f"SSH upload failed: {e}")
 
             # Step 4: qmrestore via Proxmox API
             log(f"[bold]Restoring backup as VM {vmid}...[/bold]")
@@ -1216,6 +1341,8 @@ class TemplateImportScreen(Screen):
             )
 
         except Exception as e:
+            # Ensure progress bar is hidden on any error
+            self.app.call_from_thread(self._hide_transfer_progress)
             log(f"\n[red]Import error: {e}[/red]")
             # Cleanup temp dir on failure too
             if temp_dir:
