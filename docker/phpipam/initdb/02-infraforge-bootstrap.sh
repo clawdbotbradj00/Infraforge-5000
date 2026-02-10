@@ -28,12 +28,13 @@ echo "[infraforge] Bootstrapping phpIPAM for InfraForge..."
 run_sql "UPDATE settings SET api=1, scanPingType='fping', scanMaxThreads=32 WHERE id=1;"
 echo "[infraforge] API enabled, scan type set to fping"
 
-# 2. Create InfraForge API application (read/write, user token auth)
-# Generate a random app_code — not used for auth in 'user' mode but shouldn't be predictable
-APP_CODE=$(head -c 24 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+# 2. Create InfraForge API application (read/write, SSL user-token auth)
+# Generate a random app_code (16 bytes = 32 hex chars, fits varchar(32)).
+# Not used for auth in ssl_token mode, but required to be non-empty.
+APP_CODE=$(head -c 16 /dev/urandom | od -A n -t x1 | tr -d ' \n')
 run_sql "INSERT INTO api (app_id, app_code, app_permissions, app_security, app_lock)
-         VALUES ('infraforge', '${APP_CODE}', 2, 'user', 0);"
-echo "[infraforge] API app 'infraforge' created (rw, security=user)"
+         VALUES ('infraforge', '${APP_CODE}', 2, 'ssl_token', 0);"
+echo "[infraforge] API app 'infraforge' created (rw, security=ssl_token)"
 
 # 3. Set scan agent to mysql type (for cron-based scanning)
 run_sql "UPDATE scanAgents SET type='mysql' WHERE id=1;"

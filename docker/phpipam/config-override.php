@@ -1,7 +1,7 @@
 <?php
 /**
  * InfraForge phpIPAM configuration.
- * Mounted as /phpipam/config.php, replacing the Docker symlink target.
+ * Mounted as /phpipam/config.docker.php (config.php symlinks to it).
  *
  * Loads defaults from config.dist.php, applies Docker env var overrides,
  * and adds InfraForge-specific settings.
@@ -64,7 +64,9 @@ $config['footer_message'] = file_env('IPAM_FOOTER_MESSAGE', $config['footer_mess
 
 // ─── InfraForge-specific settings ───────────────────────────────────
 
-// Disallow API access over unencrypted HTTP.
-// The InfraForge Docker stack serves phpIPAM over SSL (port 8443),
-// so there is no need to permit plaintext API requests.
-$api_allow_unsafe = false;
+// Allow API access over HTTP (non-SSL) connections.
+// The InfraForge Docker stack serves phpIPAM over SSL (port 8443) by
+// default, but users behind a reverse proxy that terminates TLS may
+// appear as plain HTTP to phpIPAM.  With ssl_token security mode the
+// API still requires user-token auth regardless of this flag.
+$api_allow_unsafe = true;

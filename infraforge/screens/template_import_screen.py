@@ -1483,10 +1483,19 @@ class TemplateImportScreen(Screen):
                     f"Restore task timed out after {max_wait}s"
                 )
 
-            # Step 6: Convert to template
-            log("[bold]Converting to template...[/bold]")
-            self.app.proxmox.convert_to_template(node, vmid)
-            log("[green]  Converted to template![/green]\n")
+            # Step 6: Convert to template (skip if already a template)
+            try:
+                vm_config = self.app.proxmox.api.nodes(node).qemu(vmid).config.get()
+                is_template = bool(vm_config.get("template", 0))
+            except Exception:
+                is_template = False
+
+            if is_template:
+                log("[green]  Already a template — skipping conversion[/green]\n")
+            else:
+                log("[bold]Converting to template...[/bold]")
+                self.app.proxmox.convert_to_template(node, vmid)
+                log("[green]  Converted to template![/green]\n")
 
             # Step 7: Rename template
             log(f"[bold]Setting template name to {template_name}...[/bold]")
