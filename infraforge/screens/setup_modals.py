@@ -1128,6 +1128,61 @@ IPAMConfigModal {{
         self.dismiss(None)
 
 
+# ── IPAM Action Modal ─────────────────────────────────────────────
+
+
+class IPAMActionModal(ModalScreen):
+    """Choose between configuring or repairing phpIPAM."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    IPAMActionModal {
+        align: center middle;
+    }
+    #ipam-action-box {
+        width: 64;
+        height: auto;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ipam-action-box"):
+            yield Static(
+                "[bold]IPAM (phpIPAM)[/bold]\n\n"
+                "  [bold white on dark_green] 1 [/bold white on dark_green]  Configure\n"
+                "      [dim]Open the IPAM configuration form[/dim]\n\n"
+                "  [bold white on dodger_blue] 2 [/bold white on dodger_blue]  Repair (non-destructive)\n"
+                "      [dim]Restart containers without losing data[/dim]\n\n"
+                "  [bold white on dark_red] 3 [/bold white on dark_red]  Repair (destructive)\n"
+                "      [dim]Tear down everything, wipe data, and redeploy fresh[/dim]\n\n"
+                "  [bold white on grey37] Esc [/bold white on grey37]  Cancel",
+                markup=True,
+            )
+
+    def on_key(self, event) -> None:
+        if event.key == "1":
+            event.stop()
+            self.dismiss("configure")
+        elif event.key == "2":
+            event.stop()
+            self.dismiss("repair_soft")
+        elif event.key == "3":
+            event.stop()
+            self.dismiss("repair_destructive")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ── IPAM Repair Modal ─────────────────────────────────────────────
 
 
@@ -1154,8 +1209,9 @@ class IPAMRepairModal(ModalScreen):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, destructive: bool = True) -> None:
         super().__init__()
+        self._destructive = destructive
         self._phase = "confirm"  # confirm | repairing | done
         self._success = False
 
@@ -1164,17 +1220,29 @@ class IPAMRepairModal(ModalScreen):
             yield Static(id="repair-status", markup=True)
 
     def on_mount(self) -> None:
-        self.query_one("#repair-status", Static).update(
-            "[bold yellow]Repair phpIPAM Installation[/bold yellow]\n\n"
-            "This will:\n"
-            "  1. Stop all phpIPAM containers\n"
-            "  2. Remove database volumes (all IPAM data will be lost)\n"
-            "  3. Generate fresh credentials\n"
-            "  4. Redeploy from scratch\n\n"
-            "[bold red]WARNING: All existing IPAM data will be permanently deleted![/bold red]\n\n"
-            "  [bold white on dark_green] y [/bold white on dark_green] Proceed with repair    "
-            "  [bold white on dark_red] n [/bold white on dark_red] Cancel"
-        )
+        if self._destructive:
+            self.query_one("#repair-status", Static).update(
+                "[bold yellow]Destructive Repair — phpIPAM[/bold yellow]\n\n"
+                "This will:\n"
+                "  1. Stop all phpIPAM containers\n"
+                "  2. Remove database volumes (all IPAM data will be lost)\n"
+                "  3. Generate fresh credentials\n"
+                "  4. Redeploy from scratch\n\n"
+                "[bold red]WARNING: All existing IPAM data will be permanently deleted![/bold red]\n\n"
+                "  [bold white on dark_green] y [/bold white on dark_green] Proceed    "
+                "  [bold white on dark_red] n [/bold white on dark_red] Cancel"
+            )
+        else:
+            self.query_one("#repair-status", Static).update(
+                "[bold cyan]Non-destructive Repair — phpIPAM[/bold cyan]\n\n"
+                "This will:\n"
+                "  1. Stop all phpIPAM containers\n"
+                "  2. Restart them (data is preserved)\n"
+                "  3. Wait for services to become ready\n\n"
+                "[dim]Your existing data and credentials will be kept.[/dim]\n\n"
+                "  [bold white on dark_green] y [/bold white on dark_green] Proceed    "
+                "  [bold white on dark_red] n [/bold white on dark_red] Cancel"
+            )
 
     def on_key(self, event) -> None:
         if self._phase == "confirm":
@@ -1244,6 +1312,11 @@ class IPAMRepairModal(ModalScreen):
             )
             self._phase = "done"
             self._success = False
+            return
+
+        # Non-destructive: just restart containers
+        if not self._destructive:
+            self._run_soft_repair(compose_cmd, docker_dir)
             return
 
         # Step 1: Tear down
@@ -1456,6 +1529,117 @@ class IPAMRepairModal(ModalScreen):
             "password": admin_pass,
             "verify_ssl": False,
         }
+        self._phase = "done"
+        self._success = True
+
+    def _run_soft_repair(self, compose_cmd: list[str], docker_dir) -> None:
+        """Restart containers without wiping data."""
+        import subprocess
+        import time
+
+        # Step 1: Stop containers
+        self._update(
+            "[bold cyan]Repairing phpIPAM (non-destructive)...[/bold cyan]\n\n"
+            "  Step 1/3: Stopping containers..."
+        )
+        try:
+            r = subprocess.run(
+                compose_cmd + ["-f", str(docker_dir / "docker-compose.yml"), "down"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                self._update(
+                    "[bold red]Failed to stop containers[/bold red]\n\n"
+                    f"[dim]{r.stderr.strip()[:300]}[/dim]\n\n"
+                    "[dim]Press Enter or Escape to close[/dim]"
+                )
+                self._phase = "done"
+                self._success = False
+                return
+        except subprocess.TimeoutExpired:
+            self._update(
+                "[bold red]Stop timed out[/bold red]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Step 2: Restart containers
+        self._update(
+            "[bold cyan]Repairing phpIPAM (non-destructive)...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers stopped\n"
+            "  Step 2/3: Starting containers..."
+        )
+        r = subprocess.run(
+            compose_cmd + ["-f", str(docker_dir / "docker-compose.yml"), "up", "-d"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            self._update(
+                "[bold red]Failed to start containers[/bold red]\n\n"
+                f"[dim]{r.stderr.strip()[:300]}[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+            self._phase = "done"
+            self._success = False
+            return
+
+        # Step 3: Wait for readiness
+        self._update(
+            "[bold cyan]Repairing phpIPAM (non-destructive)...[/bold cyan]\n\n"
+            "  [green]\u2713[/green] Containers stopped\n"
+            "  [green]\u2713[/green] Containers started\n"
+            "  Step 3/3: Waiting for phpIPAM to start..."
+        )
+        import ssl as ssl_mod
+        import urllib.request
+
+        # Read port from .env
+        port = "8443"
+        env_file = docker_dir / ".env"
+        if env_file.exists():
+            try:
+                for line in env_file.read_text().splitlines():
+                    if line.startswith("IPAM_PORT="):
+                        port = line.split("=", 1)[1].strip()
+            except Exception:
+                pass
+
+        url = f"https://localhost:{port}"
+        ready = False
+        for _ in range(60):
+            try:
+                ctx = ssl_mod.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl_mod.CERT_NONE
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=3, context=ctx) as resp:
+                    if resp.status in (200, 301, 302):
+                        time.sleep(3)
+                        ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(3)
+
+        if ready:
+            self._update(
+                "[bold green]phpIPAM restarted successfully![/bold green]\n\n"
+                f"  URL: {url}\n"
+                "[dim]Existing data and credentials preserved.[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+        else:
+            self._update(
+                "[bold yellow]Containers started but phpIPAM not responding yet[/bold yellow]\n\n"
+                f"  URL: {url}\n"
+                "[dim]It may still be initializing. Check: docker logs infraforge-ipam-web[/dim]\n\n"
+                "[dim]Press Enter or Escape to close[/dim]"
+            )
+
+        # For non-destructive, we don't change the config — just signal success
+        self._result = None  # No config changes needed
         self._phase = "done"
         self._success = True
 

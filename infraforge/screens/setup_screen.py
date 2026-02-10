@@ -456,7 +456,6 @@ class SetupScreen(Screen):
     BINDINGS = [
         Binding("enter", "configure", "Configure", show=True),
         Binding("t", "test", "Test Connection", show=True),
-        Binding("r", "repair_ipam", "Repair IPAM", show=True),
         Binding("s", "save_exit", "Save & Exit", show=True),
         Binding("m", "launch_main", "Main Menu", show=True),
         Binding("escape", "quit_setup", "Exit", show=True),
@@ -474,7 +473,7 @@ class SetupScreen(Screen):
             yield Static(
                 "[bold]InfraForge Setup[/bold]  [dim]\u2502[/dim]  "
                 "Select a component to configure  [dim]\u2502[/dim]  "
-                "[dim]Enter[/dim]=Configure  [dim]t[/dim]=Test  [dim]r[/dim]=Repair IPAM  [dim]m[/dim]=Main Menu",
+                "[dim]Enter[/dim]=Configure  [dim]t[/dim]=Test  [dim]s[/dim]=Save & Exit  [dim]m[/dim]=Main Menu",
                 id="setup-title",
                 markup=True,
             )
@@ -553,6 +552,14 @@ class SetupScreen(Screen):
         comp_id = self._get_selected_comp_id()
         if not comp_id:
             self.notify("Select a component first.", severity="warning")
+            return
+        # IPAM gets a special action modal with configure/repair options
+        if comp_id == "ipam":
+            from infraforge.screens.setup_modals import IPAMActionModal
+            self.app.push_screen(
+                IPAMActionModal(),
+                callback=self._on_ipam_action,
+            )
             return
         comp_name = next((n for i, n, _ in COMPONENTS if i == comp_id), comp_id)
         self.app.push_screen(
@@ -660,12 +667,19 @@ class SetupScreen(Screen):
             TestResultModal(title, body),
         )
 
-    def action_repair_ipam(self) -> None:
-        """Repair the phpIPAM Docker installation."""
-        comp_id = self._get_selected_comp_id()
-        if comp_id != "ipam":
-            self.notify("Select the IPAM component first, then press r to repair.", severity="warning")
+    def _on_ipam_action(self, action: str | None) -> None:
+        """Handle the IPAM action modal result."""
+        if action is None:
             return
+        if action == "configure":
+            self._on_confirm_config(True, "ipam")
+        elif action == "repair_soft":
+            self._push_repair_modal(destructive=False)
+        elif action == "repair_destructive":
+            self._push_repair_modal(destructive=True)
+
+    def _push_repair_modal(self, destructive: bool) -> None:
+        """Push the IPAM repair modal."""
         # Check if IPAM is using Docker (local deployment)
         sec = self._cfg.get("ipam", {})
         url = sec.get("url", "")
@@ -674,13 +688,14 @@ class SetupScreen(Screen):
             return
         from infraforge.screens.setup_modals import IPAMRepairModal
         self.app.push_screen(
-            IPAMRepairModal(),
+            IPAMRepairModal(destructive=destructive),
             callback=self._on_repair_complete,
         )
 
     def _on_repair_complete(self, result: dict | None) -> None:
         """Called when the repair modal is dismissed."""
         if result is None:
+            self._refresh_all()
             return
         self._cfg["ipam"] = result
         _save_config(self._cfg)
