@@ -129,6 +129,8 @@ class TemplateListScreen(Screen):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("u", "update_template", "Update Template", show=True),
         Binding("d", "download_template", "Download", show=True),
+        Binding("e", "export_template", "Export", show=True),
+        Binding("i", "import_template", "Import", show=True),
     ]
 
     def __init__(self):
@@ -429,3 +431,22 @@ class TemplateListScreen(Screen):
         """Open the template download screen."""
         from infraforge.screens.template_download_screen import TemplateDownloadScreen
         self.app.push_screen(TemplateDownloadScreen())
+
+    def action_export_template(self):
+        """Export the selected QEMU template as an .ifpkg file."""
+        tree = self.query_one("#template-tree", Tree)
+        node = tree.cursor_node
+        if not node or not node.data or node.data.kind != "template":
+            self.notify("Select a QEMU template first", severity="warning")
+            return
+        template = node.data.record
+        if template.template_type != TemplateType.VM:
+            self.notify("Only QEMU VM templates can be exported", severity="warning")
+            return
+        from infraforge.screens.template_export_screen import TemplateExportScreen
+        self.app.push_screen(TemplateExportScreen(template=template))
+
+    def action_import_template(self):
+        """Open the template import screen."""
+        from infraforge.screens.template_import_screen import TemplateImportScreen
+        self.app.push_screen(TemplateImportScreen())

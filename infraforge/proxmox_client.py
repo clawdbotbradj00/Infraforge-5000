@@ -441,6 +441,29 @@ class ProxmoxClient:
             return {}
 
     # ------------------------------------------------------------------
+    # Backup / restore
+    # ------------------------------------------------------------------
+
+    def backup_vm(self, node: str, vmid: int, storage: str,
+                  compress: str = "zstd", mode: str = "stop") -> str:
+        """Create a vzdump backup. Returns UPID for task tracking."""
+        return self.api.nodes(node).vzdump.post(
+            vmid=vmid, storage=storage, compress=compress, mode=mode,
+        )
+
+    def delete_volume(self, node: str, storage: str, volid: str) -> str:
+        """Delete a storage volume (e.g., backup file)."""
+        return self.api.nodes(node).storage(storage).content(volid).delete()
+
+    def restore_qemu(self, node: str, archive: str, vmid: int,
+                     storage: str = "") -> str:
+        """Restore a vzdump archive as a QEMU VM. Returns UPID."""
+        kwargs: dict = dict(archive=archive, vmid=vmid)
+        if storage:
+            kwargs["storage"] = storage
+        return self.api.nodes(node).qemu.post(**kwargs)
+
+    # ------------------------------------------------------------------
     # VM management operations
     # ------------------------------------------------------------------
 
