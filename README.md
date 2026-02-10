@@ -2,9 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
-[![GitHub Release](https://img.shields.io/badge/Release-v0.6.0-brightgreen)](https://github.com/clawdbotbradj00/InfraForge/releases/latest)
-[![GitHub Last Commit](https://img.shields.io/badge/Last_Commit-2026--02--08-blue)](https://github.com/clawdbotbradj00/InfraForge/commits/main)
-[![GitHub Issues](https://img.shields.io/badge/Issues-Open-orange)](https://github.com/clawdbotbradj00/InfraForge/issues)
+[![GitHub Release](https://img.shields.io/badge/Release-v0.8.0-brightgreen)](https://github.com/clawdbotbradj00/Infraforge-5000/releases/latest)
+[![GitHub Last Commit](https://img.shields.io/badge/Last_Commit-2026--02--08-blue)](https://github.com/clawdbotbradj00/Infraforge-5000/commits/main)
+[![GitHub Issues](https://img.shields.io/badge/Issues-Open-orange)](https://github.com/clawdbotbradj00/Infraforge-5000/issues)
 
 [![Built with Textual](https://img.shields.io/badge/Built_with-Textual-4EAA25?logo=python&logoColor=white)](https://github.com/Textualize/textual)
 [![Proxmox VE](https://img.shields.io/badge/Proxmox-VE_7.x%2F8.x-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
@@ -53,8 +53,8 @@ Integrated phpIPAM for IP address management, BIND9 for DNS automation, Ansible 
 ### Automated Setup
 
 ```bash
-git clone https://github.com/clawdbotbradj00/InfraForge.git
-cd InfraForge
+git clone https://github.com/clawdbotbradj00/Infraforge-5000.git
+cd Infraforge-5000
 bash setup.sh
 ```
 

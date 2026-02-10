@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/clawdbotbradj00/InfraForge"
-Repository = "https://github.com/clawdbotbradj00/InfraForge"
-Issues = "https://github.com/clawdbotbradj00/InfraForge/issues"
+Homepage = "https://github.com/clawdbotbradj00/Infraforge-5000"
+Repository = "https://github.com/clawdbotbradj00/Infraforge-5000"
+Issues = "https://github.com/clawdbotbradj00/Infraforge-5000/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]

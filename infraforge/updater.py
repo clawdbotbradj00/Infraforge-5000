@@ -9,7 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-GITHUB_REPO = "clawdbotbradj00/InfraForge"
+GITHUB_REPO = "clawdbotbradj00/Infraforge-5000"
 RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ALL_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=50"
 CACHE_PATH = Path.home() / ".config" / "infraforge" / ".update_cache.json"
