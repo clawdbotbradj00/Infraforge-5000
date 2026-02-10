@@ -825,11 +825,14 @@ class TemplateExportScreen(Screen):
 
             log("[green]  Backup complete![/green]\n")
 
-            # Step 3: Parse the backup archive path from task log
+            # Step 3: Locate the backup archive
             log("[bold]Locating backup archive...[/bold]")
             remote_path = ""
+            backup_volid = ""
+
+            # Strategy 1: Parse task log for archive path
             archive_re = re.compile(
-                r"creating vzdump archive '([^']+\.vma(?:\.\w+)?)'",
+                r"creating (?:vzdump )?archive '([^']+\.vma(?:\.\w+)?)'",
             )
             try:
                 all_log = self.app.proxmox.get_task_log(
@@ -842,19 +845,45 @@ class TemplateExportScreen(Screen):
                         remote_path = m.group(1)
                         break
             except Exception as e:
-                log(f"[red]  Failed to read task log: {e}[/red]")
+                log(f"[yellow]  Could not parse task log: {e}[/yellow]")
 
-            if not remote_path:
-                log("[red]  Could not find backup archive path in task log![/red]")
+            if remote_path:
+                archive_basename = os.path.basename(remote_path)
+                backup_volid = f"{storage}:backup/{archive_basename}"
+            else:
+                # Strategy 2: Find backup via storage content API
+                log("[dim]  Log parse failed, querying storage content...[/dim]")
+                try:
+                    contents = self.app.proxmox.api.nodes(node).storage(
+                        storage,
+                    ).content.get(content="backup")
+                    # Find most recent vzdump for this VMID
+                    matches = [
+                        c for c in contents
+                        if f"vzdump-qemu-{vmid}-" in c.get("volid", "")
+                    ]
+                    if matches:
+                        matches.sort(key=lambda c: c.get("ctime", 0), reverse=True)
+                        backup_volid = matches[0]["volid"]
+                        # Resolve volid to filesystem path via SSH
+                        path_result = subprocess.run(
+                            ["ssh", "-o", "StrictHostKeyChecking=accept-new",
+                             "-o", "BatchMode=yes", f"root@{host}",
+                             "pvesm", "path", backup_volid],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if path_result.returncode == 0:
+                            remote_path = path_result.stdout.strip()
+                except Exception as e:
+                    log(f"[yellow]  Storage content query failed: {e}[/yellow]")
+
+            if not remote_path or not backup_volid:
+                log("[red]  Could not locate backup archive![/red]")
                 self._working = False
                 self._show_retry_hint()
                 return
 
-            # Construct volid from remote path
-            # Remote path like: /var/lib/vz/dump/vzdump-qemu-9000-2026_02_09-12_00_00.vma.zst
-            # volid like: local:backup/vzdump-qemu-9000-2026_02_09-12_00_00.vma.zst
             archive_basename = os.path.basename(remote_path)
-            backup_volid = f"{storage}:backup/{archive_basename}"
             log(f"[green]  Archive: {remote_path}[/green]")
             log(f"[dim]  Volume ID: {backup_volid}[/dim]\n")
 
