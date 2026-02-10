@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![GitHub Release](https://img.shields.io/badge/Release-v0.8.0-brightgreen)](https://github.com/clawdbotbradj00/Infraforge-5000/releases/latest)
+[![Discord](https://img.shields.io/badge/Discord-Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/dxjS4u7j)
 
 </div>
 
@@ -126,6 +127,10 @@ Create a Proxmox API token at **Datacenter > Permissions > API Tokens** with at 
 | `?` | Help |
 | `q` | Quit |
 | `Escape` | Go back |
+
+## Community
+
+Join the [InfraForge Discord](https://discord.gg/dxjS4u7j) for support, feature requests, and to share your homelab setup.
 
 ## License
 
