@@ -797,9 +797,11 @@ def run_setup_tui() -> None:
     """Launch the Textual-based setup wizard standalone."""
     from infraforge.app import _CUSTOM_THEMES
 
+    from infraforge import __version__
+
     class _SetupApp(App):
         TITLE = "InfraForge"
-        SUB_TITLE = "Setup Wizard"
+        SUB_TITLE = f"v{__version__} — Setup Wizard"
         CSS_PATH = "../../styles/app.tcss"
 
         def on_mount(self) -> None:
