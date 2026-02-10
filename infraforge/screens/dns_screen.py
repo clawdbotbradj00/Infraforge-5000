@@ -23,6 +23,7 @@ from textual.widgets import (
     Button,
     Select,
     Label,
+    Switch,
     Tree,
     TabbedContent,
     TabPane,
@@ -169,6 +170,9 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
+    # Record types eligible for Cloudflare proxying
+    PROXY_ELIGIBLE = {"A", "AAAA", "CNAME"}
+
     def __init__(
         self,
         zone: str,
@@ -177,6 +181,8 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
         value: str = "",
         ttl: str = "3600",
         title: str = "Create DNS Record",
+        show_proxied: bool = False,
+        proxied: bool = False,
     ) -> None:
         super().__init__()
         self._zone = zone
@@ -185,6 +191,8 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
         self._initial_value = value
         self._initial_ttl = ttl
         self._title = title
+        self._show_proxied = show_proxied
+        self._initial_proxied = proxied
 
     def compose(self) -> ComposeResult:
         with Container(classes="modal-container"):
@@ -220,6 +228,15 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
                     id="rec-ttl-input",
                 )
 
+                # Cloudflare proxy toggle (only shown for CF records)
+                yield Label("Cloudflare Proxy:", id="rec-proxy-label")
+                with Horizontal(id="rec-proxy-row"):
+                    yield Switch(value=self._initial_proxied, id="rec-proxy-switch")
+                    yield Static(
+                        "[dim]DNS only[/dim]",
+                        id="rec-proxy-hint", markup=True,
+                    )
+
                 with Horizontal(classes="modal-buttons"):
                     yield Button("Save", variant="primary", id="rec-save-btn")
                     yield Button(
@@ -228,6 +245,40 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
 
     def on_mount(self) -> None:
         self.query_one("#rec-name-input", Input).focus()
+        # Hide proxy controls unless this is a Cloudflare record modal
+        if not self._show_proxied:
+            self.query_one("#rec-proxy-label", Label).display = False
+            self.query_one("#rec-proxy-row", Horizontal).display = False
+        else:
+            self._update_proxy_hint()
+
+    @on(Switch.Changed, "#rec-proxy-switch")
+    def _on_proxy_changed(self, event: Switch.Changed) -> None:
+        self._update_proxy_hint()
+
+    @on(Select.Changed, "#rec-type-select")
+    def _on_type_changed(self, event: Select.Changed) -> None:
+        if self._show_proxied:
+            self._update_proxy_hint()
+
+    def _update_proxy_hint(self) -> None:
+        """Update proxy hint text and auto-disable for ineligible types."""
+        rtype_select = self.query_one("#rec-type-select", Select)
+        rtype = str(rtype_select.value) if rtype_select.value is not Select.BLANK else "A"
+        switch = self.query_one("#rec-proxy-switch", Switch)
+        hint = self.query_one("#rec-proxy-hint", Static)
+        eligible = rtype in self.PROXY_ELIGIBLE
+
+        if not eligible:
+            switch.value = False
+            switch.disabled = True
+            hint.update(f"[dim]{rtype} records cannot be proxied[/dim]")
+        else:
+            switch.disabled = False
+            if switch.value:
+                hint.update("[orange1]Proxied[/orange1] [dim]— traffic routed through Cloudflare CDN[/dim]")
+            else:
+                hint.update("[dim]DNS only — traffic goes directly to origin[/dim]")
 
     @on(Button.Pressed, "#rec-save-btn")
     def _on_save(self, event: Button.Pressed) -> None:
@@ -255,12 +306,16 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
         except ValueError:
             ttl = 3600
 
-        self.dismiss({
+        result = {
             "name": name,
             "rtype": rtype,
             "value": value,
             "ttl": ttl,
-        })
+        }
+        if self._show_proxied:
+            switch = self.query_one("#rec-proxy-switch", Switch)
+            result["proxied"] = switch.value and rtype in self.PROXY_ELIGIBLE
+        self.dismiss(result)
 
 
 # ---------------------------------------------------------------------------

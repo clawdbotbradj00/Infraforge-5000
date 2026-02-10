@@ -64,8 +64,10 @@ class CloudflareTab(Container):
         # Zone selector bar
         yield Horizontal(id="cf-zone-bar")
 
-        # Zone info banner
-        yield Static("Loading Cloudflare zones...", id="cf-zone-info", markup=True)
+        # Zone info banner + right-aligned legend
+        with Horizontal(id="cf-zone-info"):
+            yield Static("Loading Cloudflare zones...", id="cf-zone-stats", markup=True)
+            yield Static("", id="cf-zone-legend", markup=True)
 
         # Controls bar
         with Horizontal(id="cf-controls"):
@@ -116,7 +118,7 @@ class CloudflareTab(Container):
                 )
             else:
                 self.app.call_from_thread(
-                    self.query_one("#cf-zone-info", Static).update,
+                    self.query_one("#cf-zone-stats", Static).update,
                     "[yellow]No Cloudflare zones found.[/yellow]\n"
                     "[dim]Check your API token permissions.[/dim]"
                 )
@@ -381,21 +383,29 @@ class CloudflareTab(Container):
         count_label.update(f"[dim]{total} records across {len(self._cf_zones)} zones[/dim]")
 
     def _update_zone_info(self) -> None:
-        zone_info = self.query_one("#cf-zone-info", Static)
         if not self._cf_zones:
             return
         total_records = sum(len(v) for v in self._records_cache.values())
         rw = sum(1 for z in self._cf_zones if z.get("access") == "readwrite")
         ro = len(self._cf_zones) - rw
-        lines = [
+
+        stats = (
             f"[bold]Provider:[/bold]  [cyan]Cloudflare[/cyan]"
             f"    [bold]Zones:[/bold]  [cyan]{len(self._cf_zones)}[/cyan] "
             f"([green]{rw} RW[/green], [yellow]{ro} RO[/yellow])"
             f"    [bold]Total Records:[/bold]  [cyan]{total_records}[/cyan]"
-            f"        [orange1]\u26a1[/orange1] [dim]= Proxied (CF CDN)[/dim]"
-            f"    [dim]\U0001f513 = Read/Write    \U0001f512 = Read-Only[/dim]",
-        ]
-        zone_info.update("\n".join(lines))
+        )
+        legend = (
+            f"[orange1]\u26a1[/orange1] [dim]Proxied[/dim]"
+            f"    [green]\U0001f513[/green] [dim]Read/Write[/dim]"
+            f"    [yellow]\U0001f512[/yellow] [dim]Read-Only[/dim]"
+        )
+
+        try:
+            self.query_one("#cf-zone-stats", Static).update(stats)
+            self.query_one("#cf-zone-legend", Static).update(legend)
+        except Exception:
+            pass
 
     def _set_status(self, text: str) -> None:
         try:
@@ -484,22 +494,26 @@ class CloudflareTab(Container):
             self._do_create_record(
                 zone_data.zone_id, zone_data.zone_name,
                 result["name"], result["rtype"], result["value"], result["ttl"],
+                result.get("proxied", False),
             )
 
         self.app.push_screen(
-            RecordInputScreen(zone=zone_data.zone_name, title="Create Cloudflare DNS Record"),
+            RecordInputScreen(
+                zone=zone_data.zone_name, title="Create Cloudflare DNS Record",
+                show_proxied=True,
+            ),
             callback=_on_result,
         )
 
     @work(thread=True)
-    def _do_create_record(self, zone_id: str, zone_name: str, name: str, rtype: str, value: str, ttl: int) -> None:
+    def _do_create_record(self, zone_id: str, zone_name: str, name: str, rtype: str, value: str, ttl: int, proxied: bool = False) -> None:
         self.app.call_from_thread(self._set_status, f"Creating {rtype} record {name}...")
         try:
             from infraforge.cloudflare_client import CloudflareClient
             client = CloudflareClient.from_config(self.app.config)
             # Qualify name with zone
             fqdn = f"{name}.{zone_name}" if name != "@" and not name.endswith(zone_name) else (zone_name if name == "@" else name)
-            client.create_record(zone_id, fqdn, rtype, value, ttl=ttl)
+            client.create_record(zone_id, fqdn, rtype, value, ttl=ttl, proxied=proxied)
             # Refresh
             records = client.list_records(zone_id, zone_name)
             self._records_cache[zone_id] = records
@@ -530,6 +544,7 @@ class CloudflareTab(Container):
             self._do_update_record(
                 zone_id, zone_name, cf_id,
                 result["name"], result["rtype"], result["value"], result["ttl"],
+                result.get("proxied", False),
             )
 
         self.app.push_screen(
@@ -537,18 +552,19 @@ class CloudflareTab(Container):
                 zone=zone_name, name=rec.name, rtype=rec.rtype,
                 value=rec.value, ttl=str(rec.ttl),
                 title="Edit Cloudflare DNS Record",
+                show_proxied=True, proxied=node.data.proxied,
             ),
             callback=_on_result,
         )
 
     @work(thread=True)
-    def _do_update_record(self, zone_id: str, zone_name: str, cf_id: str, name: str, rtype: str, value: str, ttl: int) -> None:
+    def _do_update_record(self, zone_id: str, zone_name: str, cf_id: str, name: str, rtype: str, value: str, ttl: int, proxied: bool = False) -> None:
         self.app.call_from_thread(self._set_status, f"Updating {rtype} record {name}...")
         try:
             from infraforge.cloudflare_client import CloudflareClient
             client = CloudflareClient.from_config(self.app.config)
             fqdn = f"{name}.{zone_name}" if name != "@" and not name.endswith(zone_name) else (zone_name if name == "@" else name)
-            client.update_record(zone_id, cf_id, fqdn, rtype, value, ttl=ttl)
+            client.update_record(zone_id, cf_id, fqdn, rtype, value, ttl=ttl, proxied=proxied)
             records = client.list_records(zone_id, zone_name)
             self._records_cache[zone_id] = records
             self.app.call_from_thread(self._refresh_zone_node, zone_id)

@@ -490,9 +490,20 @@ DataTable > .datatable--hover {
 }
 
 #cf-zone-info {
+    layout: horizontal;
+    height: auto;
     margin: 0 0 1 0;
     border: round $primary-background;
     padding: 1 2;
+}
+
+#cf-zone-stats {
+    width: 1fr;
+}
+
+#cf-zone-legend {
+    width: auto;
+    text-align: right;
 }
 
 #cf-controls {
@@ -749,6 +760,23 @@ DataTable > .datatable--hover {
     height: 3;
     margin: 1 0 0 0;
     content-align: center middle;
+}
+
+#rec-proxy-row {
+    layout: horizontal;
+    height: 3;
+    padding: 0 0;
+}
+
+#rec-proxy-switch {
+    width: auto;
+    margin: 0 1 0 0;
+}
+
+#rec-proxy-hint {
+    width: 1fr;
+    content-align-vertical: middle;
+    padding: 1 0;
 }
 
 /* ── New VM Wizard ── */
