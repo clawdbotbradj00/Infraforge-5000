@@ -27,12 +27,22 @@ class _ArrowNavModal(ModalScreen):
         if fields:
             fields[0].focus()
 
+    @staticmethod
+    def _is_displayed(widget) -> bool:
+        """Check widget and all ancestors have display=True."""
+        node = widget
+        while node is not None:
+            if not node.display:
+                return False
+            node = node.parent
+        return True
+
     def _get_focusable_fields(self) -> list:
         """Return visible, focusable fields in DOM order."""
         all_widgets = list(self.query("*"))
         return [
             w for w in all_widgets
-            if isinstance(w, _FOCUSABLE) and w.visible
+            if isinstance(w, _FOCUSABLE) and self._is_displayed(w)
         ]
 
     def on_key(self, event) -> None:
