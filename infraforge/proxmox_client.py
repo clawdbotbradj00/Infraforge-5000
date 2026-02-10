@@ -449,6 +449,43 @@ class ProxmoxClient:
             pass
         return ""
 
+    def list_vm_backups(self, node: str, vmid: int) -> list[dict]:
+        """List existing vzdump backups for a VMID across all backup storages.
+
+        Returns list of dicts with keys: volid, size, ctime, storage, filename.
+        Sorted by ctime descending (newest first), max 10.
+        """
+        results: list[dict] = []
+        try:
+            all_storages = self.get_storage_info()
+            backup_storages = [
+                s for s in all_storages
+                if "backup" in s.content
+                and (s.node == node or s.shared)
+            ]
+            for stor in backup_storages:
+                try:
+                    contents = self.api.nodes(node).storage(
+                        stor.storage,
+                    ).content.get(content="backup")
+                    for c in contents:
+                        vid = c.get("volid", "")
+                        if f"vzdump-qemu-{vmid}-" in vid:
+                            import os
+                            results.append({
+                                "volid": vid,
+                                "size": int(c.get("size", 0)),
+                                "ctime": int(c.get("ctime", 0)),
+                                "storage": stor.storage,
+                                "filename": os.path.basename(vid.split("backup/", 1)[-1]) if "backup/" in vid else vid,
+                            })
+                except Exception:
+                    continue
+        except Exception:
+            return []
+        results.sort(key=lambda x: x["ctime"], reverse=True)
+        return results[:10]
+
     def get_version(self) -> dict:
         try:
             return self.api.version.get()

@@ -1,7 +1,7 @@
 """Template Export Screen — export a QEMU template as an .ifpkg package.
 
 3-phase wizard:
-  0. Confirm    — review template details, set output filename
+  0. Confirm    — review template details, set output filename, select existing backup
   1. Export     — automated vzdump (auto-detect backup storage), download, package creation (RichLog)
   2. Done       — success summary with file path and size
 """
@@ -13,6 +13,7 @@ import re
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +63,8 @@ class TemplateExportScreen(Screen):
         self._output_filename: str = f"{template.name}.ifpkg"
         self._export_result_path: str = ""
         self._export_result_size: str = ""
+        self._selected_backup: dict | None = None  # None = create new
+        self._backups_loaded = False
 
     # ------------------------------------------------------------------
     # Compose
@@ -271,7 +274,12 @@ class TemplateExportScreen(Screen):
     # ------------------------------------------------------------------
 
     def _apply_selection(self, item: WizItem):
-        pass  # No radio-group selections in this screen
+        if item.group == "backup_choice":
+            if item.key == "backup_new":
+                self._selected_backup = None
+            else:
+                # item.meta contains the backup dict
+                self._selected_backup = item.meta.get("backup")
 
     def _apply_input_value(self, item: WizItem):
         if item.key == "output_filename":
@@ -334,6 +342,10 @@ class TemplateExportScreen(Screen):
             valid, _ = self._validate_phase()
             if valid:
                 self.query_one("#btn-next", Button).add_class("-ready")
+
+        # Kick off async backup scan for phase 0
+        if self._phase == 0 and not self._backups_loaded:
+            self._scan_backups()
 
     def _mount_items(self):
         for w in self.query(".wiz-line"):
@@ -536,6 +548,99 @@ class TemplateExportScreen(Screen):
             value=self._output_filename,
             meta={"placeholder": f"{t.name}.ifpkg"},
         ))
+        items.append(WizItem(kind="info", label=""))
+
+        # Existing backups section (populated asynchronously)
+        items.append(WizItem(kind="header", label="EXISTING BACKUPS"))
+        items.append(WizItem(
+            kind="info",
+            label="[dim italic]Scanning for existing backups...[/dim italic]",
+            key="_backup_loading",
+        ))
+
+    @work(thread=True)
+    def _scan_backups(self):
+        """Scan for existing backups in a background thread."""
+        t = self._template
+        backups: list[dict] = []
+        try:
+            backups = self.app.proxmox.list_vm_backups(t.node, t.vmid)
+        except Exception:
+            backups = []
+
+        # Limit to 5 most recent
+        backups = backups[:5]
+
+        def _update_ui():
+            if self._phase != 0:
+                return  # User already moved on
+
+            # Find and remove the loading placeholder
+            loading_idx = None
+            for i, item in enumerate(self._items):
+                if item.key == "_backup_loading":
+                    loading_idx = i
+                    break
+
+            if loading_idx is None:
+                return
+
+            # Build new backup items
+            new_items: list[WizItem] = []
+
+            if backups:
+                for bi, bk in enumerate(backups):
+                    ctime = bk.get("ctime", 0)
+                    dt = datetime.fromtimestamp(ctime)
+                    date_str = dt.strftime("%Y-%m-%d %H:%M")
+                    size_str = _format_size(bk.get("size", 0))
+                    stor = bk.get("storage", "?")
+                    label = f"{date_str}  {size_str}  [dim]({stor})[/dim]"
+                    new_items.append(WizItem(
+                        kind="option",
+                        label=label,
+                        key=f"backup_{bi}",
+                        group="backup_choice",
+                        selected=(bi == 0),  # First (newest) selected by default
+                        meta={"backup": bk},
+                    ))
+                # Set _selected_backup to the first (default selected) backup
+                self._selected_backup = backups[0]
+            else:
+                new_items.append(WizItem(
+                    kind="info",
+                    label="[dim]No existing backups found[/dim]",
+                ))
+
+            # "Create new backup" option — selected by default only if no backups exist
+            new_items.append(WizItem(
+                kind="option",
+                label="Create new backup",
+                key="backup_new",
+                group="backup_choice",
+                selected=(len(backups) == 0),
+            ))
+            if not backups:
+                self._selected_backup = None
+
+            # Replace loading placeholder with actual backup items
+            self._items[loading_idx:loading_idx + 1] = new_items
+
+            self._backups_loaded = True
+
+            # Re-mount and refresh
+            self._mount_items()
+            nav = self._nav_indices()
+            if nav:
+                self._cursor = nav[0]
+            self._refresh_lines()
+            self._update_phase_hint()
+
+            valid, _ = self._validate_phase()
+            if valid:
+                self.query_one("#btn-next", Button).add_class("-ready")
+
+        self.app.call_from_thread(_update_ui)
 
     # ------------------------------------------------------------------
     # Phase 1: Export (automated, RichLog)
@@ -727,70 +832,125 @@ class TemplateExportScreen(Screen):
         local_temp_dir = None
         local_vma_path: Optional[Path] = None
         storage = ""
+        created_new_backup = False
 
         try:
-            # Step 0: Auto-detect backup storage
-            log("[bold]Detecting backup storage...[/bold]")
-            try:
-                all_storages = self.app.proxmox.get_storage_info()
-            except Exception as e:
-                log(f"[red]  Failed to fetch storage info: {e}[/red]")
-                self._working = False
-                self._show_retry_hint()
-                return
+            if self._selected_backup:
+                # ----------------------------------------------------------
+                # Use existing backup — skip vzdump entirely
+                # ----------------------------------------------------------
+                backup_volid = self._selected_backup["volid"]
+                storage = self._selected_backup["storage"]
+                log("[bold]Using existing backup...[/bold]")
+                log(f"[dim]  Volume: {backup_volid}[/dim]")
+                log(f"[dim]  Storage: {storage}[/dim]\n")
 
-            backup_storages = [
-                s for s in all_storages
-                if "backup" in s.content
-                and (s.node == node or s.shared)
-                and s.avail > 0
-            ]
-
-            if not backup_storages:
-                log(
-                    f"[red]  No backup-capable storage found on node "
-                    f"{node} (or shared) with available space.[/red]"
+                # Resolve path via SSH
+                log("[bold]Resolving archive path...[/bold]")
+                path_result = subprocess.run(
+                    ["ssh", "-o", "StrictHostKeyChecking=accept-new",
+                     "-o", "BatchMode=yes", f"root@{host}",
+                     "pvesm", "path", backup_volid],
+                    capture_output=True, text=True, timeout=15,
                 )
-                log("[dim]  Ensure at least one storage has 'backup' in its content types.[/dim]")
-                self._working = False
-                self._show_retry_hint()
-                return
+                if path_result.returncode != 0:
+                    log(f"[red]  Failed to resolve path: {path_result.stderr.strip()}[/red]")
+                    self._working = False
+                    self._show_retry_hint()
+                    return
+                remote_path = path_result.stdout.strip()
+                archive_basename = os.path.basename(remote_path)
+                log(f"[green]  Archive: {remote_path}[/green]\n")
+            else:
+                # ----------------------------------------------------------
+                # Create new backup via vzdump (original flow: Steps 0-3)
+                # ----------------------------------------------------------
+                created_new_backup = True
 
-            storage = backup_storages[0].storage
-            log(f"[green]  Auto-selected: {storage}[/green]")
-            log(
-                f"[dim]  Type: {backup_storages[0].storage_type}, "
-                f"Free: {backup_storages[0].avail_display}, "
-                f"Shared: {backup_storages[0].shared}[/dim]\n"
-            )
+                # Step 0: Auto-detect backup storage
+                log("[bold]Detecting backup storage...[/bold]")
+                try:
+                    all_storages = self.app.proxmox.get_storage_info()
+                except Exception as e:
+                    log(f"[red]  Failed to fetch storage info: {e}[/red]")
+                    self._working = False
+                    self._show_retry_hint()
+                    return
 
-            # Step 1: Create vzdump backup
-            log("[bold]Creating vzdump backup...[/bold]")
-            log(f"[dim]  Node: {node}, VMID: {vmid}, Storage: {storage}[/dim]")
-            upid = self.app.proxmox.backup_vm(node, vmid, storage)
-            log(f"[dim]  Task UPID: {upid}[/dim]")
-            log("[dim]  Waiting for backup to complete...[/dim]\n")
+                backup_storages = [
+                    s for s in all_storages
+                    if "backup" in s.content
+                    and (s.node == node or s.shared)
+                    and s.avail > 0
+                ]
 
-            # Step 2: Poll task with log progress
-            elapsed = 0
-            timeout = 600  # 10 minutes max for backup
-            last_log_line = 0
-            while elapsed < timeout:
-                # Check task status
-                status = self.app.proxmox.get_task_status(node, upid)
-                if status.get("status") == "stopped":
-                    exit_status = status.get("exitstatus", "")
-                    if exit_status != "OK":
-                        log(f"[red]  Backup task failed: {exit_status}[/red]")
-                        self._working = False
-                        self._show_retry_hint()
-                        return
-                    break
+                if not backup_storages:
+                    log(
+                        f"[red]  No backup-capable storage found on node "
+                        f"{node} (or shared) with available space.[/red]"
+                    )
+                    log("[dim]  Ensure at least one storage has 'backup' in its content types.[/dim]")
+                    self._working = False
+                    self._show_retry_hint()
+                    return
 
-                # Fetch and display task log lines
+                storage = backup_storages[0].storage
+                log(f"[green]  Auto-selected: {storage}[/green]")
+                log(
+                    f"[dim]  Type: {backup_storages[0].storage_type}, "
+                    f"Free: {backup_storages[0].avail_display}, "
+                    f"Shared: {backup_storages[0].shared}[/dim]\n"
+                )
+
+                # Step 1: Create vzdump backup
+                log("[bold]Creating vzdump backup...[/bold]")
+                log(f"[dim]  Node: {node}, VMID: {vmid}, Storage: {storage}[/dim]")
+                upid = self.app.proxmox.backup_vm(node, vmid, storage)
+                log(f"[dim]  Task UPID: {upid}[/dim]")
+                log("[dim]  Waiting for backup to complete...[/dim]\n")
+
+                # Step 2: Poll task with log progress
+                elapsed = 0
+                timeout = 600  # 10 minutes max for backup
+                last_log_line = 0
+                while elapsed < timeout:
+                    # Check task status
+                    status = self.app.proxmox.get_task_status(node, upid)
+                    if status.get("status") == "stopped":
+                        exit_status = status.get("exitstatus", "")
+                        if exit_status != "OK":
+                            log(f"[red]  Backup task failed: {exit_status}[/red]")
+                            self._working = False
+                            self._show_retry_hint()
+                            return
+                        break
+
+                    # Fetch and display task log lines
+                    try:
+                        log_lines = self.app.proxmox.get_task_log(
+                            node, upid, start=last_log_line, limit=50,
+                        )
+                        for entry in log_lines:
+                            line_num = entry.get("n", 0)
+                            line_text = entry.get("t", "")
+                            if line_num >= last_log_line and line_text:
+                                log(f"[dim]  {line_text}[/dim]")
+                                last_log_line = line_num + 1
+                    except Exception:
+                        pass
+
+                    time.sleep(2)
+                    elapsed += 2
+                else:
+                    log(f"[red]  Backup task timed out after {timeout}s![/red]")
+                    self._working = False
+                    self._show_retry_hint()
+                    return
+
+                # Fetch final log lines
                 try:
                     log_lines = self.app.proxmox.get_task_log(
-                        node, upid, start=last_log_line, limit=50,
+                        node, upid, start=last_log_line, limit=100,
                     )
                     for entry in log_lines:
                         line_num = entry.get("n", 0)
@@ -801,91 +961,69 @@ class TemplateExportScreen(Screen):
                 except Exception:
                     pass
 
-                time.sleep(2)
-                elapsed += 2
-            else:
-                log(f"[red]  Backup task timed out after {timeout}s![/red]")
-                self._working = False
-                self._show_retry_hint()
-                return
+                log("[green]  Backup complete![/green]\n")
 
-            # Fetch final log lines
-            try:
-                log_lines = self.app.proxmox.get_task_log(
-                    node, upid, start=last_log_line, limit=100,
+                # Step 3: Locate the backup archive
+                log("[bold]Locating backup archive...[/bold]")
+                remote_path = ""
+                backup_volid = ""
+
+                # Strategy 1: Parse task log for archive path
+                archive_re = re.compile(
+                    r"creating (?:vzdump )?archive '([^']+\.vma(?:\.\w+)?)'",
                 )
-                for entry in log_lines:
-                    line_num = entry.get("n", 0)
-                    line_text = entry.get("t", "")
-                    if line_num >= last_log_line and line_text:
-                        log(f"[dim]  {line_text}[/dim]")
-                        last_log_line = line_num + 1
-            except Exception:
-                pass
-
-            log("[green]  Backup complete![/green]\n")
-
-            # Step 3: Locate the backup archive
-            log("[bold]Locating backup archive...[/bold]")
-            remote_path = ""
-            backup_volid = ""
-
-            # Strategy 1: Parse task log for archive path
-            archive_re = re.compile(
-                r"creating (?:vzdump )?archive '([^']+\.vma(?:\.\w+)?)'",
-            )
-            try:
-                all_log = self.app.proxmox.get_task_log(
-                    node, upid, start=0, limit=500,
-                )
-                for entry in all_log:
-                    line_text = entry.get("t", "")
-                    m = archive_re.search(line_text)
-                    if m:
-                        remote_path = m.group(1)
-                        break
-            except Exception as e:
-                log(f"[yellow]  Could not parse task log: {e}[/yellow]")
-
-            if remote_path:
-                archive_basename = os.path.basename(remote_path)
-                backup_volid = f"{storage}:backup/{archive_basename}"
-            else:
-                # Strategy 2: Find backup via storage content API
-                log("[dim]  Log parse failed, querying storage content...[/dim]")
                 try:
-                    contents = self.app.proxmox.api.nodes(node).storage(
-                        storage,
-                    ).content.get(content="backup")
-                    # Find most recent vzdump for this VMID
-                    matches = [
-                        c for c in contents
-                        if f"vzdump-qemu-{vmid}-" in c.get("volid", "")
-                    ]
-                    if matches:
-                        matches.sort(key=lambda c: c.get("ctime", 0), reverse=True)
-                        backup_volid = matches[0]["volid"]
-                        # Resolve volid to filesystem path via SSH
-                        path_result = subprocess.run(
-                            ["ssh", "-o", "StrictHostKeyChecking=accept-new",
-                             "-o", "BatchMode=yes", f"root@{host}",
-                             "pvesm", "path", backup_volid],
-                            capture_output=True, text=True, timeout=15,
-                        )
-                        if path_result.returncode == 0:
-                            remote_path = path_result.stdout.strip()
+                    all_log = self.app.proxmox.get_task_log(
+                        node, upid, start=0, limit=500,
+                    )
+                    for entry in all_log:
+                        line_text = entry.get("t", "")
+                        m = archive_re.search(line_text)
+                        if m:
+                            remote_path = m.group(1)
+                            break
                 except Exception as e:
-                    log(f"[yellow]  Storage content query failed: {e}[/yellow]")
+                    log(f"[yellow]  Could not parse task log: {e}[/yellow]")
 
-            if not remote_path or not backup_volid:
-                log("[red]  Could not locate backup archive![/red]")
-                self._working = False
-                self._show_retry_hint()
-                return
+                if remote_path:
+                    archive_basename = os.path.basename(remote_path)
+                    backup_volid = f"{storage}:backup/{archive_basename}"
+                else:
+                    # Strategy 2: Find backup via storage content API
+                    log("[dim]  Log parse failed, querying storage content...[/dim]")
+                    try:
+                        contents = self.app.proxmox.api.nodes(node).storage(
+                            storage,
+                        ).content.get(content="backup")
+                        # Find most recent vzdump for this VMID
+                        matches = [
+                            c for c in contents
+                            if f"vzdump-qemu-{vmid}-" in c.get("volid", "")
+                        ]
+                        if matches:
+                            matches.sort(key=lambda c: c.get("ctime", 0), reverse=True)
+                            backup_volid = matches[0]["volid"]
+                            # Resolve volid to filesystem path via SSH
+                            path_result = subprocess.run(
+                                ["ssh", "-o", "StrictHostKeyChecking=accept-new",
+                                 "-o", "BatchMode=yes", f"root@{host}",
+                                 "pvesm", "path", backup_volid],
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            if path_result.returncode == 0:
+                                remote_path = path_result.stdout.strip()
+                    except Exception as e:
+                        log(f"[yellow]  Storage content query failed: {e}[/yellow]")
 
-            archive_basename = os.path.basename(remote_path)
-            log(f"[green]  Archive: {remote_path}[/green]")
-            log(f"[dim]  Volume ID: {backup_volid}[/dim]\n")
+                if not remote_path or not backup_volid:
+                    log("[red]  Could not locate backup archive![/red]")
+                    self._working = False
+                    self._show_retry_hint()
+                    return
+
+                archive_basename = os.path.basename(remote_path)
+                log(f"[green]  Archive: {remote_path}[/green]")
+                log(f"[dim]  Volume ID: {backup_volid}[/dim]\n")
 
             # Step 4: Download backup via SSH streaming
             log("[bold]Downloading backup...[/bold]")
@@ -957,12 +1095,15 @@ class TemplateExportScreen(Screen):
             # Step 6: Cleanup
             log("[bold]Cleaning up...[/bold]")
 
-            # Delete backup on Proxmox
-            try:
-                self.app.proxmox.delete_volume(node, storage, backup_volid)
-                log("[green]  Deleted remote backup[/green]")
-            except Exception as e:
-                log(f"[yellow]  Could not delete remote backup: {e}[/yellow]")
+            # Delete backup on Proxmox only if we created a new one
+            if created_new_backup:
+                try:
+                    self.app.proxmox.delete_volume(node, storage, backup_volid)
+                    log("[green]  Deleted remote backup[/green]")
+                except Exception as e:
+                    log(f"[yellow]  Could not delete remote backup: {e}[/yellow]")
+            else:
+                log("[dim]  Skipped remote backup deletion (using existing backup)[/dim]")
 
             # Delete local temp VMA file
             try:
