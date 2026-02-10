@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="InfraForge" width="100%">
 
-### Manage your entire Proxmox homelab from one terminal.
+### Your homelab command center.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
