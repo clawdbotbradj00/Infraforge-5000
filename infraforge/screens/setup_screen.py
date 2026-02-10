@@ -112,6 +112,14 @@ def _check_component(cfg: dict, name: str) -> tuple[bool, str]:
             return True, f"{model}  (key: {masked})"
         return False, "Not configured"
 
+    elif name == "cloudflare":
+        sec = cfg.get("cloudflare", {})
+        token = sec.get("api_token", "")
+        if token:
+            masked = token[:8] + "..." + token[-4:] if len(token) > 12 else "***"
+            return True, f"Token: {masked}"
+        return False, "Not configured"
+
     elif name == "defaults":
         sec = cfg.get("defaults", {})
         from pathlib import Path
@@ -130,6 +138,7 @@ COMPONENTS = [
     ("terraform", "Terraform", "Infrastructure provisioning"),
     ("ansible", "Ansible", "Configuration management"),
     ("ai", "AI", "AI assistant integration"),
+    ("cloudflare", "Cloudflare", "Cloudflare DNS management"),
     ("defaults", "Defaults", "VM defaults & export directory"),
 ]
 
@@ -635,6 +644,8 @@ class SetupScreen(Screen):
                 body = self._test_ansible()
             elif comp_id == "ai":
                 body = self._test_ai()
+            elif comp_id == "cloudflare":
+                body = self._test_cloudflare()
             else:
                 body = "[yellow]No test available for this component.[/yellow]"
         except Exception as e:
@@ -794,6 +805,29 @@ class SetupScreen(Screen):
             f"  Model: {model_name}\n"
             f"  API access confirmed ({len(models)}+ models available)"
         )
+
+    def _test_cloudflare(self) -> str:
+        sec = self._cfg.get("cloudflare", {})
+        token = sec.get("api_token", "")
+        if not token:
+            return "[red]Not configured — nothing to test.[/red]"
+        from infraforge.cloudflare_client import CloudflareClient, CloudflareError
+        client = CloudflareClient(api_token=token)
+        client.verify_token()
+        zones = client.list_zones()
+        lines = [f"[bold green]Cloudflare connected![/bold green]\n"]
+        for z in zones:
+            access = z.get("access", "read")
+            access_color = "green" if access == "readwrite" else "yellow"
+            access_label = "read/write" if access == "readwrite" else "read-only"
+            lines.append(
+                f"  [{access_color}]\u25cf[/{access_color}] [bold]{z['name']}[/bold]  "
+                f"[{access_color}]{access_label}[/{access_color}]  "
+                f"[dim]({z.get('status', '')})[/dim]"
+            )
+        if not zones:
+            lines.append("  [yellow]No zones found — check token permissions[/yellow]")
+        return "\n".join(lines)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "setup-launch-btn":

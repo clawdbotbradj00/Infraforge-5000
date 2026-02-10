@@ -473,6 +473,89 @@ DataTable > .datatable--hover {
     padding: 0 1;
 }
 
+/* ── DNS Tabs (Local + Cloudflare) ── */
+
+#dns-tabs {
+    height: 1fr;
+}
+
+/* ── Cloudflare DNS Tab ── */
+
+#cf-zone-bar {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#cf-zone-info {
+    margin: 0 0 1 0;
+    border: round $primary-background;
+    padding: 1 2;
+}
+
+#cf-controls {
+    layout: horizontal;
+    height: 3;
+    margin: 0 0 0 0;
+    border: round $primary-background;
+    padding: 0 1;
+}
+
+#cf-filter-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+}
+
+#cf-sort-label {
+    width: auto;
+    padding: 1 1;
+    color: $text;
+    margin: 0 0 0 2;
+}
+
+#cf-count-label {
+    width: 1fr;
+    padding: 1 1;
+    color: $text-muted;
+    text-align: right;
+}
+
+#cf-main-content {
+    layout: horizontal;
+    height: 1fr;
+    margin: 1 0 0 0;
+}
+
+#cf-tree {
+    width: 2fr;
+    margin: 0 1 0 0;
+    border: round $primary-background;
+}
+
+#cf-detail-panel {
+    width: 1fr;
+    border: round $primary-background;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#cf-detail-title {
+    text-style: bold;
+    color: $accent;
+    margin: 0 0 1 0;
+}
+
+#cf-status-bar {
+    height: 1;
+    margin: 1 0 0 0;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+}
+
 /* ── IPAM Management Screen ── */
 
 #ipam-container {

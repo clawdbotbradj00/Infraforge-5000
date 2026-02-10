@@ -53,6 +53,14 @@ ansible:
   # Set to false only if targeting newly provisioned VMs with unknown host keys.
   host_key_checking: true
 
+cloudflare:
+  # Cloudflare DNS management (optional, works alongside local DNS)
+  # Create an API token at: dash.cloudflare.com/profile/api-tokens
+  # Use the "Edit zone DNS" template, or create a custom token with:
+  #   Zone → DNS → Edit   and   Zone → Zone → Read
+  # InfraForge auto-discovers your zones and detects read/write access.
+  api_token: ""
+
 defaults:
   # Default values for new VM creation
   cpu_cores: 2

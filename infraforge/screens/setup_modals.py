@@ -441,6 +441,36 @@ _AI_HELP = (
     "    AI chat panel."
 )
 
+_CLOUDFLARE_HELP = (
+    "[bold cyan]CLOUDFLARE DNS SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]GET AN API TOKEN[/bold cyan]\n\n"
+    "  [bold yellow]1[/bold yellow]  Go to [bold]dash.cloudflare.com[/bold]\n\n"
+    "  [bold yellow]2[/bold yellow]  Navigate to:\n"
+    "     [reverse] My Profile → API Tokens [/reverse]\n\n"
+    "  [bold yellow]3[/bold yellow]  Click [bold]Create Token[/bold]\n\n"
+    "  [bold yellow]4[/bold yellow]  Use the [bold]Edit zone DNS[/bold] template\n"
+    "     [dim]or create a custom token with:[/dim]\n\n"
+    "     [dim]•[/dim] Zone → DNS → Edit\n"
+    "     [dim]•[/dim] Zone → Zone → Read\n\n"
+    "  [bold yellow]5[/bold yellow]  Select which zones to include\n"
+    "     [dim]All zones, or specific zones only[/dim]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]TOKEN VS GLOBAL API KEY[/bold cyan]\n\n"
+    "  [yellow]API Tokens are recommended because they:[/yellow]\n\n"
+    "  [dim]•[/dim] Can be scoped to specific zones\n"
+    "  [dim]•[/dim] Can be limited to DNS-only permissions\n"
+    "  [dim]•[/dim] Can be revoked independently\n"
+    "  [dim]•[/dim] Don't expose your entire account\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]ZONE DISCOVERY[/bold cyan]\n\n"
+    "  InfraForge auto-discovers your Cloudflare\n"
+    "  zones and detects whether you have read\n"
+    "  or read/write access to each zone.\n\n"
+    "  [dim]•[/dim] [bold]Read/Write[/bold] — full DNS management\n"
+    "  [dim]•[/dim] [bold]Read-only[/bold] — view records only"
+)
+
 
 # ── Helper ────────────────────────────────────────────────────────
 
@@ -454,6 +484,7 @@ def get_config_modal(comp_id: str, full_cfg: dict) -> ModalScreen | None:
         "terraform": TerraformConfigModal,
         "ansible": AnsibleConfigModal,
         "ai": AIConfigModal,
+        "cloudflare": CloudflareConfigModal,
         "defaults": DefaultsConfigModal,
     }
     cls = modals.get(comp_id)
@@ -1260,6 +1291,133 @@ AIConfigModal {{
             "provider": "anthropic",
             "api_key": key,
             "model": self.query_one("#f-model", Select).value,
+        }
+        self.dismiss(result)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ── Cloudflare Config Modal ────────────────────────────────────────
+
+class CloudflareConfigModal(_ArrowNavModal):
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=False),
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = f"""
+CloudflareConfigModal {{
+{_MODAL_ALIGN}
+}}
+#cf-zone-status {{
+    height: auto;
+    margin: 1 0 0 0;
+}}
+""" + _BOX_CSS
+
+    def __init__(self, section: dict) -> None:
+        super().__init__()
+        self._sec = section
+
+    def compose(self) -> ComposeResult:
+        s = self._sec
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]Cloudflare Configuration[/bold]", id="config-title", markup=True)
+
+                yield Label("API Token", classes="field-label")
+                with Horizontal(classes="secret-row"):
+                    yield Input(value=s.get("api_token", ""), placeholder="Cloudflare API token", id="f-cf-token", password=True)
+                    yield Button("Reveal", id="reveal-f-cf-token", classes="reveal-btn")
+                    yield Button("Copy", id="copy-f-cf-token", classes="copy-btn")
+
+                yield Static("", id="cf-zone-status", markup=True)
+
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_CLOUDFLARE_HELP, id="help-content", markup=True)
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        # If there's already a token, try to discover zones
+        token = self._sec.get("api_token", "")
+        if token:
+            self._discover_zones(token)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "f-cf-token":
+            # Debounce: only discover if token looks complete (>20 chars)
+            token = event.value.strip()
+            if len(token) > 20:
+                self._discover_zones(token)
+
+    @work(thread=True)
+    def _discover_zones(self, token: str) -> None:
+        """Try to list zones using the provided token."""
+        self.app.call_from_thread(
+            self.query_one("#cf-zone-status", Static).update,
+            "[dim]Verifying token and discovering zones...[/dim]"
+        )
+        try:
+            from infraforge.cloudflare_client import CloudflareClient, CloudflareError
+            client = CloudflareClient(api_token=token)
+
+            # Verify token first
+            try:
+                client.verify_token()
+            except CloudflareError as e:
+                self.app.call_from_thread(
+                    self.query_one("#cf-zone-status", Static).update,
+                    f"[red]Invalid token: {e}[/red]"
+                )
+                return
+
+            # List zones
+            zones = client.list_zones()
+            if not zones:
+                self.app.call_from_thread(
+                    self.query_one("#cf-zone-status", Static).update,
+                    "[yellow]Token valid but no zones found.[/yellow]\n"
+                    "[dim]Check token permissions include Zone → Zone → Read[/dim]"
+                )
+                return
+
+            lines = [f"[green]Token valid![/green]  Found {len(zones)} zone(s):\n"]
+            for z in zones:
+                access = z.get("access", "read")
+                access_color = "green" if access == "readwrite" else "yellow"
+                access_label = "read/write" if access == "readwrite" else "read-only"
+                status = z.get("status", "")
+                lines.append(
+                    f"  [{access_color}]●[/{access_color}] "
+                    f"[bold]{z['name']}[/bold]  "
+                    f"[{access_color}]{access_label}[/{access_color}]"
+                    f"  [dim]({status})[/dim]"
+                )
+
+            self.app.call_from_thread(
+                self.query_one("#cf-zone-status", Static).update,
+                "\n".join(lines)
+            )
+        except Exception as e:
+            from rich.markup import escape
+            self.app.call_from_thread(
+                self.query_one("#cf-zone-status", Static).update,
+                f"[red]Error: {escape(str(e))}[/red]"
+            )
+
+    def action_save(self) -> None:
+        token = self.query_one("#f-cf-token", Input).value.strip()
+        if not token:
+            self.notify("API token is required!", severity="error")
+            return
+        result = {
+            "api_token": token,
         }
         self.dismiss(result)
 

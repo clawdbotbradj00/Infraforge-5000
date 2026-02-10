@@ -24,6 +24,8 @@ from textual.widgets import (
     Select,
     Label,
     Tree,
+    TabbedContent,
+    TabPane,
 )
 from textual.widgets._tree import TreeNode
 from textual.containers import Container, Horizontal, Vertical
@@ -350,6 +352,8 @@ class DNSScreen(Screen):
         self._record_sort_reverse: bool = False
         self._record_filter_index: int = 0
 
+        self._cf_tab: object = None  # CloudflareTab instance if available
+
     # ------------------------------------------------------------------
     # Compose
     # ------------------------------------------------------------------
@@ -359,54 +363,87 @@ class DNSScreen(Screen):
         with Container(id="dns-container"):
             yield Static("DNS Management", classes="section-title")
 
-            # Zone selector bar
-            yield Horizontal(id="dns-zone-bar")
+            with TabbedContent(id="dns-tabs"):
+                with TabPane("Local DNS", id="tab-bind9"):
+                    # Zone selector bar
+                    yield Horizontal(id="dns-zone-bar")
 
-            # Zone info banner
-            yield Static(
-                "Loading DNS zone info...", id="dns-zone-info", markup=True,
-            )
-
-            # Controls bar
-            with Horizontal(id="dns-controls"):
-                yield Static("Filter: All", id="dns-filter-label")
-                yield Static("Sort: Name", id="dns-sort-label")
-                yield Static("", id="dns-count-label")
-
-            # Tree + detail panel
-            with Horizontal(id="dns-main-content"):
-                yield Tree("DNS", id="dns-tree")
-                with Container(id="dns-detail-panel"):
+                    # Zone info banner
                     yield Static(
-                        "[bold]Details[/bold]",
-                        id="dns-detail-title", markup=True,
-                    )
-                    yield Static(
-                        "[dim]Select an item to view details.[/dim]",
-                        id="dns-detail-content", markup=True,
+                        "Loading DNS zone info...", id="dns-zone-info", markup=True,
                     )
 
-            # Status bar
-            yield Static("", id="dns-status-bar", markup=True)
+                    # Controls bar
+                    with Horizontal(id="dns-controls"):
+                        yield Static("Filter: All", id="dns-filter-label")
+                        yield Static("Sort: Name", id="dns-sort-label")
+                        yield Static("", id="dns-count-label")
+
+                    # Tree + detail panel
+                    with Horizontal(id="dns-main-content"):
+                        yield Tree("DNS", id="dns-tree")
+                        with Container(id="dns-detail-panel"):
+                            yield Static(
+                                "[bold]Details[/bold]",
+                                id="dns-detail-title", markup=True,
+                            )
+                            yield Static(
+                                "[dim]Select an item to view details.[/dim]",
+                                id="dns-detail-content", markup=True,
+                            )
+
+                    # Status bar
+                    yield Static("", id="dns-status-bar", markup=True)
+
+                with TabPane("Cloudflare", id="tab-cloudflare"):
+                    pass  # Will be populated in on_mount
         yield Footer()
 
     def on_mount(self) -> None:
-        tree = self.query_one("#dns-tree", Tree)
-        tree.show_root = False
-        tree.guide_depth = 3
+        # Determine which tabs are available
+        dns_cfg = self.app.config.dns
+        has_bind9 = bool(dns_cfg.provider == "bind9" and dns_cfg.server)
+        has_cf = bool(getattr(self.app.config, 'cloudflare', None) and self.app.config.cloudflare.api_token)
 
-        self._init_zones()
-        self._render_zone_bar()
+        tabs = self.query_one("#dns-tabs", TabbedContent)
 
-        if self._zones:
-            self._build_zone_tree()
-            self._expand_active_zone()
-        else:
-            dns_cfg = self.app.config.dns
-            if dns_cfg.provider == "bind9" and dns_cfg.server:
-                self._auto_discover_zones()
+        # Hide tabs that aren't configured
+        if not has_bind9:
+            tabs.hide_tab("tab-bind9")
+        if not has_cf:
+            tabs.hide_tab("tab-cloudflare")
+
+        # If neither is configured, show the not-configured message in BIND9 tab
+        if not has_bind9 and not has_cf:
+            tabs.show_tab("tab-bind9")
+            self._show_not_configured()
+            return
+
+        # Set up BIND9 tab
+        if has_bind9:
+            tree = self.query_one("#dns-tree", Tree)
+            tree.show_root = False
+            tree.guide_depth = 3
+
+            self._init_zones()
+            self._render_zone_bar()
+
+            if self._zones:
+                self._build_zone_tree()
+                self._expand_active_zone()
             else:
-                self._show_not_configured()
+                self._auto_discover_zones()
+
+        # Set up Cloudflare tab
+        if has_cf:
+            from infraforge.screens.dns_cloudflare_tab import CloudflareTab
+            cf_pane = self.query_one("#tab-cloudflare", TabPane)
+            self._cf_tab = CloudflareTab()
+            cf_pane.mount(self._cf_tab)
+
+        # If only CF is configured, switch to that tab
+        if has_cf and not has_bind9:
+            tabs.active = "tab-cloudflare"
 
     # ------------------------------------------------------------------
     # Zone management helpers
@@ -520,6 +557,9 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        # Only handle events from the BIND9 tree, not the CF tree
+        if getattr(event.control, "id", None) != "dns-tree":
+            return
         node = event.node
         if node.data is None or not hasattr(node.data, 'kind'):
             return
@@ -628,6 +668,9 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        # Only handle events from the BIND9 tree, not the CF tree
+        if getattr(event.control, "id", None) != "dns-tree":
+            return
         node = event.node
         if node.data is None or not hasattr(node.data, 'kind'):
             self._clear_detail_panel()
@@ -750,18 +793,12 @@ class DNSScreen(Screen):
     def _show_not_configured(self) -> None:
         zone_info = self.query_one("#dns-zone-info", Static)
         zone_info.update(
-            "[yellow]BIND9 DNS is not configured.[/yellow]\n\n"
-            "[dim]To enable DNS management, add the following to your config:[/dim]\n\n"
-            "[dim]dns:[/dim]\n"
-            "[dim]  provider: bind9[/dim]\n"
-            "[dim]  server: 10.0.0.1[/dim]\n"
-            "[dim]  zones:[/dim]\n"
-            "[dim]    - lab.local[/dim]\n"
-            "[dim]  domain: lab.local[/dim]\n"
-            "[dim]  tsig_key_name: infraforge-key[/dim]\n"
-            "[dim]  tsig_key_secret: <base64-key>[/dim]\n"
-            "[dim]  tsig_algorithm: hmac-sha256[/dim]\n\n"
-            "[dim]Run 'infraforge setup' to configure interactively.[/dim]"
+            "[yellow]No DNS providers configured.[/yellow]\n\n"
+            "[dim]To enable DNS management, configure one or both providers:[/dim]\n\n"
+            "[bold]Local DNS (BIND9):[/bold]\n"
+            "[dim]  Run 'infraforge setup' → DNS[/dim]\n\n"
+            "[bold]Cloudflare:[/bold]\n"
+            "[dim]  Run 'infraforge setup' → Cloudflare[/dim]\n"
         )
 
     def _show_no_zones(self) -> None:
@@ -877,7 +914,18 @@ class DNSScreen(Screen):
     # Actions: Sort / Filter / Refresh
     # ------------------------------------------------------------------
 
+    def _is_cf_tab_active(self) -> bool:
+        """Check if the Cloudflare tab is currently active."""
+        try:
+            tabs = self.query_one("#dns-tabs", TabbedContent)
+            return tabs.active == "tab-cloudflare"
+        except Exception:
+            return False
+
     def action_cycle_sort(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.cycle_sort()
+            return
         fields = SORT_FIELDS
         if self._record_sort_index == len(fields) - 1 and not self._record_sort_reverse:
             self._record_sort_reverse = True
@@ -890,11 +938,17 @@ class DNSScreen(Screen):
         self._update_controls()
 
     def action_cycle_filter(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.cycle_filter()
+            return
         self._record_filter_index = (self._record_filter_index + 1) % len(FILTER_TYPES)
         self._re_sort_all_expanded_records()
         self._update_controls()
 
     def action_refresh(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.refresh_data()
+            return
         if self._loading:
             return
         self._set_status("[dim]Refreshing...[/dim]")
@@ -1076,6 +1130,9 @@ class DNSScreen(Screen):
     # ------------------------------------------------------------------
 
     def action_add_record(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.add_record()
+            return
         zone = self._get_context_zone() or self._active_zone
         if not zone:
             self._set_status("[yellow]No active zone. Add a zone first.[/yellow]")
@@ -1127,6 +1184,9 @@ class DNSScreen(Screen):
             )
 
     def action_edit_record(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.edit_record()
+            return
         record = self._get_context_record()
         if record is None:
             self._set_status("[yellow]Highlight a record to edit.[/yellow]")
@@ -1204,6 +1264,9 @@ class DNSScreen(Screen):
             )
 
     def action_delete_record(self) -> None:
+        if self._is_cf_tab_active() and self._cf_tab:
+            self._cf_tab.delete_record()
+            return
         record = self._get_context_record()
         if record is None:
             self._set_status("[yellow]Highlight a record to delete.[/yellow]")

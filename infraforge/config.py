@@ -95,6 +95,11 @@ class AIConfig:
 
 
 @dataclass
+class CloudflareConfig:
+    api_token: str = ""
+
+
+@dataclass
 class DefaultsConfig:
     cpu_cores: int = 2
     memory_mb: int = 2048
@@ -115,6 +120,7 @@ class Config:
     ansible: AnsibleConfig = field(default_factory=AnsibleConfig)
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     ai: AIConfig = field(default_factory=AIConfig)
+    cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
 
     CONFIG_PATHS = [
         Path.home() / ".config" / "infraforge" / "config.yaml",
@@ -226,6 +232,13 @@ class Config:
                 provider=str(ai.get("provider", "")),
                 api_key=str(ai.get("api_key", "")),
                 model=str(ai.get("model", "claude-sonnet-4-5-20250929")),
+            )
+
+        # Parse cloudflare section
+        if "cloudflare" in data:
+            cf = data["cloudflare"]
+            config.cloudflare = CloudflareConfig(
+                api_token=str(cf.get("api_token", "")),
             )
 
         # Parse defaults section

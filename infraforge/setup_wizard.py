@@ -54,6 +54,9 @@ def _detect_missing(existing: dict) -> list[str]:
     ai = existing.get("ai", {})
     if not ai.get("api_key"):
         missing.append("ai")
+    cf = existing.get("cloudflare", {})
+    if not cf.get("api_token"):
+        missing.append("cloudflare")
     return missing
 
 
@@ -204,6 +207,66 @@ def _configure_ai(console: Console, prev: dict | None = None) -> dict:
     }
 
 
+def _configure_cloudflare(console: Console, prev: dict | None = None) -> dict:
+    """Configure Cloudflare DNS settings."""
+    prev = prev or {}
+    console.print("\n[bold cyan]─── Cloudflare DNS ───[/bold cyan]\n")
+    console.print("[dim]A Cloudflare API token enables managing DNS records for your[/dim]")
+    console.print("[dim]Cloudflare zones directly from InfraForge alongside local DNS.[/dim]\n")
+
+    if not Confirm.ask("Configure Cloudflare DNS?", default=bool(prev.get("api_token"))):
+        return prev or {"api_token": ""}
+
+    prev_token = prev.get("api_token", "")
+    if prev_token:
+        masked = prev_token[:8] + "..." + prev_token[-4:] if len(prev_token) > 12 else "****"
+        console.print(f"  [dim]Current token: {masked}[/dim]")
+        if Confirm.ask("  Keep existing API token?", default=True):
+            api_token = prev_token
+        else:
+            console.print()
+            console.print("  [bold]To get an API token:[/bold]")
+            console.print("  1. Go to [bold cyan]dash.cloudflare.com/profile/api-tokens[/bold cyan]")
+            console.print("  2. Create Token → [bold]Edit zone DNS[/bold] template")
+            console.print("  3. Select the zones to include")
+            console.print()
+            api_token = Prompt.ask("  Cloudflare API Token")
+    else:
+        console.print("  [bold]To get an API token:[/bold]")
+        console.print("  1. Go to [bold cyan]dash.cloudflare.com/profile/api-tokens[/bold cyan]")
+        console.print("  2. Create Token → [bold]Edit zone DNS[/bold] template")
+        console.print("  3. Select the zones to include")
+        console.print()
+        api_token = Prompt.ask("  Cloudflare API Token")
+
+    if not api_token:
+        console.print("  [yellow]No token provided — Cloudflare DNS will be disabled.[/yellow]")
+        return {"api_token": ""}
+
+    # Verify and discover zones
+    console.print("\n  [dim]Verifying token and discovering zones...[/dim]")
+    try:
+        from infraforge.cloudflare_client import CloudflareClient, CloudflareError
+        client = CloudflareClient(api_token=api_token)
+        client.verify_token()
+        zones = client.list_zones()
+        if zones:
+            console.print(f"  [green]✓[/green] Token valid — {len(zones)} zone(s) found:")
+            for z in zones:
+                access = z.get("access", "read")
+                label = "read/write" if access == "readwrite" else "read-only"
+                color = "green" if access == "readwrite" else "yellow"
+                console.print(f"    [{color}]●[/{color}] {z['name']}  [{color}]{label}[/{color}]")
+        else:
+            console.print("  [green]✓[/green] Token valid but no zones found")
+            console.print("  [dim]Check token permissions include Zone → Zone → Read[/dim]")
+    except Exception as e:
+        console.print(f"  [yellow]Warning: Could not verify token: {e}[/yellow]")
+        console.print("  [dim]Token saved — you can test it later in InfraForge setup[/dim]")
+
+    return {"api_token": api_token}
+
+
 def _check_and_install_sshpass(console: Console) -> None:
     """Check if sshpass is installed and offer to install it if missing.
 
@@ -271,6 +334,8 @@ def run_setup_wizard():
             configured.append(f"IPAM ([green]{existing['ipam'].get('url', '?')}[/green])")
         if "ai" not in missing:
             configured.append(f"AI ([green]{existing['ai'].get('model', '?')}[/green])")
+        if "cloudflare" not in missing:
+            configured.append(f"Cloudflare ([green]token set[/green])")
 
         if configured:
             console.print("[bold]Already configured:[/bold]")
@@ -321,6 +386,14 @@ def run_setup_wizard():
     else:
         console.print("[dim]AI: already configured — skipping.[/dim]")
         config["ai"] = ex_ai
+
+    # ── Cloudflare DNS ────────────────────────────────────────────────
+    ex_cf = existing.get("cloudflare", {})
+    if not (missing_only and ex_cf.get("api_token")):
+        config["cloudflare"] = _configure_cloudflare(console, ex_cf)
+    else:
+        console.print("[dim]Cloudflare: already configured — skipping.[/dim]")
+        config["cloudflare"] = ex_cf
 
     # ── Defaults ──────────────────────────────────────────────────────
     ex_tf = existing.get("terraform", {})
