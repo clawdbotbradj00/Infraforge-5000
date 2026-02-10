@@ -409,4 +409,4 @@ def run_version_browser() -> None:
             self.theme = "midnight"
             self.push_screen(VersionListScreen())
 
-    _VersionBrowserApp().run()
+    _VersionBrowserApp().run(mouse=False)
