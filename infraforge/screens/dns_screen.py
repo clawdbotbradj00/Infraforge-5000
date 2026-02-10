@@ -318,7 +318,7 @@ class DNSScreen(Screen):
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("r", "refresh", "Refresh", show=True),
-        Binding("a", "add_record", "Create", show=True),
+        Binding("c", "add_record", "Create", show=True),
         Binding("e", "edit_record", "Edit", show=True),
         Binding("d", "delete_record", "Delete", show=True),
         Binding("z", "add_zone", "+Zone", show=True),
