@@ -20,16 +20,20 @@ class _ArrowNavModal(ModalScreen):
     and auto-focuses the first input on mount."""
 
     def on_mount(self) -> None:
-        fields = list(self.query(_FOCUSABLE[0].__name__))
-        fields += list(self.query(_FOCUSABLE[1].__name__))
-        fields += list(self.query(_FOCUSABLE[2].__name__))
+        # Disable focus on scroll containers so they don't steal arrow keys
+        for vs in self.query(VerticalScroll):
+            vs.can_focus = False
+        fields = self._get_focusable_fields()
         if fields:
             fields[0].focus()
 
     def _get_focusable_fields(self) -> list:
-        """Return all focusable fields in DOM order."""
+        """Return visible, focusable fields in DOM order."""
         all_widgets = list(self.query("*"))
-        return [w for w in all_widgets if isinstance(w, _FOCUSABLE)]
+        return [
+            w for w in all_widgets
+            if isinstance(w, _FOCUSABLE) and w.visible
+        ]
 
     def on_key(self, event) -> None:
         if event.key not in ("down", "up"):
@@ -137,6 +141,15 @@ _BOX_CSS = """
     width: 10;
     min-width: 10;
     margin: 0 0 0 0;
+}
+Input:focus {
+    border: tall $accent;
+}
+Select:focus {
+    border: tall $accent;
+}
+Switch:focus {
+    border: tall $accent;
 }
 """
 
