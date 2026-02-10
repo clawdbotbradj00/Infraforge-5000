@@ -1245,6 +1245,14 @@ class TemplateImportScreen(Screen):
             log("[bold]Extracting backup from package...[/bold]")
             temp_dir = tempfile.mkdtemp(prefix="infraforge-import-")
             local_vma = extract_backup(package_path, Path(temp_dir))
+
+            # Rename to vzdump naming convention so qmrestore can parse it
+            ts = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+            vzdump_name = f"vzdump-qemu-{vmid}-{ts}.vma.zst"
+            renamed_vma = local_vma.parent / vzdump_name
+            local_vma.rename(renamed_vma)
+            local_vma = renamed_vma
+
             vma_filename = local_vma.name
             log(f"[green]  Extracted: {vma_filename}[/green]")
             log(f"[dim]  Size: {_human_size(local_vma.stat().st_size)}[/dim]\n")
