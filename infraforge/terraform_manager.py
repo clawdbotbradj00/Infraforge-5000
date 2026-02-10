@@ -467,6 +467,9 @@ class TerraformManager:
             f'  started      = {str(spec.start_after_create).lower()}',
         ]
 
+        if spec.vmid:
+            lines.append(f'  vm_id        = {spec.vmid}')
+
         if spec.description:
             escaped = spec.description.replace('\\', '\\\\').replace('"', '\\"')
             lines.append(f'  description = "{escaped}"')
@@ -567,6 +570,9 @@ class TerraformManager:
             f'  node_name = "{spec.node}"',
             f'  started   = {str(spec.start_after_create).lower()}',
         ]
+
+        if spec.vmid:
+            lines.append(f'  vm_id     = {spec.vmid}')
 
         if spec.description:
             escaped = spec.description.replace('\\', '\\\\').replace('"', '\\"')

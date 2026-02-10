@@ -431,6 +431,15 @@ class NewVMScreen(Screen):
                 self._vm_count = max(1, min(val, 20))
             except ValueError:
                 pass
+        elif item.key == "vmid":
+            val = item.value.strip()
+            if val:
+                try:
+                    self.spec.vmid = int(val)
+                except ValueError:
+                    self.spec.vmid = None
+            else:
+                self.spec.vmid = None
         elif item.key == "hostname":
             hostname = item.value.strip().lower()
             self.spec.name = hostname
@@ -889,6 +898,15 @@ class NewVMScreen(Screen):
                 kind="input", label="Hostname", key="hostname",
                 value=self.spec.name,
                 meta={"placeholder": "e.g. ubuntu-web-01"},
+            ))
+
+        # VMID (optional — leave blank for auto-assign)
+        if self._vm_count == 1:
+            items.append(WizItem(kind="header", label="VMID"))
+            items.append(WizItem(
+                kind="input", label="VMID", key="vmid",
+                value=str(self.spec.vmid) if self.spec.vmid else "",
+                meta={"placeholder": "auto (leave blank for next available)"},
             ))
 
         if self.spec.dns_name:
