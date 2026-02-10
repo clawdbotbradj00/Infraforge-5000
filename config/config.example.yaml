@@ -1,0 +1,60 @@
+# InfraForge Configuration
+# Copy this to ~/.config/infraforge/config.yaml and fill in your values
+
+proxmox:
+  host: "192.0.2.10"
+  port: 8006
+  user: "root@pam"
+  # Authentication: use either token OR password (token recommended)
+  auth_method: "token"  # "token" or "password"
+  token_name: "infraforge"
+  token_value: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  password: ""
+  verify_ssl: true
+  # For clusters, specify additional nodes (optional)
+  # nodes:
+  #   - "node1"
+  #   - "node2"
+
+dns:
+  provider: "bind9"
+  server: "198.51.100.1"
+  port: 53
+  zones:
+    - "example.com"
+    - "dev.example.com"
+  domain: "example.com"
+  tsig_key_name: "infraforge-key"
+  tsig_key_secret: ""
+  tsig_algorithm: "hmac-sha256"
+
+ipam:
+  # phpIPAM integration for IP address management
+  provider: "phpipam"
+  url: "https://ipam.example.com"
+  app_id: "infraforge"
+  # Authentication: use either token OR username/password
+  token: ""
+  username: ""
+  password: ""
+  verify_ssl: true
+
+terraform:
+  workspace: "./terraform"
+  state_backend: "local"  # "local", "s3", "consul"
+
+ansible:
+  playbook_dir: "./ansible/playbooks"
+  # Verify SSH host keys when running playbooks (default: true).
+  # Set to false only if targeting newly provisioned VMs with unknown host keys.
+  host_key_checking: true
+
+defaults:
+  # Default values for new VM creation
+  cpu_cores: 2
+  memory_mb: 2048
+  disk_gb: 20
+  storage: "local-lvm"
+  network_bridge: "vmbr0"
+  os_type: "l26"  # Linux 2.6+ kernel
+  start_on_create: true
