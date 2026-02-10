@@ -193,10 +193,19 @@ class TemplateImportScreen(Screen):
         self._load_initial_data()
         self._render_phase()
 
+    def _get_exports_override(self) -> str:
+        """Get the configured exports directory override."""
+        try:
+            return self.app.config.defaults.exports_dir
+        except Exception:
+            return ""
+
     def _scan_packages(self):
         """Scan the exports directory for .ifpkg files."""
         try:
-            self._packages = scan_packages()
+            self._packages = scan_packages(
+                get_exports_dir(self._get_exports_override()),
+            )
         except Exception:
             self._packages = []
 
@@ -616,7 +625,7 @@ class TemplateImportScreen(Screen):
 
     def _build_select_items(self):
         items = self._items
-        exports_dir = get_exports_dir()
+        exports_dir = get_exports_dir(self._get_exports_override())
 
         items.append(WizItem(
             kind="info",
@@ -1015,7 +1024,7 @@ class TemplateImportScreen(Screen):
                 self.notify(msg, severity=severity)
             self.app.call_from_thread(_do)
 
-        exports_dir = get_exports_dir()
+        exports_dir = get_exports_dir(self._get_exports_override())
 
         # Derive filename from URL
         url_path = url.split("?")[0].split("#")[0]
@@ -1074,7 +1083,9 @@ class TemplateImportScreen(Screen):
                 return
 
             # Valid — re-scan and re-render with new package selected
-            self._packages = scan_packages()
+            self._packages = scan_packages(
+                get_exports_dir(self._get_exports_override()),
+            )
 
             # Auto-select the newly downloaded package
             for pkg in self._packages:

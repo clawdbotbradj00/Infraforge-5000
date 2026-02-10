@@ -83,6 +83,7 @@ class DefaultsConfig:
     network_bridge: str = "vmbr0"
     os_type: str = "l26"
     start_on_create: bool = True
+    exports_dir: str = ""  # Default: ~/infraforge/vm-templates/
 
 
 @dataclass
@@ -218,6 +219,7 @@ class Config:
                 network_bridge=str(defs.get("network_bridge", "vmbr0")),
                 os_type=str(defs.get("os_type", "l26")),
                 start_on_create=bool(defs.get("start_on_create", True)),
+                exports_dir=str(defs.get("exports_dir", "")),
             )
 
         # Validate required fields

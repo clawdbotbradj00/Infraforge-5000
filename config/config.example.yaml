@@ -58,3 +58,5 @@ defaults:
   network_bridge: "vmbr0"
   os_type: "l26"  # Linux 2.6+ kernel
   start_on_create: true
+  # Directory for staging template packages (.ifpkg) during export/import
+  # exports_dir: "~/infraforge/vm-templates"

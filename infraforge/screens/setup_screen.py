@@ -110,6 +110,12 @@ def _check_component(cfg: dict, name: str) -> tuple[bool, str]:
             return True, f"{model}  (key: {masked})"
         return False, "Not configured"
 
+    elif name == "defaults":
+        sec = cfg.get("defaults", {})
+        from pathlib import Path
+        exports = sec.get("exports_dir", "") or str(Path.home() / "infraforge" / "vm-templates")
+        return True, f"Exports: {exports}"
+
     return False, "Unknown"
 
 
@@ -122,6 +128,7 @@ COMPONENTS = [
     ("terraform", "Terraform", "Infrastructure provisioning"),
     ("ansible", "Ansible", "Configuration management"),
     ("ai", "AI", "AI assistant integration"),
+    ("defaults", "Defaults", "VM defaults & export directory"),
 ]
 
 

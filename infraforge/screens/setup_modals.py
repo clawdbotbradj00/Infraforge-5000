@@ -454,6 +454,7 @@ def get_config_modal(comp_id: str, full_cfg: dict) -> ModalScreen | None:
         "terraform": TerraformConfigModal,
         "ansible": AnsibleConfigModal,
         "ai": AIConfigModal,
+        "defaults": DefaultsConfigModal,
     }
     cls = modals.get(comp_id)
     if cls is None:
@@ -1251,6 +1252,91 @@ AIConfigModal {{
             "provider": "anthropic",
             "api_key": key,
             "model": self.query_one("#f-model", Select).value,
+        }
+        self.dismiss(result)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ── Defaults Config Modal ────────────────────────────────────────
+
+_DEFAULTS_HELP = (
+    "[bold]Defaults Configuration[/bold]\n\n"
+    "[bold cyan]Exports Directory[/bold cyan]\n"
+    "  Directory for exported/imported VM template\n"
+    "  packages (.ifpkg files).\n\n"
+    "  Default: [green]~/infraforge/vm-templates/[/green]\n\n"
+    "[bold cyan]VM Defaults[/bold cyan]\n"
+    "  Default values used when creating new VMs.\n"
+    "  These can be overridden per-VM in the wizard."
+)
+
+
+class DefaultsConfigModal(_ArrowNavModal):
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=False),
+        Binding("escape", "cancel", "Cancel", show=True),
+    ]
+
+    DEFAULT_CSS = f"""
+DefaultsConfigModal {{
+{_MODAL_ALIGN}
+}}
+""" + _BOX_CSS
+
+    def __init__(self, section: dict) -> None:
+        super().__init__()
+        self._sec = section
+
+    def compose(self) -> ComposeResult:
+        s = self._sec
+        from pathlib import Path
+        default_dir = str(Path.home() / "infraforge" / "vm-templates")
+        with Horizontal(id="config-outer"):
+            with VerticalScroll(id="config-form"):
+                yield Static("[bold]Defaults Configuration[/bold]", id="config-title", markup=True)
+
+                yield Label("Exports Directory", classes="field-label")
+                yield Input(
+                    value=s.get("exports_dir", ""),
+                    placeholder=default_dir,
+                    id="f-exports-dir",
+                )
+
+                yield Label("CPU Cores", classes="field-label")
+                yield Input(value=str(s.get("cpu_cores", 2)), id="f-cpu-cores")
+
+                yield Label("Memory (MB)", classes="field-label")
+                yield Input(value=str(s.get("memory_mb", 2048)), id="f-memory-mb")
+
+                yield Label("Disk (GB)", classes="field-label")
+                yield Input(value=str(s.get("disk_gb", 20)), id="f-disk-gb")
+
+                yield Label("Storage", classes="field-label")
+                yield Input(value=s.get("storage", "local-lvm"), placeholder="local-lvm", id="f-storage")
+
+                yield Label("Network Bridge", classes="field-label")
+                yield Input(value=s.get("network_bridge", "vmbr0"), placeholder="vmbr0", id="f-bridge")
+
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", id="save-btn", variant="success")
+                    yield Button("Cancel", id="cancel-btn")
+
+            with VerticalScroll(id="config-help"):
+                yield Static(_DEFAULTS_HELP, id="help-content", markup=True)
+
+    def action_save(self) -> None:
+        result = {
+            "exports_dir": self.query_one("#f-exports-dir", Input).value.strip(),
+            "cpu_cores": int(self.query_one("#f-cpu-cores", Input).value.strip() or 2),
+            "memory_mb": int(self.query_one("#f-memory-mb", Input).value.strip() or 2048),
+            "disk_gb": int(self.query_one("#f-disk-gb", Input).value.strip() or 20),
+            "storage": self.query_one("#f-storage", Input).value.strip() or "local-lvm",
+            "network_bridge": self.query_one("#f-bridge", Input).value.strip() or "vmbr0",
+            "os_type": self._sec.get("os_type", "l26"),
+            "start_on_create": self._sec.get("start_on_create", True),
         }
         self.dismiss(result)
 

@@ -1077,7 +1077,9 @@ class TemplateExportScreen(Screen):
 
             # Step 5: Create .ifpkg package
             log("[bold]Creating .ifpkg package...[/bold]")
-            exports_dir = template_package.get_exports_dir()
+            exports_dir = template_package.get_exports_dir(
+                self.app.config.defaults.exports_dir,
+            )
             output_path = exports_dir / self._output_filename
             log(f"[dim]  Output: {output_path}[/dim]")
 

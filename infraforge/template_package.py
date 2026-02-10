@@ -16,18 +16,23 @@ from typing import Optional
 
 from infraforge import __version__
 
-# Default exports directory (XDG-compliant)
-_EXPORTS_DIR = Path.home() / ".local" / "share" / "infraforge" / "exports"
+# Default exports directory
+_DEFAULT_EXPORTS_DIR = Path.home() / "infraforge" / "vm-templates"
 
 MANIFEST_FORMAT = "ifpkg-v1"
 MANIFEST_FILENAME = "manifest.json"
 BACKUP_FILENAME = "backup.vma.zst"
 
 
-def get_exports_dir() -> Path:
-    """Return the exports directory, creating it if needed."""
-    _EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    return _EXPORTS_DIR
+def get_exports_dir(override: str = "") -> Path:
+    """Return the exports directory, creating it if needed.
+
+    Args:
+        override: Custom directory path from config. If empty, uses default.
+    """
+    d = Path(override) if override else _DEFAULT_EXPORTS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def create_package(
