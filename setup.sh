@@ -22,7 +22,9 @@ if [[ ! -f "$_self_dir/pyproject.toml" ]]; then
 
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         echo -e "\033[0;34m[INFO]\033[0m Updating existing install at $INSTALL_DIR..."
-        git -C "$INSTALL_DIR" fetch --tags --force
+        # Ensure origin points to the correct repo
+        git -C "$INSTALL_DIR" remote set-url origin "$INFRAFORGE_REPO" 2>/dev/null || true
+        git -C "$INSTALL_DIR" fetch origin --tags --force
     else
         echo -e "\033[0;34m[INFO]\033[0m Cloning InfraForge to $INSTALL_DIR..."
         git clone "$INFRAFORGE_REPO" "$INSTALL_DIR"
