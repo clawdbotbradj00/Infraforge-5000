@@ -391,7 +391,9 @@ class CloudflareTab(Container):
             f"[bold]Provider:[/bold]  [cyan]Cloudflare[/cyan]"
             f"    [bold]Zones:[/bold]  [cyan]{len(self._cf_zones)}[/cyan] "
             f"([green]{rw} RW[/green], [yellow]{ro} RO[/yellow])"
-            f"    [bold]Total Records:[/bold]  [cyan]{total_records}[/cyan]",
+            f"    [bold]Total Records:[/bold]  [cyan]{total_records}[/cyan]"
+            f"        [orange1]\u26a1[/orange1] [dim]= Proxied (CF CDN)[/dim]"
+            f"    [dim]\U0001f513 = Read/Write    \U0001f512 = Read-Only[/dim]",
         ]
         zone_info.update("\n".join(lines))
 
@@ -485,7 +487,7 @@ class CloudflareTab(Container):
             )
 
         self.app.push_screen(
-            RecordInputScreen(zone=zone_data.zone_name, title="Add Cloudflare DNS Record"),
+            RecordInputScreen(zone=zone_data.zone_name, title="Create Cloudflare DNS Record"),
             callback=_on_result,
         )
 
@@ -619,9 +621,13 @@ def _make_cf_record_label(record, proxied: bool = False) -> Text:
     """Build a Rich Text label for a Cloudflare DNS record."""
     from infraforge.screens.dns_screen import RTYPE_COLORS
     color = RTYPE_COLORS.get(record.rtype, "white")
+    max_name = 28
+    max_value = 30
     type_col = f"[{record.rtype}]".ljust(8)
-    name_col = record.name.ljust(28)
-    value_col = record.value.ljust(32)
+    name_str = record.name if len(record.name) <= max_name else record.name[:max_name - 3] + "..."
+    name_col = name_str.ljust(max_name)
+    val_str = record.value if len(record.value) <= max_value else record.value[:max_value - 3] + "..."
+    value_col = val_str.ljust(max_value)
     proxy_col = "\u26a1" if proxied else "  "
     ttl_col = "Auto" if record.ttl == 1 else f"TTL={record.ttl}"
 

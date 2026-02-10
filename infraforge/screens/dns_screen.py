@@ -176,7 +176,7 @@ class RecordInputScreen(ModalScreen[Optional[dict]]):
         rtype: str = "A",
         value: str = "",
         ttl: str = "3600",
-        title: str = "Add DNS Record",
+        title: str = "Create DNS Record",
     ) -> None:
         super().__init__()
         self._zone = zone
@@ -318,7 +318,7 @@ class DNSScreen(Screen):
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("f", "cycle_filter", "Filter", show=True),
         Binding("r", "refresh", "Refresh", show=True),
-        Binding("a", "add_record", "Add", show=True),
+        Binding("a", "add_record", "Create", show=True),
         Binding("e", "edit_record", "Edit", show=True),
         Binding("d", "delete_record", "Delete", show=True),
         Binding("z", "add_zone", "+Zone", show=True),
@@ -1147,7 +1147,7 @@ class DNSScreen(Screen):
             )
 
         self.app.push_screen(
-            RecordInputScreen(zone=zone, title="Add DNS Record"),
+            RecordInputScreen(zone=zone, title="Create DNS Record"),
             callback=_on_record_result,
         )
 
@@ -1397,9 +1397,13 @@ def _make_record_label(record) -> Text:
     """Build a Rich Text label for a DNS record leaf node."""
     color = RTYPE_COLORS.get(record.rtype, "white")
     # Fixed-width columns so entries align vertically
+    max_name = 28
+    max_value = 30
     type_col = f"[{record.rtype}]".ljust(8)
-    name_col = record.name.ljust(28)
-    value_col = record.value.ljust(32)
+    name_str = record.name if len(record.name) <= max_name else record.name[:max_name - 3] + "..."
+    name_col = name_str.ljust(max_name)
+    val_str = record.value if len(record.value) <= max_value else record.value[:max_value - 3] + "..."
+    value_col = val_str.ljust(max_value)
     ttl_col = f"TTL={record.ttl}"
 
     label = Text()
