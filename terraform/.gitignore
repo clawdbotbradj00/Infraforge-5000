@@ -1,0 +1,7 @@
+# Terraform state and provider cache
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+deployments/

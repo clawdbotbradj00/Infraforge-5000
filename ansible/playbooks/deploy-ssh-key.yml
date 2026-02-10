@@ -1,0 +1,92 @@
+---
+- name: Deploy SSH public key to all users on targets
+  hosts: targets
+  become: true
+
+  vars:
+    # ssh_public_key is passed via --extra-vars from InfraForge
+    ssh_public_key: ""
+
+  tasks:
+    - name: Validate that ssh_public_key was provided
+      fail:
+        msg: "ssh_public_key must be provided via --extra-vars"
+      when: ssh_public_key | length == 0
+
+    # ── Ensure acl is installed (required for become_user) ────────────
+    - name: Install acl package (Debian/Ubuntu)
+      apt:
+        name: acl
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install acl package (RHEL/CentOS)
+      yum:
+        name: acl
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # ── Gather target users ─────────────────────────────────────────────
+    - name: Get all users with a real login shell and home directory
+      shell: |
+        awk -F: '($3 == 0 || $3 >= 1000) && $7 !~ /nologin|false/ { print $1":"$6 }' /etc/passwd
+      register: user_list_raw
+      changed_when: false
+
+    - name: Filter to users with existing home directories
+      set_fact:
+        user_list: "{{ user_list_raw.stdout_lines | select('search', ':(/root|/home/)') | list }}"
+
+    # ── Deploy the SSH key ──────────────────────────────────────────────
+    - name: Ensure .ssh directory exists for each user
+      file:
+        path: "{{ item.split(':')[1] }}/.ssh"
+        state: directory
+        owner: "{{ item.split(':')[0] }}"
+        mode: "0700"
+      loop: "{{ user_list }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+
+    - name: Add SSH public key to authorized_keys for each user
+      authorized_key:
+        user: "{{ item.split(':')[0] }}"
+        key: "{{ ssh_public_key }}"
+        state: present
+      loop: "{{ user_list }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+
+    # ── Ensure sshd allows pubkey auth ──────────────────────────────────
+    - name: Ensure PubkeyAuthentication is enabled in sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*PubkeyAuthentication\s+'
+        line: 'PubkeyAuthentication yes'
+        backup: yes
+      register: sshd_config
+
+    - name: Restart sshd if config changed
+      service:
+        name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+        state: restarted
+      when: sshd_config.changed
+
+    # ── Verification ────────────────────────────────────────────────────
+    - name: Verify key is in authorized_keys for each user
+      shell: |
+        grep -c "{{ ssh_public_key.split()[:2] | join(' ') }}" "{{ item.split(':')[1] }}/.ssh/authorized_keys" 2>/dev/null || echo 0
+      register: verify
+      loop: "{{ user_list }}"
+      loop_control:
+        label: "{{ item.split(':')[0] }}"
+      changed_when: false
+
+    - name: Show deployment status
+      debug:
+        msg: "{{ item.item.split(':')[0] }}: {{ 'Key installed' if item.stdout | int > 0 else 'MISSING' }}"
+      loop: "{{ verify.results }}"
+      loop_control:
+        label: "{{ item.item.split(':')[0] }}"
