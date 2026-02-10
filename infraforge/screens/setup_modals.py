@@ -129,15 +129,17 @@ _BOX_CSS = """
     border-left: tall $accent;
     padding: 1 2;
     background: $primary-background;
+    content-align: left top;
 }
 #config-title {
     text-style: bold;
     color: $accent;
     margin: 0 0 1 0;
 }
-#help-title {
-    text-style: bold;
-    color: $accent;
+#help-content {
+    width: 100%;
+    text-align: left;
+    color: $text;
     padding: 0 0 1 0;
 }
 .field-label {
@@ -196,206 +198,200 @@ _MODAL_ALIGN = """
 # ── Help content for each module ──────────────────────────────────
 
 _PROXMOX_HELP = (
-    "[bold cyan]Proxmox Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n\n"
-    "[bold cyan]Creating an API Token[/bold cyan]\n\n"
-    "[green]●[/green] Log in to the Proxmox web UI\n\n"
-    "[green]●[/green] Navigate to:\n"
-    "  [bold white on grey27] Datacenter → Permissions → API Tokens [/bold white on grey27]\n\n"
-    "[green]●[/green] Select user (e.g. [bold]root@pam[/bold]),\n"
-    "  click [bold]Add[/bold]\n\n"
-    "[green]●[/green] Enter Token ID:\n"
-    "  [bold white on grey27] infraforge                          [/bold white on grey27]\n\n"
-    "[green]●[/green] [bold]Uncheck \"Privilege Separation\"[/bold]\n"
-    "  [dim]Grants the token full access matching\n"
-    "  the user's permissions[/dim]\n\n"
-    "[green]●[/green] [yellow]Copy the token value immediately![/yellow]\n"
-    "  [dim]It is shown only once and cannot be\n"
-    "  retrieved later[/dim]\n\n"
-    "[bold cyan]User Format[/bold cyan]\n\n"
-    "Expected format: [bold]user@realm[/bold]\n\n"
-    "  [bold white on grey27] root@pam                            [/bold white on grey27]\n"
-    "  [bold white on grey27] admin@pve                           [/bold white on grey27]\n\n"
-    "[bold cyan]Token vs Password[/bold cyan]\n\n"
-    "[yellow]API tokens are recommended:[/yellow]\n\n"
-    "[green]●[/green] Don't expire with password changes\n"
-    "[green]●[/green] Can be revoked independently\n"
-    "[green]●[/green] No 2FA/TOTP prompt complications\n"
-    "[green]●[/green] Better security through limited scope\n\n"
-    "[bold cyan]SSL Verification[/bold cyan]\n\n"
-    "[yellow]Leave disabled (default)[/yellow] if Proxmox\n"
-    "uses a self-signed certificate.\n\n"
-    "[dim]Most homelab Proxmox installs use\n"
-    "self-signed certs — only enable with\n"
-    "a valid CA-signed cert.[/dim]"
+    "[bold cyan]PROXMOX SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]CREATE API TOKEN[/bold cyan]\n\n"
+    "  [bold yellow]1[/bold yellow]  Open the Proxmox web UI\n\n"
+    "  [bold yellow]2[/bold yellow]  Navigate to:\n"
+    "     [reverse] Datacenter → Permissions → API Tokens [/reverse]\n\n"
+    "  [bold yellow]3[/bold yellow]  Select your user, click [bold]Add[/bold]\n\n"
+    "  [bold yellow]4[/bold yellow]  Token ID:  [bold]infraforge[/bold]\n\n"
+    "  [bold yellow]5[/bold yellow]  [bold]Uncheck[/bold] \"Privilege Separation\"\n"
+    "     [dim]Grants the token full user permissions[/dim]\n\n"
+    "  [bold yellow]6[/bold yellow]  Copy the token value immediately\n"
+    "     [dim]Shown only once — cannot be retrieved later[/dim]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]USER FORMAT[/bold cyan]\n\n"
+    "  [reverse] root@pam  [/reverse]  Local root account\n"
+    "  [reverse] admin@pve [/reverse]  PVE-managed user\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]TOKEN VS PASSWORD[/bold cyan]\n\n"
+    "  [yellow]Tokens are recommended because they:[/yellow]\n\n"
+    "  [dim]•[/dim] Don't expire with password changes\n"
+    "  [dim]•[/dim] Can be revoked independently\n"
+    "  [dim]•[/dim] Skip 2FA/TOTP prompts\n"
+    "  [dim]•[/dim] Provide better security through scoping\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]SSL VERIFICATION[/bold cyan]\n\n"
+    "  [dim]•[/dim] [bold]Disabled[/bold] — for self-signed certs [dim](most homelabs)[/dim]\n"
+    "  [dim]•[/dim] [bold]Enabled[/bold]  — only with CA-signed certificates"
 )
 
 _DNS_HELP = (
-    "[bold cyan]BIND9 Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n"
-    "[dim]Run these on your BIND9 DNS server.[/dim]\n\n"
-    "[bold green]1.[/] Generate a TSIG key\n\n"
-    "[bold white on grey27] tsig-keygen infraforge-key \\         [/bold white on grey27]\n"
-    "[bold white on grey27]   > /etc/bind/infraforge-key.conf   [/bold white on grey27]\n"
-    "[bold white on grey27] chown root:bind                     [/bold white on grey27]\n"
-    "[bold white on grey27]   /etc/bind/infraforge-key.conf     [/bold white on grey27]\n"
-    "[bold white on grey27] chmod 640                           [/bold white on grey27]\n"
-    "[bold white on grey27]   /etc/bind/infraforge-key.conf     [/bold white on grey27]\n\n"
-    "[bold green]2.[/] Read the generated key file\n\n"
-    "[bold white on grey27] cat /etc/bind/infraforge-key.conf   [/bold white on grey27]\n\n"
-    "[dim]Expected output:[/dim]\n"
-    '[dim]key "infraforge-key" \\{[/dim]\n'
-    "[dim]    algorithm hmac-sha256;[/dim]\n"
-    '[dim]    secret "R3HI8P6BKw9ZwX...==";[/dim]\n'
-    "[dim]\\};[/dim]\n\n"
-    "[yellow]Copy the secret value for the field\n"
-    "on the left.[/yellow]\n\n"
-    "[bold green]3.[/] List existing keys [dim](optional)[/dim]\n\n"
-    "[bold white on grey27] rndc tsig-list                      [/bold white on grey27]\n\n"
-    "[bold green]4.[/] Enable dynamic updates\n\n"
-    "[dim]Add to[/dim] [bold]named.conf.local[/bold][dim]:[/dim]\n\n"
-    '[bold white on grey27] include "/etc/bind/                 [/bold white on grey27]\n'
-    '[bold white on grey27]   infraforge-key.conf";             [/bold white on grey27]\n\n'
-    "[dim]In your zone block, add:[/dim]\n\n"
-    '[bold white on grey27] allow-update \\{                     [/bold white on grey27]\n'
-    '[bold white on grey27]   key "infraforge-key"; \\};         [/bold white on grey27]\n\n'
-    "[bold green]5.[/] Validate and reload\n\n"
-    "[bold white on grey27] named-checkconf && rndc reload      [/bold white on grey27]\n\n"
-    "[bold green]6.[/] List configured zones\n\n"
-    "[bold white on grey27] grep -oP 'zone \"\\K\\[^\"]+'          [/bold white on grey27]\n"
-    "[bold white on grey27]   /etc/bind/named.conf.local        [/bold white on grey27]\n\n"
-    "[dim]InfraForge auto-discovers zones on\n"
-    "first connect.[/dim]"
+    "[bold cyan]BIND9 DNS SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n"
+    "[dim]Run these commands on your DNS server.[/dim]\n\n"
+    "[bold yellow]1[/bold yellow]  [bold]Generate TSIG key[/bold]\n\n"
+    "   [reverse] $ tsig-keygen infraforge-key \\           [/reverse]\n"
+    "   [reverse]     > /etc/bind/infraforge-key.conf       [/reverse]\n"
+    "   [reverse] $ chown root:bind \\                       [/reverse]\n"
+    "   [reverse]     /etc/bind/infraforge-key.conf          [/reverse]\n"
+    "   [reverse] $ chmod 640 /etc/bind/infraforge-key.conf  [/reverse]\n\n"
+    "[bold yellow]2[/bold yellow]  [bold]Copy the secret from the key file[/bold]\n\n"
+    "   [reverse] $ cat /etc/bind/infraforge-key.conf        [/reverse]\n\n"
+    "   [dim]Output looks like:[/dim]\n"
+    '   [dim]key "infraforge-key" \\{[/dim]\n'
+    "   [dim]    algorithm hmac-sha256;[/dim]\n"
+    '   [dim]    secret "R3HI8P6BKw9ZwXw...==";[/dim]\n'
+    "   [dim]\\};[/dim]\n\n"
+    "   [yellow]![/yellow] Copy the [bold]secret[/bold] value into the field\n"
+    "     on the left.\n\n"
+    "[bold yellow]3[/bold yellow]  [bold]Enable dynamic updates[/bold]\n\n"
+    "   Add to [bold]named.conf.local[/bold]:\n\n"
+    '   [reverse] include "/etc/bind/infraforge-key.conf";   [/reverse]\n\n'
+    "   In your zone block, add:\n\n"
+    '   [reverse] allow-update \\{ key "infraforge-key"; \\};  [/reverse]\n\n'
+    "[bold yellow]4[/bold yellow]  [bold]Validate and reload[/bold]\n\n"
+    "   [reverse] $ named-checkconf && rndc reload           [/reverse]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]USEFUL COMMANDS[/bold cyan]\n\n"
+    "  [dim]•[/dim] List TSIG keys:\n"
+    "    [reverse] $ rndc tsig-list [/reverse]\n\n"
+    "  [dim]•[/dim] List configured zones:\n"
+    "    [reverse] $ grep -oP 'zone \"\\K\\[^\"]+'              [/reverse]\n"
+    "    [reverse]   /etc/bind/named.conf.local               [/reverse]\n\n"
+    "  [dim]InfraForge auto-discovers zones on first connect.[/dim]"
 )
 
 _IPAM_HELP = (
-    "[bold cyan]IPAM Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n\n"
-    "[bold cyan]Docker Deployment[/bold cyan]\n\n"
-    "Deploys phpIPAM locally with all\n"
-    "required components:\n\n"
-    "[green]●[/green] MariaDB database container\n"
-    "[green]●[/green] phpIPAM web server (HTTPS)\n"
-    "[green]●[/green] Cron container for subnet scanning\n"
-    "[green]●[/green] Pre-configured API app [dim]\"infraforge\"[/dim]\n"
-    "[green]●[/green] Self-signed SSL certificate\n\n"
-    "[yellow]Docker + docker compose will be\n"
-    "auto-installed if missing.[/yellow]\n\n"
-    "[bold cyan]Existing Server Setup[/bold cyan]\n\n"
-    "To create an API app in your phpIPAM:\n\n"
-    "[bold green]1.[/] Log in to phpIPAM web UI\n\n"
-    "[bold green]2.[/] Navigate to:\n"
-    "  [bold white on grey27] Administration → API              [/bold white on grey27]\n\n"
-    "[bold green]3.[/] Click [bold]\"Create API key\"[/bold]\n\n"
-    "[bold green]4.[/] Configure the app:\n"
-    "  [green]●[/green] App ID:      [bold white on grey27] infraforge [/bold white on grey27]\n"
-    "  [green]●[/green] Permissions: [bold]Read / Write / Admin[/bold]\n"
-    "  [green]●[/green] Security:    [bold]SSL with User token[/bold]\n\n"
-    "[bold green]5.[/] Copy the generated token\n\n"
-    "[bold cyan]Authentication Methods[/bold cyan]\n\n"
-    "[green]●[/green] [bold]Token auth[/bold] [dim](recommended)[/dim]\n"
-    "  App ID + Token — no password needed\n\n"
-    "[green]●[/green] [bold]User auth[/bold]\n"
-    "  App ID + Username + Password\n"
-    "  [dim]Uses phpIPAM login credentials[/dim]\n\n"
-    "[bold cyan]SSL Verification[/bold cyan]\n\n"
-    "[yellow]Leave disabled[/yellow] for:\n"
-    "[green]●[/green] Self-signed certificates\n"
-    "[green]●[/green] Docker deployment\n"
-    "[green]●[/green] Internal development servers"
+    "[bold cyan]IPAM SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]DOCKER DEPLOYMENT[/bold cyan]\n\n"
+    "  Deploys a complete phpIPAM stack locally:\n\n"
+    "  [dim]•[/dim] [bold]MariaDB[/bold]        Database backend\n"
+    "  [dim]•[/dim] [bold]phpIPAM Web[/bold]    HTTPS web interface\n"
+    "  [dim]•[/dim] [bold]Cron Scanner[/bold]   Automatic subnet discovery\n"
+    "  [dim]•[/dim] [bold]API App[/bold]        Pre-configured \"infraforge\"\n"
+    "  [dim]•[/dim] [bold]SSL Cert[/bold]       Self-signed certificate\n\n"
+    "  [yellow]![/yellow] Docker + compose auto-installed if missing.\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]EXISTING SERVER[/bold cyan]\n\n"
+    "  To create an API app in your phpIPAM:\n\n"
+    "  [bold yellow]1[/bold yellow]  Log in to the phpIPAM web UI\n\n"
+    "  [bold yellow]2[/bold yellow]  Navigate to:\n"
+    "     [reverse] Administration → API [/reverse]\n\n"
+    "  [bold yellow]3[/bold yellow]  Click [bold]Create API key[/bold]\n\n"
+    "  [bold yellow]4[/bold yellow]  Configure:\n"
+    "     [dim]•[/dim] App ID:       [bold]infraforge[/bold]\n"
+    "     [dim]•[/dim] Permissions:  [bold]Read / Write / Admin[/bold]\n"
+    "     [dim]•[/dim] Security:     [bold]SSL with User token[/bold]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]AUTHENTICATION[/bold cyan]\n\n"
+    "  [dim]•[/dim] [bold]Token auth[/bold] [dim](recommended)[/dim]\n"
+    "    App ID + Token — no password needed\n\n"
+    "  [dim]•[/dim] [bold]User auth[/bold]\n"
+    "    App ID + Username + Password\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]SSL VERIFICATION[/bold cyan]\n\n"
+    "  Leave [bold]disabled[/bold] for self-signed certs,\n"
+    "  Docker deployments, and internal servers."
 )
 
 _TERRAFORM_HELP = (
-    "[bold cyan]Terraform Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n\n"
-    "[bold cyan]How It Works[/bold cyan]\n\n"
-    "InfraForge generates HCL config and runs\n"
-    "terraform init/plan/apply to provision\n"
-    "VMs and containers on Proxmox.\n\n"
-    "  Provider: [bold]Telmate/proxmox (v3.x)[/bold]\n\n"
-    "[bold cyan]Workspace Directory[/bold cyan]\n\n"
-    "Where Terraform files are stored:\n\n"
-    "[green]●[/green] Deployments:\n"
-    "  [bold white on grey27] terraform/deployments/{host}/     [/bold white on grey27]\n\n"
-    "[green]●[/green] Saved templates:\n"
-    "  [bold white on grey27] terraform/templates/{name}.json   [/bold white on grey27]\n\n"
-    "[dim]Default: ./terraform\n"
-    "(relative to InfraForge install dir)[/dim]\n\n"
-    "[bold cyan]State Backend[/bold cyan]\n\n"
-    "[green]●[/green] [bold]Local[/bold] [dim](default)[/dim]\n"
-    "  State stored in workspace dir\n"
-    "  [dim]Simplest setup, single-user[/dim]\n\n"
-    "[green]●[/green] [bold]S3[/bold]\n"
-    "  Remote state in AWS S3\n"
-    "  [dim]For team collaboration[/dim]\n\n"
-    "[green]●[/green] [bold]Consul[/bold]\n"
-    "  Remote state in HashiCorp Consul\n"
-    "  [dim]For HashiCorp stack users[/dim]\n\n"
-    "[bold cyan]Prerequisites[/bold cyan]\n\n"
-    "[green]●[/green] Terraform CLI [dim](v1.0+)[/dim]\n"
-    "[green]●[/green] Proxmox API token with\n"
-    "  VM.Allocate + VM.Config permissions\n"
-    "[green]●[/green] SSH public key for VM access\n"
-    "  [dim]Scans ~/.ssh/*.pub automatically[/dim]\n\n"
-    "[yellow]Tip:[/yellow] [dim]InfraForge auto-installs\n"
-    "Terraform if missing.[/dim]"
+    "[bold cyan]TERRAFORM SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]HOW IT WORKS[/bold cyan]\n\n"
+    "  InfraForge generates Terraform HCL and runs\n"
+    "  [bold]init → plan → apply[/bold] to provision VMs\n"
+    "  and containers on Proxmox.\n\n"
+    "  Provider: [bold]Telmate/proxmox v3.x[/bold]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]WORKSPACE LAYOUT[/bold cyan]\n\n"
+    "  [dim]•[/dim] Deployments:\n"
+    "    [reverse] terraform/deployments/{host}/ [/reverse]\n\n"
+    "  [dim]•[/dim] Saved templates:\n"
+    "    [reverse] terraform/templates/{name}.json [/reverse]\n\n"
+    "  [dim]Default path is ./terraform relative to[/dim]\n"
+    "  [dim]the InfraForge install directory.[/dim]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]STATE BACKEND[/bold cyan]\n\n"
+    "  [dim]•[/dim] [bold]Local[/bold] [dim](default)[/dim]\n"
+    "    State files in workspace directory\n"
+    "    [dim]Simplest — ideal for single-user[/dim]\n\n"
+    "  [dim]•[/dim] [bold]S3[/bold]\n"
+    "    Remote state in AWS S3 bucket\n"
+    "    [dim]For team collaboration[/dim]\n\n"
+    "  [dim]•[/dim] [bold]Consul[/bold]\n"
+    "    Remote state in HashiCorp Consul\n"
+    "    [dim]For full HashiCorp stack[/dim]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]PREREQUISITES[/bold cyan]\n\n"
+    "  [dim]•[/dim] Terraform CLI [dim](v1.0+)[/dim]\n"
+    "  [dim]•[/dim] Proxmox API token with\n"
+    "    VM.Allocate + VM.Config permissions\n"
+    "  [dim]•[/dim] SSH public key for VM access\n"
+    "    [dim]Scans ~/.ssh/*.pub automatically[/dim]\n\n"
+    "  [yellow]![/yellow] [dim]InfraForge auto-installs Terraform if missing.[/dim]"
 )
 
 _ANSIBLE_HELP = (
-    "[bold cyan]Ansible Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n\n"
-    "[bold cyan]Playbook Directory[/bold cyan]\n\n"
-    "Path where InfraForge discovers playbooks.\n"
-    "Each [bold].yml[/bold] / [bold].yaml[/bold] file in this\n"
-    "directory appears in the Ansible screen.\n\n"
+    "[bold cyan]ANSIBLE SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]PLAYBOOK DIRECTORY[/bold cyan]\n\n"
+    "  Path where InfraForge discovers playbooks.\n"
+    "  Each [bold].yml[/bold] / [bold].yaml[/bold] file appears in the\n"
+    "  Ansible screen automatically.\n\n"
     "  Default:\n"
-    "  [bold white on grey27] ./ansible/playbooks               [/bold white on grey27]\n\n"
-    "[bold cyan]Included Playbooks[/bold cyan]\n\n"
-    "[green]●[/green] [bold]deploy-ssh-key.yml[/bold]\n"
-    "  [dim]Roll out SSH keys to target hosts[/dim]\n\n"
-    "[green]●[/green] [bold]install-claude-code.yml[/bold]\n"
-    "  [dim]Install NVM + Node.js + Claude Code[/dim]\n\n"
-    "[bold cyan]How Playbooks Run[/bold cyan]\n\n"
-    "InfraForge runs [bold]ansible-playbook[/bold] with:\n\n"
-    "[green]●[/green] Target hosts discovered via IPAM\n"
-    "  subnet scanning or manual entry\n\n"
-    "[green]●[/green] SSH credentials configured per-run\n\n"
-    "[green]●[/green] Live output streamed to the TUI\n\n"
-    "[bold cyan]Prerequisites[/bold cyan]\n\n"
-    "[yellow]Ansible must be installed and in\n"
-    "PATH.[/yellow]\n\n"
-    "[dim]InfraForge can auto-install it from\n"
-    "the setup screen if missing.[/dim]"
+    "  [reverse] ./ansible/playbooks [/reverse]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]INCLUDED PLAYBOOKS[/bold cyan]\n\n"
+    "  [dim]•[/dim] [bold]deploy-ssh-key.yml[/bold]\n"
+    "    [dim]Roll out SSH keys to target hosts[/dim]\n\n"
+    "  [dim]•[/dim] [bold]install-claude-code.yml[/bold]\n"
+    "    [dim]Install NVM + Node.js + Claude Code[/dim]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]HOW RUNS WORK[/bold cyan]\n\n"
+    "  [dim]•[/dim] Target hosts from IPAM subnet scanning\n"
+    "    or manual entry\n"
+    "  [dim]•[/dim] SSH credentials configured per run\n"
+    "  [dim]•[/dim] Live output streamed to the TUI\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]PREREQUISITES[/bold cyan]\n\n"
+    "  [yellow]![/yellow] Ansible must be installed and in PATH.\n\n"
+    "  [dim]InfraForge can auto-install it from the\n"
+    "  setup screen if missing.[/dim]"
 )
 
 _AI_HELP = (
-    "[bold cyan]AI Setup Guide[/bold cyan]\n"
-    "[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/cyan]\n\n"
-    "[bold cyan]Getting an API Key[/bold cyan]\n\n"
-    "[bold green]1.[/] Go to [bold]console.anthropic.com[/bold]\n\n"
-    "[bold green]2.[/] Navigate to:\n"
-    "  [bold white on grey27] Settings → API Keys               [/bold white on grey27]\n\n"
-    "[bold green]3.[/] Click [bold]\"Create Key\"[/bold]\n\n"
-    "[bold green]4.[/] Copy the key\n"
-    "  [dim]Starts with sk-ant-...[/dim]\n\n"
-    "[bold cyan]Model Recommendations[/bold cyan]\n\n"
-    "[green]●[/green] [bold]Opus 4.6[/bold]\n"
-    "  Most capable. Best for complex\n"
-    "  infrastructure analysis & planning.\n\n"
-    "[green]●[/green] [bold]Sonnet 4.5[/bold] [dim](recommended)[/dim]\n"
-    "  Fast and capable. Great default\n"
-    "  for most tasks.\n\n"
-    "[green]●[/green] [bold]Haiku 4.5[/bold]\n"
-    "  Fastest, lowest cost. Good for\n"
-    "  simple queries and quick answers.\n\n"
-    "[bold cyan]What AI Can Do[/bold cyan]\n\n"
-    "[green]●[/green] Analyze VM configurations\n"
-    "[green]●[/green] Suggest infrastructure improvements\n"
-    "[green]●[/green] Help troubleshoot issues\n"
-    "[green]●[/green] Generate Terraform / Ansible configs\n"
-    "[green]●[/green] Answer questions about your cluster\n\n"
-    "[yellow]Tip:[/yellow] [dim]Press[/dim] [bold]/[/bold] [dim]on the dashboard\n"
-    "to open the AI chat panel.[/dim]"
+    "[bold cyan]AI COPILOT SETUP[/bold cyan]\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]GET AN API KEY[/bold cyan]\n\n"
+    "  [bold yellow]1[/bold yellow]  Go to [bold]console.anthropic.com[/bold]\n\n"
+    "  [bold yellow]2[/bold yellow]  Navigate to:\n"
+    "     [reverse] Settings → API Keys [/reverse]\n\n"
+    "  [bold yellow]3[/bold yellow]  Click [bold]Create Key[/bold]\n\n"
+    "  [bold yellow]4[/bold yellow]  Copy the key\n"
+    "     [dim]Starts with[/dim] [bold]sk-ant-...[/bold]\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]MODELS[/bold cyan]\n\n"
+    "  [dim]•[/dim] [bold]Opus 4.6[/bold]\n"
+    "    Most capable — complex analysis\n"
+    "    and infrastructure planning\n\n"
+    "  [dim]•[/dim] [bold]Sonnet 4.5[/bold] [dim](recommended)[/dim]\n"
+    "    Fast and capable — great default\n"
+    "    for everyday tasks\n\n"
+    "  [dim]•[/dim] [bold]Haiku 4.5[/bold]\n"
+    "    Fastest, lowest cost — quick\n"
+    "    queries and simple answers\n\n"
+    "[dim]───────────────────────────────────────[/dim]\n\n"
+    "[bold cyan]WHAT AI CAN DO[/bold cyan]\n\n"
+    "  [dim]•[/dim] Analyze VM configurations\n"
+    "  [dim]•[/dim] Suggest infrastructure improvements\n"
+    "  [dim]•[/dim] Help troubleshoot issues\n"
+    "  [dim]•[/dim] Generate Terraform / Ansible configs\n"
+    "  [dim]•[/dim] Answer questions about your cluster\n\n"
+    "  [yellow]![/yellow] Press [bold]/[/bold] on the dashboard to open the\n"
+    "    AI chat panel."
 )
 
 
@@ -482,7 +478,7 @@ ProxmoxConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_PROXMOX_HELP, id="help-title", markup=True)
+                yield Static(_PROXMOX_HELP, id="help-content", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -601,7 +597,7 @@ DNSConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_DNS_HELP, id="help-title", markup=True)
+                yield Static(_DNS_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
         zones_raw = self.query_one("#f-zones", Input).value.strip()
@@ -721,7 +717,7 @@ IPAMConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_IPAM_HELP, id="help-title", markup=True)
+                yield Static(_IPAM_HELP, id="help-content", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -1089,7 +1085,7 @@ TerraformConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_TERRAFORM_HELP, id="help-title", markup=True)
+                yield Static(_TERRAFORM_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
         result = {
@@ -1135,7 +1131,7 @@ AnsibleConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_ANSIBLE_HELP, id="help-title", markup=True)
+                yield Static(_ANSIBLE_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
         result = {
@@ -1194,7 +1190,7 @@ AIConfigModal {{
                     yield Button("Cancel", id="cancel-btn")
 
             with VerticalScroll(id="config-help"):
-                yield Static(_AI_HELP, id="help-title", markup=True)
+                yield Static(_AI_HELP, id="help-content", markup=True)
 
     def action_save(self) -> None:
         key = self.query_one("#f-api-key", Input).value.strip()
